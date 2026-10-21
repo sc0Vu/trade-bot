@@ -165,6 +165,10 @@ ABI — compiler mismatch is UB).
    entities; switch `db.url` from `sqlite://` to `mysql://`, no model changes).
    Repository traits wrap it so call sites never know backend. (sqlx lighter
    but needs per-dialect SQL; SeaORM chosen for MySQL path + migrations below.)
+   **Money columns are exact-decimal TEXT (`varchar(40)`), never `DECIMAL`**:
+   SeaORM on SQLite creates `DECIMAL` as `real(p,s)` and reads it via `f64`
+   (invariant 1). TEXT is exact on both backends; cost: no SQL `SUM`/numeric
+   `ORDER BY` on money — aggregate in Rust.
 4. **Backtest** — `backtest` crate: load cached klines, replay as `MarketEvent`
    stream through engine, emit report (realized P&L, max drawdown, trade
    count, win rate, Sharpe). Fill model stated below, not hidden.
@@ -222,7 +226,7 @@ cargo run -p cli -- fetch-data --symbol BTCUSDT --interval 1h --from 2024-01-01 
 cargo run -p cli -- backtest --strategy ratio_hop --from 2024-01-01 --to 2024-06-01
 cargo run -p cli -- run --paper                  # paper vs testnet prices (default)
 cargo run -p cli -- run --live --i-understand    # real orders, triple-gated
-sea-orm-cli migrate up                            # apply migrations
+DATABASE_URL=sqlite://bot.db?mode=rwc sea-orm-cli migrate up   # apply migrations
 cargo test && cargo clippy -- -D warnings && cargo fmt --check
 ```
 

@@ -26,9 +26,13 @@ backtest = { path = "crates/backtest" }
 storage = { path = "crates/storage" }
 migration = { path = "migration" }
 
+async-trait = "0.1.92"
 rust_decimal = "1.43.0"
 rust_decimal_macros = "1.40.0"
 serde = { version = "1.0.229", features = ["derive"] }
+sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "runtime-tokio", "sqlx-sqlite", "sqlx-mysql"] }
+sea-orm-migration = { version = "2.0.4", features = ["runtime-tokio", "sqlx-sqlite", "sqlx-mysql"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
+tokio = { version = "1.54.0", features = ["macros", "rt-multi-thread"] }
 toml = "1.1.8"
