@@ -184,7 +184,7 @@ reminder: maximizing units ≠ maximizing value.
 ```
 Cargo.toml              workspace
 crates/
-  core/        Instrument, AssetClass, Candle, MarketEvent, Order, Signal, Position, Money(Decimal)
+  core/        (package `bot-core`: `core` clashes with Rust built-in) Instrument, AssetClass, Candle, MarketEvent, Order, Signal, Position, Money(Decimal)
   strategy/    Strategy trait, Context, inventory registry, built-ins (ratio_hop)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)

@@ -1,0 +1,15 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bot-core.workspace = true
+strategy.workspace = true
+exchange.workspace = true
+engine.workspace = true
+backtest.workspace = true
+storage.workspace = true
+migration.workspace = true

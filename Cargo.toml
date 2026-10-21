@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/strategy",
+    "crates/exchange",
+    "crates/engine",
+    "crates/backtest",
+    "crates/storage",
+    "crates/cli",
+    "migration",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+bot-core = { path = "crates/core" }
+strategy = { path = "crates/strategy" }
+exchange = { path = "crates/exchange" }
+engine = { path = "crates/engine" }
+backtest = { path = "crates/backtest" }
+storage = { path = "crates/storage" }
+migration = { path = "migration" }

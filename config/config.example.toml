@@ -1,0 +1,5 @@
+# Example configuration. Copy to config/config.toml or config/*.local.toml
+# (gitignored) and edit. Every field will be documented here as it is added.
+#
+# Secrets never go in this file: API keys are read only from the
+# BINANCE_API_KEY / BINANCE_API_SECRET environment variables.
