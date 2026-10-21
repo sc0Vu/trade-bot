@@ -3,3 +3,7 @@
 #
 # Secrets never go in this file: API keys are read only from the
 # BINANCE_API_KEY / BINANCE_API_SECRET environment variables.
+#
+# Money values (prices, quantities, fees, notionals) are strings, e.g.
+# fee = "0.001". A bare number is rejected: TOML parses it as a binary float,
+# which loses precision before it can become a Decimal.

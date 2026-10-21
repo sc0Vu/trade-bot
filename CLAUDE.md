@@ -16,7 +16,10 @@ precision, settlement), don't copy another bot. Don't accept strategy's stated e
 Correctness, not style. If task violates one, stop and flag.
 1. **Money is `rust_decimal::Decimal`.** Never `f64`/`f32` for price, quantity,
    balance, fees. Binary float silently loses cent fractions, compounded
-   over thousands of trades.
+   over thousands of trades. Wrapped in unit newtypes `Price`, `Qty`,
+   `Notional` (no bare-`Decimal` money); `Qty * Price` deliberately absent —
+   unit conversion only via `Instrument` (invariant 4). Serde reads them
+   only as strings: TOML/JSON number → float before `Decimal` sees it.
 2. **No lookahead.** Strategy reads market data only up to and including
    current event. Never index future bar. This is *why* engine is
    event-driven, not vectorized over full DataFrame.
@@ -184,7 +187,7 @@ reminder: maximizing units ≠ maximizing value.
 ```
 Cargo.toml              workspace
 crates/
-  core/        (package `bot-core`: `core` clashes with Rust built-in) Instrument, AssetClass, Candle, MarketEvent, Order, Signal, Position, Money(Decimal)
+  core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (ratio_hop)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
@@ -224,6 +227,8 @@ Layered; each source overrides one above:
   `api_secret` read ONLY from fixed env vars (`BINANCE_API_KEY`,
   `BINANCE_API_SECRET`), never in any TOML. File may name which env var
   to read, never hold value. Missing in live mode → hard error at startup.
+- Money fields are TOML strings (`fee = "0.001"`); bare number errors
+  (invariant 1). Env layer same: `BOT_X='"0.001"'` until loader coerces.
 - Validate on load, fail fast: whitelist non-empty, fee/slippage ≥ 0, live mode
   requires non-testnet provider + `--i-understand` gate. Bad config
   never reaches trading loop.
