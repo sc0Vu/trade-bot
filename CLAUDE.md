@@ -1,49 +1,44 @@
 # CLAUDE.md
 
 ## Project
-Rust trading bot. First venue is Binance (crypto spot); the architecture is
-multi-venue and multi-asset by design so equities can follow without a rewrite.
-Event-driven, strategy-pluggable, with a backtester that runs the **same**
-strategy code as live. v1 scope is paper/backtest-correct on crypto spot; real
-orders are gated behind explicit config.
+Rust trading bot. First venue Binance (crypto spot); architecture multi-venue, multi-asset by design so equities follow without rewrite.
+Event-driven, strategy-pluggable, backtester runs **same** strategy code as live. v1 scope: paper/backtest-correct on crypto spot; real
+orders gated behind explicit config.
 
-Scope ladder (build in this order, don't foreclose later rungs):
+Scope ladder (build in order, don't foreclose later rungs):
 **crypto spot now → US equities next → options later (deferred, not in v1).**
-We split the domain so equities and options *can* slot in, but we only implement
-crypto spot now.
+Domain split so equities/options *can* slot in; only implement crypto spot now.
 
-Built with Claude Code. The owner reasons from first principles: when a design
-choice is made, name the governing constraint (fees, latency, lookahead,
-precision, settlement) rather than copying another bot. Don't accept a strategy's
-stated edge at face value — derive why it would or wouldn't hold after costs.
+Built with Claude Code. Owner reasons from first principles: on design choice, name governing constraint (fees, latency, lookahead,
+precision, settlement), don't copy another bot. Don't accept strategy's stated edge at face value — derive why it holds or not after costs.
 
 ## Non-negotiable invariants
-Correctness, not style. If a task would violate one, stop and flag it.
+Correctness, not style. If task violates one, stop and flag.
 1. **Money is `rust_decimal::Decimal`.** Never `f64`/`f32` for price, quantity,
-   balance, or fees. Binary float silently loses fractions of a cent, compounded
+   balance, fees. Binary float silently loses cent fractions, compounded
    over thousands of trades.
-2. **No lookahead.** A strategy reads market data only up to and including the
-   current event. Never index a future bar. This is *why* the engine is
-   event-driven rather than vectorized over a full DataFrame.
-3. **Backtest == live.** The `Strategy` trait and the engine loop are shared.
-   Backtest swaps only the provider (data feed + broker). If a change makes
-   backtest and live diverge in strategy-visible behavior, the change is wrong.
+2. **No lookahead.** Strategy reads market data only up to and including
+   current event. Never index future bar. This is *why* engine is
+   event-driven, not vectorized over full DataFrame.
+3. **Backtest == live.** `Strategy` trait and engine loop shared.
+   Backtest swaps only provider (data feed + broker). If change makes
+   backtest and live diverge in strategy-visible behavior, change is wrong.
 4. **Asset-class math lives in `Instrument`, not in `Broker` or `Strategy`.**
-   Notional, settlement, multiplier, expiry belong to the instrument. A broker
-   submits orders and reports fills; it must never need to know how to value one.
+   Notional, settlement, multiplier, expiry belong to instrument. Broker
+   submits orders, reports fills; never needs to know how to value one.
 5. **A strategy's only window to the world is `Context`.** Position, rolling
-   history, params, submit-order — never a direct handle to the broker, provider,
-   or network. This is what lets the strategy-import mechanism evolve (registry →
+   history, params, submit-order — never direct handle to broker, provider,
+   or network. Lets strategy-import mechanism evolve (registry →
    script → wasm) without touching strategy code.
-6. **Secrets via env only.** API keys come from env vars named in config; never
-   hard-code or commit them. `.env` and `config/*.local.toml` are gitignored.
-7. **Safe by default.** Default mode is paper against testnet. Live trading
-   requires `mode = "live"`, a non-testnet provider, AND an explicit
-   `--i-understand` run flag. Three locks, because a mistake here spends real money.
+6. **Secrets via env only.** API keys from env vars named in config; never
+   hard-code or commit. `.env` and `config/*.local.toml` gitignored.
+7. **Safe by default.** Default mode paper against testnet. Live trading
+   requires `mode = "live"`, non-testnet provider, AND explicit
+   `--i-understand` run flag. Three locks — mistake here spends real money.
 
 ## Architecture
-One-way data flow. The strategy is pure decision; the provider is the only thing
-that differs between backtest and live.
+One-way data flow. Strategy is pure decision; provider is only thing
+differing between backtest and live.
 
 ```
 Provider (BinanceSpot | Alpaca | Backtest) ── supplies ──> MarketData + Broker
@@ -54,9 +49,9 @@ MarketData ──MarketEvent──> Engine loop ──> Strategy.on_event() ─�
                                                                                          └─> Storage (SeaORM)
 ```
 
-A **Provider** is a venue + its capabilities. It mints the `MarketData` feed and
-the `Broker`, and declares which asset classes it serves, so the engine can
-reject an equity strategy pointed at a crypto-only venue before trading:
+**Provider** = venue + capabilities. Mints `MarketData` feed and
+`Broker`, declares served asset classes, so engine can
+reject equity strategy pointed at crypto-only venue before trading:
 
 ```rust
 #[async_trait] trait Provider {
@@ -68,8 +63,8 @@ reject an equity strategy pointed at a crypto-only venue before trading:
 }
 ```
 
-An **Instrument** carries the asset-class math (invariant 4). v1 implements
-`Spot` only; the enum leaves room for `UsEquity` (and, later, `UsOption`) without
+**Instrument** carries asset-class math (invariant 4). v1 implements
+`Spot` only; enum leaves room for `UsEquity` (later `UsOption`) without
 reshaping callers:
 
 ```rust
@@ -82,10 +77,10 @@ impl Instrument {
 }
 ```
 
-The strategy reacts to a **MarketEvent**, not only a candle, so the loop already
-survives the non-price events equities/options bring (session boundaries,
-corporate actions, expiry). v1 emits `Candle` only; the other variants exist so
-adding them later is additive, not a rewrite:
+Strategy reacts to **MarketEvent**, not only candle, so loop already
+survives non-price events equities/options bring (session boundaries,
+corporate actions, expiry). v1 emits `Candle` only; other variants exist so
+adding later is additive, not rewrite:
 
 ```rust
 enum MarketEvent { Candle(Candle), Quote(Quote), SessionOpen, SessionClose,
@@ -108,19 +103,19 @@ trait Strategy: Send {
 }
 ```
 
-The engine is generic over a `Provider`. Backtest = a `BacktestProvider`
+Engine generic over `Provider`. Backtest = `BacktestProvider`
 (kline replay + PaperBroker). Live = `BinanceSpotProvider` (ws + BinanceBroker).
-One loop, one strategy, provider swapped — that identity is the whole correctness
-story. Backtest must replay the same `MarketEvent` stream live produces, so parity
+One loop, one strategy, provider swapped — that identity is whole correctness
+story. Backtest must replay same `MarketEvent` stream live produces, so parity
 holds for every event type, not just candles.
 
-Loop order matters: on each event the broker settles pending orders against the
-NEW event *before* the strategy runs, so an order decided on event t can only fill
-at t+1. This prevents deciding on a close price and also trading at it.
+Loop order matters: each event, broker settles pending orders against
+NEW event *before* strategy runs, so order decided on event t only fills
+at t+1. Prevents deciding on close price and also trading at it.
 
 ## Strategy import — the Rust-specific problem
-Python imports a `.py` at runtime; Rust is compiled, so "drop in a strategy" has
-four real answers. v1 uses the registry; the rest stay open because of invariant 5.
+Python imports `.py` at runtime; Rust compiled, so "drop in a strategy" has
+four real answers. v1 uses registry; rest stay open because of invariant 5.
 
 | Approach | Recompile host? | User needs | Perf | Sandboxed | Use when |
 |---|---|---|---|---|---|
@@ -129,61 +124,61 @@ four real answers. v1 uses the registry; the rest stay open because of invariant
 | **Rhai script** | no | just write a script | interpreted | yes | external users, candle freq. |
 | **WASM** (`wasmtime`) | no | compile to wasm | near-native | yes | external users, sandbox + speed |
 
-v1: `inventory` so a strategy file self-registers (`inventory::submit!`) and adding
-one is adding a file — no central match to edit — and it runs in backtest for free.
-`strategy.params` is a generic table each strategy deserializes into its own typed
-struct via serde (identical for compiled and, later, scripted strategies). Rhai is
-the later "drop a script" path; WASM the serious sandboxed/polyglot upgrade. cdylib
-only if native speed AND binary distribution are both required (Rust has no stable
-ABI — a compiler mismatch is UB).
+v1: `inventory` so strategy file self-registers (`inventory::submit!`); adding
+one = adding file — no central match to edit — runs in backtest free.
+`strategy.params` is generic table each strategy deserializes into own typed
+struct via serde (same for compiled and, later, scripted). Rhai is
+later "drop a script" path; WASM serious sandboxed/polyglot upgrade. cdylib
+only if native speed AND binary distribution both required (Rust has no stable
+ABI — compiler mismatch is UB).
 
 ## Requirements → where they live
-1. **Binance testnet + live** — a `BinanceSpotProvider` in `exchange::binance`.
-   One client; base URL and keys from config (`testnet: bool`). Testnet host is
-   `testnet.binance.vision`. Same signing, same code path. Additional venues are
+1. **Binance testnet + live** — `BinanceSpotProvider` in `exchange::binance`.
+   One client; base URL and keys from config (`testnet: bool`). Testnet host
+   `testnet.binance.vision`. Same signing, same code path. More venues =
    new `Provider` impls, nothing else changes.
-2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` is the only universe
-   the bot may trade. Plus `filters.min_24h_quote_volume` to drop illiquid
-   instruments: thin alts slip badly and may not fill, so the filter is a safety
-   feature. This is freqtrade's pairlist idea — static list + volume filter for v1.
+2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` is only universe
+   bot may trade. Plus `filters.min_24h_quote_volume` drops illiquid
+   instruments: thin alts slip badly, may not fill, so filter is safety
+   feature. freqtrade's pairlist idea — static list + volume filter for v1.
 3. **SQLite now, MySQL later** — `storage` crate on **SeaORM** (backend-agnostic
-   entities; switch `db.url` from `sqlite://` to `mysql://` with no model changes).
-   Repository traits wrap it so call sites never know the backend. (sqlx is lighter
-   but needs per-dialect SQL; SeaORM chosen for the MySQL path + migrations below.)
-4. **Backtest** — `backtest` crate: load cached klines, replay as a `MarketEvent`
-   stream through the engine, emit a report (realized P&L, max drawdown, trade
+   entities; switch `db.url` from `sqlite://` to `mysql://`, no model changes).
+   Repository traits wrap it so call sites never know backend. (sqlx lighter
+   but needs per-dialect SQL; SeaORM chosen for MySQL path + migrations below.)
+4. **Backtest** — `backtest` crate: load cached klines, replay as `MarketEvent`
+   stream through engine, emit report (realized P&L, max drawdown, trade
    count, win rate, Sharpe). Fill model stated below, not hidden.
 5. **User strategies** — implement `Strategy`, self-register via `inventory`.
-   Config selects `strategy.name` + `strategy.params`. Because the trait is
-   provider-agnostic, every user strategy runs in backtest for free. See the
-   import ladder above for how this grows.
+   Config selects `strategy.name` + `strategy.params`. Trait
+   provider-agnostic, so every user strategy runs in backtest free. See
+   import ladder above for growth.
 6. **Migrations** — SeaORM migration crate under `migration/`, run via
-   `sea-orm-cli migrate up|down|fresh`. Every schema change is a migration; never
-   hand-edit a live DB.
-7. **freqtrade lessons applied** — config-driven; strategy fully decoupled from the
-   venue (via `Provider`); backtest/live parity as the core correctness property;
-   event-driven design structurally prevents the lookahead bias freqtrade can only
-   detect after the fact with `lookahead-analysis`.
+   `sea-orm-cli migrate up|down|fresh`. Every schema change is migration; never
+   hand-edit live DB.
+7. **freqtrade lessons applied** — config-driven; strategy fully decoupled from
+   venue (via `Provider`); backtest/live parity as core correctness property;
+   event-driven design structurally prevents lookahead bias freqtrade only
+   detects after the fact with `lookahead-analysis`.
 
 ## Backtest fill model (assumptions are explicit)
-A candle is four prices and cannot say whether the high or the low came first. So:
-- market order → fills at the **next** candle's open.
-- limit buy → fills if `candle.low <= limit`, at the limit (or open if it gapped
+Candle = four prices, can't say whether high or low came first. So:
+- market order → fills at **next** candle's open.
+- limit buy → fills if `candle.low <= limit`, at limit (or open if gapped
   through); symmetric for sell.
 - stop → triggers if `candle.high >= stop` (buy) / `candle.low <= stop` (sell).
-- fee (taker/maker) + configurable slippage applied on every fill.
-- **intra-bar ambiguity**: if a stop and a target both sit inside one candle, the
-  model can't know which hit first and assumes the worse case. Finer-timeframe
-  replay is a future improvement. Backtest P&L is a model output, never a promise.
+- fee (taker/maker) + configurable slippage on every fill.
+- **intra-bar ambiguity**: stop and target both inside one candle →
+  model can't know which hit first, assumes worse case. Finer-timeframe
+  replay = future improvement. Backtest P&L is model output, never promise.
 
 ## Reference strategy
-`ratio_hop` — the coin-accumulation strategy from `ccxt/binance-trade-bot`: hold
-the coin strong versus its peers, rotate `A → bridge → B` only when the post-fee
-ratio beats the last-held amount of B, so unit count only ratchets up. Ships with
-the **freefall guard the original lacks**: refuse to rotate into a coin down more
-than `risk.freefall_pct` over the last N candles, so the reverse-greedy loop can't
-accumulate a coin collapsing to zero. The worked example of the trait, and a
-reminder that maximizing units ≠ maximizing value.
+`ratio_hop` — coin-accumulation strategy from `ccxt/binance-trade-bot`: hold
+coin strong vs peers, rotate `A → bridge → B` only when post-fee
+ratio beats last-held amount of B, so unit count only ratchets up. Ships with
+**freefall guard the original lacks**: refuse rotating into coin down more
+than `risk.freefall_pct` over last N candles, so reverse-greedy loop can't
+accumulate coin collapsing to zero. Worked example of trait, and
+reminder: maximizing units ≠ maximizing value.
 
 ## Layout
 ```
@@ -212,71 +207,71 @@ cargo test && cargo clippy -- -D warnings && cargo fmt --check
 ```
 
 ## Configuration
-Layered; each source overrides the one above it:
+Layered; each source overrides one above:
 1. built-in defaults (in code)
 2. config file — `config/config.toml` (path overridable via `--config` or
-   `BOT_CONFIG`); `config/config.example.toml` is committed and documents every field
-3. environment variables, prefixed `BOT_`, nested with `__`
+   `BOT_CONFIG`); `config/config.example.toml` committed, documents every field
+3. env vars, prefixed `BOT_`, nested with `__`
    (`BOT_EXCHANGE__TESTNET=true`, `BOT_STRATEGY__NAME=ratio_hop`,
-   `BOT_DB__URL=sqlite://bot.db`) — this is the Docker/Heroku/CI path
+   `BOT_DB__URL=sqlite://bot.db`) — Docker/Heroku/CI path
 4. CLI flags (`--paper`, `--live`, `--strategy`, …)
 
 - Loader: `figment` — TOML provider + `Env::prefixed("BOT_").split("__")` —
   deserialized into one typed `Config` struct via serde with
-  `#[serde(deny_unknown_fields)]` so a typo errors instead of silently defaulting.
-  (`config` crate is the alternative.)
+  `#[serde(deny_unknown_fields)]` so typo errors, not silently defaults.
+  (`config` crate is alternative.)
 - **Secrets are the exception to the file layer (invariant 6).** `api_key` /
-  `api_secret` are read ONLY from fixed env vars (`BINANCE_API_KEY`,
-  `BINANCE_API_SECRET`), never placed in any TOML. The file may name which env var
-  to read, never hold the value. Missing in live mode → hard error at startup.
+  `api_secret` read ONLY from fixed env vars (`BINANCE_API_KEY`,
+  `BINANCE_API_SECRET`), never in any TOML. File may name which env var
+  to read, never hold value. Missing in live mode → hard error at startup.
 - Validate on load, fail fast: whitelist non-empty, fee/slippage ≥ 0, live mode
-  requires a non-testnet provider + the `--i-understand` gate. A bad config must
-  never reach the trading loop.
+  requires non-testnet provider + `--i-understand` gate. Bad config
+  never reaches trading loop.
 - Real config is `config/*.local.toml` (gitignored) or env; only
-  `config.example.toml` is committed.
+  `config.example.toml` committed.
 
 ## Definition of done (every change)
-A change isn't finished until all of these hold — apply them per task, not at the end:
+Change not finished until all hold — apply per task, not at end:
 - Compiles; `cargo clippy -- -D warnings` and `cargo fmt --check` pass.
-- **Tests ship in the same change.** Unit tests for new logic; a regression test
-  if it touches the backtester's P&L path or the fill model. A change with no test
-  is not done. Write assertions against *expected* values derived independently —
-  never an assertion that just mirrors whatever the code currently returns, which
-  passes vacuously and locks in bugs. For the fill model and `ratio_hop`, the
-  owner supplies or confirms the expected numbers.
+- **Tests ship in the same change.** Unit tests for new logic; regression test
+  if touching backtester's P&L path or fill model. No test = not done.
+  Assert against *expected* values derived independently —
+  never assertion mirroring whatever code currently returns (passes
+  vacuously, locks in bugs). For fill model and `ratio_hop`,
+  owner supplies or confirms expected numbers.
 - **Docs in the same change.** Public items (traits, structs, `pub fn`) carry `///`
-  comments stating intent and invariants, not restating the signature. Stale docs
-  are a bug: update them with the code.
-- If a change alters the architecture, an invariant, or a config field, update
-  CLAUDE.md and `config.example.toml` in the same change.
+  comments stating intent and invariants, not restating signature. Stale docs
+  are bug: update with code.
+- If change alters architecture, invariant, or config field, update
+  CLAUDE.md and `config.example.toml` in same change.
 
 ## Commits
-- One commit = one logical change. A feature, a fix, a refactor, a rename are
-  separate commits even in the same session — never bundled into one.
-- Commit as you go, not once at the end. When a unit is complete (code + its test
-  + its docs, per Definition of done), commit it before starting the next. This,
-  not a size rule, is what keeps diffs small.
-- Keep mechanical changes apart from behavioral ones: a formatting-only or rename
-  commit never also changes logic, so review stays about the logic.
-- Each commit builds and passes tests on its own (don't break `git bisect`).
+- One commit = one logical change. Feature, fix, refactor, rename are
+  separate commits even in same session — never bundled.
+- Commit as you go, not once at end. Unit complete (code + test
+  + docs, per Definition of done) → commit before starting next. This,
+  not size rule, keeps diffs small.
+- Keep mechanical apart from behavioral: formatting-only or rename
+  commit never also changes logic, so review stays on logic.
+- Each commit builds and passes tests alone (don't break `git bisect`).
 - Conventional Commit subject, imperative, ≤72 chars: `feat(storage): add trade_stats`.
-  The body says why, not what the diff already shows.
-- Never commit secrets, `*.local.toml`, or `data/`. Never `--force` a shared branch.
-- Don't commit unless asked or the task clearly calls for it. If a change turns out
-  to span several logical units, propose the split first rather than one big commit.
+  Body says why, not what diff shows.
+- Never commit secrets, `*.local.toml`, or `data/`. Never `--force` shared branch.
+- Don't commit unless asked or task clearly calls for it. If change spans
+  several logical units, propose split first, not one big commit.
 
 ## Conventions
-- Errors: `thiserror` in libraries, `anyhow` in the binary. No `unwrap()` outside
+- Errors: `thiserror` in libraries, `anyhow` in binary. No `unwrap()` outside
   tests.
 - Async `tokio`; JSON `serde`; money `rust_decimal`; logs `tracing` (structured,
   no money values at info level).
-- Every strategy and the fill model get unit tests. The backtester gets a
-  known-input regression test so a refactor can't silently change P&L.
-- Keep claims honest: if a number isn't measured (a backtest return, a latency),
-  label it unverified. Mirrors the owner's first-principles preference.
+- Every strategy and fill model get unit tests. Backtester gets
+  known-input regression test so refactor can't silently change P&L.
+- Keep claims honest: number not measured (backtest return, latency) →
+  label unverified. Mirrors owner's first-principles preference.
 
 ## Crates
 `tokio, async-trait, inventory, reqwest, tokio-tungstenite, serde/serde_json,
 rust_decimal, sea-orm, sea-orm-migration, figment, thiserror, anyhow, tracing, clap, toml`.
-(`barter-rs` is an option if we later prefer a ready-made framework over
-hand-rolled traits; `rhai`/`wasmtime` when strategy scripting is needed.)
+(`barter-rs` option if later prefer ready-made framework over
+hand-rolled traits; `rhai`/`wasmtime` when strategy scripting needed.)
