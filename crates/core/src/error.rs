@@ -13,6 +13,10 @@ pub enum Error {
     InvalidDecimal(String),
     #[error("invalid instrument: {0}")]
     InvalidInstrument(&'static str),
+    #[error("invalid candle: {0}")]
+    InvalidCandle(&'static str),
+    #[error("invalid quote: {0}")]
+    InvalidQuote(&'static str),
 }
 
 /// Why an order would be rejected by the venue's filters. Checked by

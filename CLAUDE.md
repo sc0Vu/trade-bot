@@ -95,8 +95,13 @@ corporate actions, expiry). v1 emits `Candle` only; other variants exist so
 adding later is additive, not rewrite:
 
 ```rust
-enum MarketEvent { Candle(Candle), Quote(Quote), SessionOpen, SessionClose,
+#[non_exhaustive]  // strategies keep fallback arm; engine matches all
+enum MarketEvent { Candle(Candle), Quote(Quote),
+                   SessionOpen { venue: VenueId, ts: Timestamp },   // carry ts: orderable
+                   SessionClose { venue: VenueId, ts: Timestamp },
                    CorporateAction(CorpAction) /*, Expiry(InstrumentId) deferred */ }
+// CorpAction is empty enum in v1 → variant unconstructible until equities.
+// MarketEvent::ts(): candle → close_time (bar known), never open_time.
 
 trait Strategy: Send {
     fn name(&self) -> &str;

@@ -14,14 +14,18 @@
 mod error;
 mod ids;
 mod instrument;
+mod market;
 mod money;
 mod order;
+mod time;
 
 pub use error::{Error, FilterError};
 pub use ids::{Asset, InstrumentId, Symbol, VenueId};
 pub use instrument::{AssetClass, Instrument, InstrumentSpec, Settlement};
+pub use market::{Candle, CandleSpec, CorpAction, Interval, MarketEvent, Quote, QuoteSpec};
 pub use money::{Notional, Price, Qty};
 pub use order::Side;
+pub use time::Timestamp;
 
 /// Re-exported so callers build money values from the same `Decimal` version.
 pub use rust_decimal::Decimal;
