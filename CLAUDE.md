@@ -87,7 +87,9 @@ impl Instrument {
 `InstrumentId` = `venue:SYMBOL` (`binance:BTCUSDT`), case-normalized.
 Validated core types (`Instrument`, `Candle`, `Quote`, `Order`, `Fill`) built
 only from `*Spec` via checking `new`/`try_from`; fields read via `Deref`. So
-value that exists passed validation.
+value that exists passed validation. `Fill.fee` is `Fee::{Base, Quote,
+Other}` — Binance charges buy fee in base, sell in quote, or BNB; v1 position
+accounting rejects `Other`. Positions use average cost, fees included.
 
 Strategy reacts to **MarketEvent**, not only candle, so loop already
 survives non-price events equities/options bring (session boundaries,

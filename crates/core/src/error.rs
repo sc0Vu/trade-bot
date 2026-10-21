@@ -17,6 +17,10 @@ pub enum Error {
     InvalidCandle(&'static str),
     #[error("invalid quote: {0}")]
     InvalidQuote(&'static str),
+    #[error("invalid order: {0}")]
+    InvalidOrder(&'static str),
+    #[error("invalid fill: {0}")]
+    InvalidFill(&'static str),
 }
 
 /// Why an order would be rejected by the venue's filters. Checked by
