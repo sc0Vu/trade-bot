@@ -21,6 +21,8 @@ pub enum Error {
     InvalidOrder(&'static str),
     #[error("invalid fill: {0}")]
     InvalidFill(&'static str),
+    #[error("invalid position: {0}")]
+    InvalidPosition(&'static str),
     /// Fill can't be applied to the position (wrong instrument, oversell,
     /// fee in an asset v1 can't value). The position is left unchanged.
     #[error("position update rejected: {0}")]

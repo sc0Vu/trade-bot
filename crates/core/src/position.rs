@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 /// division rounding; the average is derived on demand. Because fees sit in
 /// the cost basis and are subtracted from sale proceeds, `realized_pnl` is
 /// after costs. Spot positions never go negative (no shorting). Changes only
-/// through [`apply`](Self::apply).
+/// through [`apply`](Self::apply); restored from storage only through
+/// [`from_parts`](Self::from_parts), which deserializing also goes through.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PositionParts", into = "PositionParts")]
 pub struct Position {
     instrument: InstrumentId,
     qty: Qty,
@@ -26,6 +28,34 @@ impl Position {
             cost_basis: Notional::ZERO,
             realized_pnl: Notional::ZERO,
         }
+    }
+
+    /// Rebuilds a position saved earlier (database, snapshot). Rejects state
+    /// `apply` could never produce: negative qty (spot can't short), negative
+    /// cost basis, or a cost basis left on a flat position.
+    pub fn from_parts(
+        instrument: InstrumentId,
+        qty: Qty,
+        cost_basis: Notional,
+        realized_pnl: Notional,
+    ) -> Result<Self, Error> {
+        if qty.is_negative() {
+            return Err(Error::InvalidPosition("qty must be non-negative"));
+        }
+        if cost_basis.is_negative() {
+            return Err(Error::InvalidPosition("cost basis must be non-negative"));
+        }
+        if qty.is_zero() && !cost_basis.is_zero() {
+            return Err(Error::InvalidPosition(
+                "flat position must have zero cost basis",
+            ));
+        }
+        Ok(Self {
+            instrument,
+            qty,
+            cost_basis,
+            realized_pnl,
+        })
     }
 
     pub fn instrument(&self) -> &InstrumentId {
@@ -114,6 +144,34 @@ impl Position {
             }
         }
         Ok(())
+    }
+}
+
+/// Serde shape of [`Position`]; deserializing goes through `from_parts`.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PositionParts {
+    instrument: InstrumentId,
+    qty: Qty,
+    cost_basis: Notional,
+    realized_pnl: Notional,
+}
+
+impl TryFrom<PositionParts> for Position {
+    type Error = Error;
+    fn try_from(p: PositionParts) -> Result<Self, Error> {
+        Self::from_parts(p.instrument, p.qty, p.cost_basis, p.realized_pnl)
+    }
+}
+
+impl From<Position> for PositionParts {
+    fn from(p: Position) -> Self {
+        Self {
+            instrument: p.instrument,
+            qty: p.qty,
+            cost_basis: p.cost_basis,
+            realized_pnl: p.realized_pnl,
+        }
     }
 }
 
@@ -375,5 +433,34 @@ mod tests {
         assert!(other.apply(&buy, &i).is_err());
 
         assert_eq!(pos, before);
+    }
+
+    #[test]
+    fn from_parts_accepts_reachable_state() {
+        let id: InstrumentId = "binance:BTCUSDT".parse().unwrap();
+        let pos =
+            Position::from_parts(id, q(dec!(1.5)), n(dec!(225.225)), n(dec!(74.775))).unwrap();
+        assert_eq!(pos.avg_cost(&btcusdt()), Some(p(dec!(150.15))));
+        // Flat with history: zero units, zero basis, P&L kept.
+        let id: InstrumentId = "binance:BTCUSDT".parse().unwrap();
+        assert!(Position::from_parts(id, Qty::ZERO, Notional::ZERO, n(dec!(-0.6))).is_ok());
+    }
+
+    #[test]
+    fn from_parts_rejects_unreachable_state() {
+        let id = || -> InstrumentId { "binance:BTCUSDT".parse().unwrap() };
+        assert!(Position::from_parts(id(), q(dec!(-1)), Notional::ZERO, Notional::ZERO).is_err());
+        assert!(Position::from_parts(id(), q(dec!(1)), n(dec!(-1)), Notional::ZERO).is_err());
+        assert!(Position::from_parts(id(), Qty::ZERO, n(dec!(5)), Notional::ZERO).is_err());
+    }
+
+    #[test]
+    fn deserialize_validates() {
+        let ok =
+            r#"{"instrument":"binance:BTCUSDT","qty":"1","cost_basis":"100","realized_pnl":"0"}"#;
+        let pos: Position = serde_json::from_str(ok).unwrap();
+        assert_eq!(serde_json::to_string(&pos).unwrap(), ok);
+        let short = ok.replace(r#""qty":"1""#, r#""qty":"-1""#);
+        assert!(serde_json::from_str::<Position>(&short).is_err());
     }
 }
