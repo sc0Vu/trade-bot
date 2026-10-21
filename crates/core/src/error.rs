@@ -21,6 +21,10 @@ pub enum Error {
     InvalidOrder(&'static str),
     #[error("invalid fill: {0}")]
     InvalidFill(&'static str),
+    /// Fill can't be applied to the position (wrong instrument, oversell,
+    /// fee in an asset v1 can't value). The position is left unchanged.
+    #[error("position update rejected: {0}")]
+    PositionUpdate(&'static str),
 }
 
 /// Why an order would be rejected by the venue's filters. Checked by

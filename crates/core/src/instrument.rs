@@ -102,6 +102,18 @@ impl Instrument {
         }
     }
 
+    /// Price per unit when `qty` units are worth `notional`, inverse of
+    /// [`notional`](Self::notional). Used for average cost; not rounded to
+    /// tick, since an average is not an order price.
+    pub fn price_for(&self, notional: Notional, qty: Qty) -> Result<Price, FilterError> {
+        if !qty.is_positive() {
+            return Err(FilterError::NonPositiveQty);
+        }
+        match self.class {
+            AssetClass::Spot | AssetClass::UsEquity => Ok(Price::new(notional.get() / qty.get())),
+        }
+    }
+
     /// Spot settles instantly; US equities at T+1.
     pub fn settlement(&self) -> Settlement {
         match self.class {
@@ -227,6 +239,20 @@ mod tests {
         assert_eq!(
             btcusdt().qty_for(Notional::new(dec!(100)), Price::ZERO),
             Err(FilterError::NonPositivePrice)
+        );
+    }
+
+    #[test]
+    fn price_for_inverts_notional() {
+        // 300.3 USDT for 2 BTC = 150.15 per BTC.
+        let i = btcusdt();
+        assert_eq!(
+            i.price_for(Notional::new(dec!(300.3)), Qty::new(dec!(2))),
+            Ok(Price::new(dec!(150.15)))
+        );
+        assert_eq!(
+            i.price_for(Notional::new(dec!(1)), Qty::ZERO),
+            Err(FilterError::NonPositiveQty)
         );
     }
 
