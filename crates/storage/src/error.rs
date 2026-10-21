@@ -8,6 +8,10 @@ pub enum StorageError {
     /// constraint).
     #[error("database error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// Position accounting refused the fill (oversell, unsupported fee asset,
+    /// wrong instrument). Nothing was written.
+    #[error("fill rejected: {0}")]
+    Rejected(#[source] bot_core::Error),
     /// A stored row doesn't decode to a valid core value: unknown enum text,
     /// inexact decimal, or state the core constructors reject.
     #[error("corrupt row in {table}: {reason}")]

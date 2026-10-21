@@ -172,6 +172,9 @@ ABI — compiler mismatch is UB).
    Call sites see only `TradeRepository` (append-only fill log) and
    `HoldingRepository` (current `Position` per instrument, cache of the log),
    both in core types; `SqlStore` implements them. Entities crate-private.
+   Live fills go through `Ledger::record_fill(fill, instrument)`: one
+   transaction appends trade + folds it into holding via `Position::apply`
+   (storage folds, caller can't pass drifted position); `FOR UPDATE` on MySQL.
    Reads re-validate through core constructors: corrupt row → error.
 4. **Backtest** — `backtest` crate: load cached klines, replay as `MarketEvent`
    stream through engine, emit report (realized P&L, max drawdown, trade

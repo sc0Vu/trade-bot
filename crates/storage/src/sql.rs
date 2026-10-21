@@ -1,15 +1,16 @@
 use crate::decimal::DbDecimal;
 use crate::entity::{holding, trade};
-use crate::{HoldingRepository, StorageError, TradeId, TradeRepository};
+use crate::{HoldingRepository, Ledger, StorageError, TradeId, TradeRepository};
 use async_trait::async_trait;
 use bot_core::{
-    Asset, Fee, Fill, FillSpec, InstrumentId, Liquidity, Notional, OrderId, Position, Price, Qty,
-    Side, Timestamp,
+    Asset, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, Notional, OrderId, Position,
+    Price, Qty, Side, Timestamp,
 };
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveValue::{NotSet, Set},
-    ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
+    ColumnTrait, ConnectionTrait, Database, DatabaseConnection, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, TransactionTrait,
 };
 
 /// SeaORM-backed implementation of every repository trait. Works on any
@@ -115,14 +116,50 @@ fn from_holding_row(m: holding::Model) -> Result<Position, StorageError> {
     .map_err(corrupt)
 }
 
+/// Appends a trade on `conn`, a plain connection or an open transaction.
+async fn insert_trade_on<C: ConnectionTrait>(
+    conn: &C,
+    fill: &Fill,
+) -> Result<TradeId, StorageError> {
+    let res = trade::Entity::insert(to_trade_row(fill))
+        .exec(conn)
+        .await
+        .map_err(StorageError::backend)?;
+    Ok(TradeId(res.last_insert_id))
+}
+
+/// Inserts or replaces a holding on `conn`, a plain connection or an open
+/// transaction.
+async fn upsert_holding_on<C: ConnectionTrait>(
+    conn: &C,
+    position: &Position,
+) -> Result<(), StorageError> {
+    let row = holding::ActiveModel {
+        instrument: Set(position.instrument().to_string()),
+        qty: Set(DbDecimal(position.qty().get())),
+        cost_basis: Set(DbDecimal(position.cost_basis().get())),
+        realized_pnl: Set(DbDecimal(position.realized_pnl().get())),
+    };
+    holding::Entity::insert(row)
+        .on_conflict(
+            OnConflict::column(holding::Column::Instrument)
+                .update_columns([
+                    holding::Column::Qty,
+                    holding::Column::CostBasis,
+                    holding::Column::RealizedPnl,
+                ])
+                .to_owned(),
+        )
+        .exec_without_returning(conn)
+        .await
+        .map_err(StorageError::backend)?;
+    Ok(())
+}
+
 #[async_trait]
 impl TradeRepository for SqlStore {
     async fn insert_trade(&self, fill: &Fill) -> Result<TradeId, StorageError> {
-        let res = trade::Entity::insert(to_trade_row(fill))
-            .exec(&self.db)
-            .await
-            .map_err(StorageError::backend)?;
-        Ok(TradeId(res.last_insert_id))
+        insert_trade_on(&self.db, fill).await
     }
 
     async fn get_trade(&self, id: TradeId) -> Result<Option<Fill>, StorageError> {
@@ -158,26 +195,7 @@ impl TradeRepository for SqlStore {
 #[async_trait]
 impl HoldingRepository for SqlStore {
     async fn upsert_holding(&self, position: &Position) -> Result<(), StorageError> {
-        let row = holding::ActiveModel {
-            instrument: Set(position.instrument().to_string()),
-            qty: Set(DbDecimal(position.qty().get())),
-            cost_basis: Set(DbDecimal(position.cost_basis().get())),
-            realized_pnl: Set(DbDecimal(position.realized_pnl().get())),
-        };
-        holding::Entity::insert(row)
-            .on_conflict(
-                OnConflict::column(holding::Column::Instrument)
-                    .update_columns([
-                        holding::Column::Qty,
-                        holding::Column::CostBasis,
-                        holding::Column::RealizedPnl,
-                    ])
-                    .to_owned(),
-            )
-            .exec_without_returning(&self.db)
-            .await
-            .map_err(StorageError::backend)?;
-        Ok(())
+        upsert_holding_on(&self.db, position).await
     }
 
     async fn get_holding(
@@ -201,6 +219,37 @@ impl HoldingRepository for SqlStore {
             .into_iter()
             .map(from_holding_row)
             .collect()
+    }
+}
+
+#[async_trait]
+impl Ledger for SqlStore {
+    async fn record_fill(
+        &self,
+        fill: &Fill,
+        instrument: &Instrument,
+    ) -> Result<(TradeId, Position), StorageError> {
+        // Every early return drops `txn`, which rolls it back.
+        let txn = self.db.begin().await.map_err(StorageError::backend)?;
+        // FOR UPDATE on MySQL so a concurrent writer can't fold into the same
+        // stale holding. SQLite omits the clause; it allows one writer at a
+        // time per database, so the race can't happen there.
+        let current = holding::Entity::find_by_id(fill.instrument.to_string())
+            .lock_exclusive()
+            .one(&txn)
+            .await
+            .map_err(StorageError::backend)?;
+        let mut position = match current {
+            Some(row) => from_holding_row(row)?,
+            None => Position::flat(fill.instrument.clone()),
+        };
+        position
+            .apply(fill, instrument)
+            .map_err(StorageError::Rejected)?;
+        let id = insert_trade_on(&txn, fill).await?;
+        upsert_holding_on(&txn, &position).await?;
+        txn.commit().await.map_err(StorageError::backend)?;
+        Ok((id, position))
     }
 }
 
@@ -425,5 +474,188 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn btcusdt() -> Instrument {
+        Instrument::new(bot_core::InstrumentSpec {
+            id: btc(),
+            class: bot_core::AssetClass::Spot,
+            base: Asset::new("BTC").unwrap(),
+            quote: Asset::new("USDT").unwrap(),
+            tick_size: Price::new(dec!(0.01)),
+            lot_size: Qty::new(dec!(0.00001)),
+            min_qty: Qty::new(dec!(0.00001)),
+            min_notional: Notional::new(dec!(5)),
+        })
+        .unwrap()
+    }
+
+    fn quote_fee(d: rust_decimal::Decimal) -> Fee {
+        Fee::Quote(Notional::new(d))
+    }
+
+    async fn trade_count(s: &SqlStore) -> usize {
+        s.list_trades(
+            &btc(),
+            Timestamp::from_millis(0),
+            Timestamp::from_millis(i64::MAX),
+        )
+        .await
+        .unwrap()
+        .len()
+    }
+
+    /// Same hand-worked sequence as core's position test:
+    ///   buy 1 @ 100 fee 0.1, buy 1 @ 200 fee 0.2 -> qty 2, cost 300.3
+    ///   sell 0.5 @ 300 fee 0.15 -> realized 74.775, qty 1.5, cost 225.225
+    #[tokio::test]
+    async fn record_fill_writes_trade_and_folds_holding() {
+        let s = store().await;
+        let i = btcusdt();
+        let one = Qty::new(dec!(1));
+        s.record_fill(
+            &fill(
+                Side::Buy,
+                one,
+                Price::new(dec!(100)),
+                quote_fee(dec!(0.1)),
+                1,
+            ),
+            &i,
+        )
+        .await
+        .unwrap();
+        let (_, after_buys) = s
+            .record_fill(
+                &fill(
+                    Side::Buy,
+                    one,
+                    Price::new(dec!(200)),
+                    quote_fee(dec!(0.2)),
+                    2,
+                ),
+                &i,
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_buys.qty(), Qty::new(dec!(2)));
+        assert_eq!(after_buys.cost_basis(), Notional::new(dec!(300.3)));
+
+        let sell = fill(
+            Side::Sell,
+            Qty::new(dec!(0.5)),
+            Price::new(dec!(300)),
+            quote_fee(dec!(0.15)),
+            3,
+        );
+        let (id, pos) = s.record_fill(&sell, &i).await.unwrap();
+        assert_eq!(pos.realized_pnl(), Notional::new(dec!(74.775)));
+        assert_eq!(pos.qty(), Qty::new(dec!(1.5)));
+        assert_eq!(pos.cost_basis(), Notional::new(dec!(225.225)));
+
+        assert_eq!(s.get_trade(id).await.unwrap(), Some(sell));
+        assert_eq!(s.get_holding(&btc()).await.unwrap(), Some(pos));
+        assert_eq!(trade_count(&s).await, 3);
+    }
+
+    /// The holding must equal the trade log folded from flat: the invariant
+    /// that makes `holdings` a safe cache.
+    #[tokio::test]
+    async fn holding_equals_replay_of_trade_log() {
+        let s = store().await;
+        let i = btcusdt();
+        let fills = [
+            fill(
+                Side::Buy,
+                Qty::new(dec!(0.5)),
+                Price::new(dec!(60000)),
+                Fee::Base(Qty::new(dec!(0.0005))),
+                1,
+            ),
+            fill(
+                Side::Buy,
+                Qty::new(dec!(0.25)),
+                Price::new(dec!(58000)),
+                quote_fee(dec!(14.5)),
+                2,
+            ),
+            fill(
+                Side::Sell,
+                Qty::new(dec!(0.3)),
+                Price::new(dec!(61000)),
+                quote_fee(dec!(18.3)),
+                3,
+            ),
+        ];
+        for f in &fills {
+            s.record_fill(f, &i).await.unwrap();
+        }
+
+        let mut replay = Position::flat(btc());
+        let log = s
+            .list_trades(
+                &btc(),
+                Timestamp::from_millis(0),
+                Timestamp::from_millis(i64::MAX),
+            )
+            .await
+            .unwrap();
+        for (_, f) in &log {
+            replay.apply(f, &i).unwrap();
+        }
+        assert_eq!(s.get_holding(&btc()).await.unwrap(), Some(replay));
+    }
+
+    #[tokio::test]
+    async fn rejected_fill_writes_nothing() {
+        let s = store().await;
+        let i = btcusdt();
+        let one = Qty::new(dec!(1));
+        let (_, before) = s
+            .record_fill(
+                &fill(Side::Buy, one, Price::new(dec!(100)), quote_fee(dec!(0)), 1),
+                &i,
+            )
+            .await
+            .unwrap();
+
+        let oversell = fill(
+            Side::Sell,
+            Qty::new(dec!(2)),
+            Price::new(dec!(100)),
+            quote_fee(dec!(0)),
+            2,
+        );
+        let err = s.record_fill(&oversell, &i).await.unwrap_err();
+        assert!(matches!(err, StorageError::Rejected(_)));
+        assert_eq!(trade_count(&s).await, 1);
+        assert_eq!(s.get_holding(&btc()).await.unwrap(), Some(before));
+    }
+
+    /// The trade insert succeeds, then the holding write fails: the
+    /// transaction must roll the trade back too.
+    #[tokio::test]
+    async fn failed_holding_write_rolls_back_trade() {
+        let s = store().await;
+        for event in ["INSERT", "UPDATE"] {
+            s.db.execute_unprepared(&format!(
+                "CREATE TRIGGER fail_holding_{event} BEFORE {event} ON holdings \
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END"
+            ))
+            .await
+            .unwrap();
+        }
+
+        let buy = fill(
+            Side::Buy,
+            Qty::new(dec!(1)),
+            Price::new(dec!(100)),
+            quote_fee(dec!(0)),
+            1,
+        );
+        let err = s.record_fill(&buy, &btcusdt()).await.unwrap_err();
+        assert!(matches!(err, StorageError::Backend(_)));
+        assert_eq!(trade_count(&s).await, 0);
+        assert_eq!(s.get_holding(&btc()).await.unwrap(), None);
     }
 }
