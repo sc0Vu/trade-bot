@@ -1,0 +1,32 @@
+//! `trades`: append-only log of fills.
+
+use crate::decimal::DbDecimal;
+use sea_orm::entity::prelude::*;
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+#[sea_orm(table_name = "trades")]
+pub struct Model {
+    #[sea_orm(primary_key)]
+    pub id: i64,
+    pub order_id: String,
+    /// `venue:SYMBOL`.
+    pub instrument: String,
+    /// `buy` | `sell`.
+    pub side: String,
+    pub qty: DbDecimal,
+    pub price: DbDecimal,
+    /// `base` | `quote` | `other`.
+    pub fee_kind: String,
+    pub fee_amount: DbDecimal,
+    /// Set only when `fee_kind = other`.
+    pub fee_asset: Option<String>,
+    /// `maker` | `taker`.
+    pub liquidity: String,
+    /// Fill time, ms since the Unix epoch.
+    pub ts: i64,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {}
+
+impl ActiveModelBehavior for ActiveModel {}

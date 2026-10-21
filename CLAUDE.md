@@ -169,6 +169,10 @@ ABI — compiler mismatch is UB).
    SeaORM on SQLite creates `DECIMAL` as `real(p,s)` and reads it via `f64`
    (invariant 1). TEXT is exact on both backends; cost: no SQL `SUM`/numeric
    `ORDER BY` on money — aggregate in Rust.
+   Call sites see only `TradeRepository` (append-only fill log) and
+   `HoldingRepository` (current `Position` per instrument, cache of the log),
+   both in core types; `SqlStore` implements them. Entities crate-private.
+   Reads re-validate through core constructors: corrupt row → error.
 4. **Backtest** — `backtest` crate: load cached klines, replay as `MarketEvent`
    stream through engine, emit report (realized P&L, max drawdown, trade
    count, win rate, Sharpe). Fill model stated below, not hidden.
