@@ -1,0 +1,5 @@
+# Exact pin so `cargo clippy -- -D warnings` gives the same verdict on every
+# machine: new clippy releases add lints. SeaORM 2 / sqlx 0.9 need >= 1.94.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
