@@ -73,12 +73,21 @@ reshaping callers:
 ```rust
 enum AssetClass { Spot, UsEquity /*, UsOption (deferred) */ }
 
-struct Instrument { id: InstrumentId, class: AssetClass, /* base/quote, tick, lot, ... */ }
+struct Instrument { id: InstrumentId, class: AssetClass, /* base/quote, tick, lot, min_qty, min_notional */ }
 impl Instrument {
-    fn notional(&self, qty: Decimal, price: Decimal) -> Decimal;  // qty*price now; *multiplier for options later
-    fn settlement(&self) -> Settlement;                           // Instant for spot; T+2 for equity
+    fn notional(&self, qty: Qty, price: Price) -> Notional;   // qty*price now; *multiplier for options later
+    fn qty_for(&self, n: Notional, price: Price) -> Result<Qty, FilterError>;
+    fn settlement(&self) -> Settlement;                        // Instant for spot; T+1 for US equity
+    fn round_qty(&self, q: Qty) -> Qty;                        // toward zero, to lot
+    fn round_price(&self, p: Price, side: Side) -> Price;      // toward passive side, to tick
+    fn check_order(&self, q: Qty, p: Price) -> Result<(), FilterError>; // venue filters
 }
 ```
+
+`InstrumentId` = `venue:SYMBOL` (`binance:BTCUSDT`), case-normalized.
+Validated core types (`Instrument`, `Candle`, `Quote`, `Order`, `Fill`) built
+only from `*Spec` via checking `new`/`try_from`; fields read via `Deref`. So
+value that exists passed validation.
 
 Strategy reacts to **MarketEvent**, not only candle, so loop already
 survives non-price events equities/options bring (session boundaries,

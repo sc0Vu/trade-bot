@@ -7,3 +7,5 @@
 # Money values (prices, quantities, fees, notionals) are strings, e.g.
 # fee = "0.001". A bare number is rejected: TOML parses it as a binary float,
 # which loses precision before it can become a Decimal.
+#
+# Instruments are written venue:SYMBOL, e.g. "binance:BTCUSDT".
