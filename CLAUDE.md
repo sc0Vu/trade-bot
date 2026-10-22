@@ -377,6 +377,12 @@ proceeds: losing hop overspends (backtest negative `min_cash`; live `-2010`,
 stays cash). Bets winners persist; fails on sharp reversals, choppy
 leadership. Dust = cash.
 
+`donchian_breakout` — `sma_trend` skeleton. Channel = highest high / lowest low
+of `channel_period` candles *before* current (needs `channel_period + 1`).
+Flat and close > high → buy; long and close < low → sell; edge → nothing.
+Excluding current bar = what makes rule satisfiable (close ≤ own high), not
+lookahead (bar closed). Bets breakouts continue; whipsaws in ranges.
+
 `dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
 SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
 cross event: first bar with `slow_period` closes buys at once if fast on top.
@@ -395,8 +401,8 @@ to the bottom (no stop, by design). Dust = cash; no decision while order open.
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, dual_ma_cross, momentum_rotation, ratio_hop,
-               rsi_reversion, sma_trend)
+  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, donchian_breakout, dual_ma_cross,
+               momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report

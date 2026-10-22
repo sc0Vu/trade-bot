@@ -119,6 +119,7 @@ is deserialized into that strategy's own typed struct.
 |---|---|
 | `buy_and_hold` | The benchmark. Buys one coin once with a fixed quote amount on its first candle, then holds forever. A strategy that can't beat it on the same coin after costs has no edge. |
 | `ratio_hop` | Holds one coin of a set and rotates `A → USDT → B` only when the post-fee estimate of B's units beats the units of B last held, so unit counts only ratchet up. Includes a freefall guard against rotating into a collapsing coin. Maximizes units, not value. |
+| `donchian_breakout` | One coin. Buys when the close breaks above the highest high of the previous `channel_period` candles, sells when it breaks below their lowest low. Bets breakouts continue; whipsaws in ranges. |
 | `dual_ma_cross` | One coin, long or flat. Holds while the fast moving average is above the slow one, cash otherwise. A quicker variant of `sma_trend`; whipsaws in ranges. |
 | `momentum_rotation` | Several coins. Holds the coin with the best return over the last `lookback` bars while that return beats `min_momentum`, and goes fully to cash when none does. Bets that recent winners keep winning; fails on sharp reversals. |
 | `rsi_reversion` | One coin. Buys when RSI falls below `oversold`, sells when it rises above `overbought`. Bets on ranging markets; in a sustained downtrend it catches falling knives and holds them down. Included partly as the counterexample to the trend filters. |
