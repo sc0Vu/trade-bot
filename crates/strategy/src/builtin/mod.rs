@@ -2,6 +2,7 @@
 
 pub mod buy_and_hold;
 pub mod ratio_hop;
+pub mod sma_trend;
 
 #[cfg(test)]
 pub(crate) mod test_support {

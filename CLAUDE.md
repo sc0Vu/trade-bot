@@ -353,12 +353,21 @@ at last close if several), baselines restart from that eval's ratios. Flat
 start (every backtest) unchanged. Restart between legs holds nothing → buys
 afresh with `quote_amount`; earlier proceeds stay in bridge.
 
+## Other built-ins
+`sma_trend` — one coin, long or flat (cash = defensive; v1 spot no short).
+Long while close > SMA(`sma_period` closes, current bar included) ×
+(1 + `band_pct`); cash below SMA × (1 − `band_pct`). Buy = quote-budget market
+(`quote_amount`), sell = lot-rounded full holding. "Cash" = holding not
+sellable under venue filters (dust from base fee counts as cash, else never
+rebuys). No decision while an order on coin is open. `fee`/`slippage_bps`
+required, range-checked, unused in decisions. `history_len` ≥ `sma_period`.
+
 ## Layout
 ```
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (ratio_hop)
+  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, ratio_hop, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report
