@@ -249,6 +249,19 @@ impl TradeRepository for SqlStore {
             .map(from_trade_row)
             .collect()
     }
+
+    async fn recent_trades(&self, limit: u64) -> Result<Vec<(TradeId, Fill)>, StorageError> {
+        trade::Entity::find()
+            .order_by_desc(trade::Column::Ts)
+            .order_by_desc(trade::Column::Id)
+            .limit(limit)
+            .all(&self.db)
+            .await
+            .map_err(StorageError::backend)?
+            .into_iter()
+            .map(from_trade_row)
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -468,6 +481,19 @@ impl OrderJournal for SqlStore {
             .filter(order::Column::Status.ne(status_text(OrderStatus::Closed)))
             .order_by_asc(order::Column::CreatedAt)
             .order_by_asc(order::Column::ClientOrderId)
+            .all(&self.db)
+            .await
+            .map_err(StorageError::backend)?
+            .into_iter()
+            .map(from_order_row)
+            .collect()
+    }
+
+    async fn recent_orders(&self, limit: u64) -> Result<Vec<JournalOrder>, StorageError> {
+        order::Entity::find()
+            .order_by_desc(order::Column::CreatedAt)
+            .order_by_desc(order::Column::ClientOrderId)
+            .limit(limit)
             .all(&self.db)
             .await
             .map_err(StorageError::backend)?
@@ -1104,6 +1130,58 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn recent_trades_are_newest_first_and_limited() {
+        let s = store().await;
+        let p = Price::new(dec!(100));
+        let q = Qty::new(dec!(1));
+        let fee = || Fee::Quote(Notional::ZERO);
+        // Inserted out of time order on purpose.
+        let mid = s
+            .insert_trade(&fill(Side::Sell, q, p, fee(), 20))
+            .await
+            .unwrap();
+        let old = s
+            .insert_trade(&fill(Side::Buy, q, p, fee(), 10))
+            .await
+            .unwrap();
+        let new = s
+            .insert_trade(&fill(Side::Buy, q, p, fee(), 30))
+            .await
+            .unwrap();
+        let ids = |v: Vec<(TradeId, Fill)>| v.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(ids(s.recent_trades(10).await.unwrap()), vec![new, mid, old]);
+        assert_eq!(ids(s.recent_trades(2).await.unwrap()), vec![new, mid]);
+    }
+
+    #[tokio::test]
+    async fn recent_orders_include_closed_ones_newest_first() {
+        let s = store().await;
+        let t = Timestamp::from_millis;
+        s.insert_pending("tbx-o-1", &btc(), Side::Buy, t(10))
+            .await
+            .unwrap();
+        s.insert_pending("tbx-o-2", &btc(), Side::Sell, t(20))
+            .await
+            .unwrap();
+        s.mark_closed("tbx-o-1").await.unwrap();
+        let got: Vec<_> = s
+            .recent_orders(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|o| (o.client_order_id, o.status))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("tbx-o-2".to_owned(), OrderStatus::Pending),
+                ("tbx-o-1".to_owned(), OrderStatus::Closed)
+            ]
+        );
+        assert_eq!(s.recent_orders(1).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

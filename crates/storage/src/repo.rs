@@ -38,6 +38,10 @@ pub trait TradeRepository: Send + Sync {
         from: Timestamp,
         to: Timestamp,
     ) -> Result<Vec<(TradeId, Fill)>, StorageError>;
+
+    /// The latest `limit` fills across all instruments, newest first (by
+    /// fill time, then insert order). For display: a status page or API.
+    async fn recent_trades(&self, limit: u64) -> Result<Vec<(TradeId, Fill)>, StorageError>;
 }
 
 /// Current position per instrument, one row each. A cache of the trade log
@@ -148,4 +152,8 @@ pub trait OrderJournal: Send + Sync {
 
     /// Every order not yet closed, oldest first.
     async fn unfinished_orders(&self) -> Result<Vec<JournalOrder>, StorageError>;
+
+    /// The latest `limit` journaled orders in any status, newest first. For
+    /// display: a status page or API.
+    async fn recent_orders(&self, limit: u64) -> Result<Vec<JournalOrder>, StorageError>;
 }
