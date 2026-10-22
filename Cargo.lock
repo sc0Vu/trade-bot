@@ -349,10 +349,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bot-core",
+ "engine",
  "exchange",
  "rust_decimal",
  "rust_decimal_macros",
  "serde_json",
+ "strategy",
  "thiserror",
  "tokio",
  "tracing",

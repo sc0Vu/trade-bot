@@ -7,9 +7,15 @@
 
 mod data;
 mod feed;
+mod provider;
+mod report;
+mod runner;
 
 pub use data::{DataDir, DataError, FetchSummary, fetch};
 pub use feed::KlineFeed;
+pub use provider::BacktestProvider;
+pub use report::Report;
+pub use runner::{BacktestError, run_backtest};
 
 #[cfg(test)]
 pub(crate) mod test_support;

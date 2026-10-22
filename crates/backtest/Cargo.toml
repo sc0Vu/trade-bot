@@ -8,12 +8,14 @@ publish.workspace = true
 [dependencies]
 async-trait.workspace = true
 bot-core.workspace = true
+engine.workspace = true
 exchange.workspace = true
+rust_decimal = { workspace = true, features = ["maths"] }
 serde_json.workspace = true
+strategy.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-rust_decimal.workspace = true
 rust_decimal_macros.workspace = true
 tokio.workspace = true

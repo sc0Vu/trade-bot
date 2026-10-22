@@ -58,13 +58,14 @@ migrate-status: ## Show applied and pending migrations
 migrate-fresh: ## DROP ALL TABLES, then re-apply every migration (dev only)
 	DATABASE_URL='$(DATABASE_URL)' sea-orm-cli migrate fresh -d migration
 
-## --- Bot (override SYMBOL, INTERVAL, FROM, TO, STRATEGY) -----------------
+## --- Bot (override SYMBOL, INTERVAL, FROM, TO, STRATEGY, PARAMS) ---------
 
 fetch-data: ## Cache klines into data/
 	$(CLI) fetch-data --symbol $(SYMBOL) --interval $(INTERVAL) --from $(FROM)
 
-backtest: ## Backtest STRATEGY over FROM..TO
-	$(CLI) backtest --strategy $(STRATEGY) --from $(FROM) --to $(TO)
+backtest: ## Backtest STRATEGY on SYMBOL over FROM..TO (PARAMS=file.toml)
+	$(CLI) backtest --strategy $(STRATEGY) --symbol $(SYMBOL) --interval $(INTERVAL) \
+		--from $(FROM) --to $(TO) $(if $(PARAMS),--params $(PARAMS))
 
 run-paper: ## Paper trade against testnet prices (the safe default)
 	$(CLI) run --paper
