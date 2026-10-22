@@ -14,6 +14,10 @@ pub const BINANCE_WEIGHT_USED: &str = "tradebot_binance_weight_used";
 pub const RATE_LIMIT_WAITS: &str = "tradebot_rate_limit_waits_total";
 /// Counter: 429/418 replies (Binance rate-limited or banned the IP).
 pub const RATE_LIMITED: &str = "tradebot_binance_rate_limited_total";
+/// Counter: times the live feed was lost and reconnected.
+pub const FEED_RECONNECTS: &str = "tradebot_feed_reconnects_total";
+/// Counter: candles delivered as history-only backfill (warm-up and gaps).
+pub const FEED_BACKFILLED: &str = "tradebot_feed_backfilled_total";
 /// Counter, per `phase` (`startup`, `exit`): journal orders reconcile
 /// closed.
 pub const RECONCILE_ORDERS: &str = "tradebot_reconcile_orders_closed_total";

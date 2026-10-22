@@ -41,6 +41,10 @@ interval = "1m"
 # request that runs out stops the run; orders it may have placed are found
 # by reconcile on exit or next start. Must be >= 1.
 http_timeout_secs = 10
+# If the market-data feed drops or stalls, reconnect for up to this many
+# seconds (backoff 1 s doubling to 60 s), backfilling the missed bars; past
+# that the run stops and its open orders are cancelled. Default 600.
+max_outage_secs = 600
 
 [strategy]
 # A registered strategy: buy_and_hold, donchian_breakout, dual_ma_cross,

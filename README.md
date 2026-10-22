@@ -244,8 +244,9 @@ deploy/       Prometheus, Alertmanager, Grafana (compose) and alert rules
 
 - Binance spot only. US equities, options and perpetual futures are planned
   but not implemented.
-- No WebSocket reconnect: a dropped market-data connection stops the run,
-  and the exit cleanup still runs.
+- A market-data outage longer than `exchange.max_outage_secs` (default 10
+  min) stops the run. Bars missed during a shorter one are backfilled as
+  history; only the newest is traded on.
 - Strategy state isn't persisted. `ratio_hop` resumes on a coin it holds,
   but its rotation history restarts. A restart between the two legs of a
   rotation buys afresh.

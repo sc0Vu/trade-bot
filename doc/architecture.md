@@ -275,6 +275,17 @@ them unique across runs and marks the bot's own orders. After submit, status
 and cancel go by Binance's `orderId` from the submit reply, never by client
 id. A quote budget is sent as `quoteOrderQty`, rounded toward zero.
 
+**Feed.** The kline WebSocket runs inside `feed::ReconnectingFeed`. On first
+connect it fetches the last `history_len` closed bars per coin over REST as
+`MarketEvent::Backfill`, so indicators start full after a restart. When the
+socket drops or stalls it reconnects with backoff (1 s doubling to 60 s) for
+up to `exchange.max_outage_secs`, then backfills the bars it missed: all but
+the newest per coin as `Backfill` (history only, since deciding on them
+would trade on stale prices), the newest as `Candle`. It subscribes before
+backfilling so nothing closes unseen in between, and drops bars it already
+emitted. Missed bars are merged by (close time, instrument), as the backtest
+orders them.
+
 **Fills.** `settle` polls each open or cancelling order's status and its
 `myTrades`. An order is dropped only when Binance reports it closed *and* its
 trades add up to `executedQty`, since the two endpoints can lag each other.

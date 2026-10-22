@@ -1,9 +1,10 @@
+use super::feed::{ReconnectingFeed, RestKlines, WsConnector};
 use super::limits;
 use super::reconcile::{Phase, Reconciled, reconcile};
 use super::{
-    BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_URL, KlineStream, LIVE_REST_URL,
-    LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL,
-    TESTNET_WS_URL, run_tag,
+    BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_URL, LIVE_REST_URL, LIVE_WS_URL,
+    PublicClient, ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL, TESTNET_WS_URL,
+    run_tag,
 };
 use crate::rate_limit::RateLimiter;
 use crate::{Books, Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
@@ -49,6 +50,11 @@ pub struct BinanceConfig {
     /// Longest one REST request may take ([`super::DEFAULT_HTTP_TIMEOUT`]
     /// unless configured).
     pub http_timeout: std::time::Duration,
+    /// Closed bars per coin fetched on start to warm up history (the
+    /// engine's `history_len`).
+    pub warmup: usize,
+    /// How long the feed keeps reconnecting before the run stops.
+    pub max_outage: std::time::Duration,
 }
 
 impl BinanceConfig {
@@ -159,11 +165,26 @@ impl Provider for BinanceSpotProvider {
         &[AssetClass::Spot]
     }
 
+    /// The kline WebSocket inside a [`ReconnectingFeed`]: warmed up with
+    /// `warmup` bars of history, reconnecting for up to `max_outage`.
     async fn market_data(&self) -> Result<Box<dyn MarketData>, ExchangeError> {
-        let stream =
-            KlineStream::connect(self.config.ws_url(), &self.universe, self.config.interval)
-                .await?;
-        Ok(Box::new(stream))
+        let connector = WsConnector {
+            url: self.config.ws_url().to_owned(),
+            ids: self.universe.clone(),
+            interval: self.config.interval,
+        };
+        let source = RestKlines {
+            client: PublicClient::with_timeout(self.config.rest_url(), self.config.http_timeout)
+                .with_limiter(self.limiter.clone()),
+            interval: self.config.interval,
+        };
+        Ok(Box::new(ReconnectingFeed::new(
+            Box::new(connector),
+            Box::new(source),
+            self.universe.clone(),
+            self.config.warmup,
+            self.config.max_outage,
+        )))
     }
 
     /// Checks the key, then reconciles the books with Binance
@@ -214,6 +235,8 @@ mod tests {
             ws_url: None,
             interval: Interval::M1,
             http_timeout: crate::binance::DEFAULT_HTTP_TIMEOUT,
+            warmup: 0,
+            max_outage: std::time::Duration::from_secs(600),
         }
     }
 

@@ -177,6 +177,10 @@ pub struct ExchangeSection {
     /// Longest one Binance REST request may take, in seconds. Default 10.
     #[serde(default = "ten")]
     pub http_timeout_secs: u64,
+    /// How long the market-data feed keeps reconnecting before the run
+    /// stops, in seconds. Default 600.
+    #[serde(default = "six_hundred")]
+    pub max_outage_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,6 +215,9 @@ fn five_hundred() -> usize {
 }
 fn ten() -> u64 {
     10
+}
+fn six_hundred() -> u64 {
+    600
 }
 
 impl Config {
@@ -298,6 +305,7 @@ mod tests {
             assert_eq!(c.exchange.interval, Interval::M1);
             assert_eq!(c.engine.history_len, 500);
             assert_eq!(c.exchange.http_timeout_secs, 10);
+            assert_eq!(c.exchange.max_outage_secs, 600);
             assert_eq!(c.strategy.params["quote_amount"].as_str(), Some("100"));
             Ok(())
         });

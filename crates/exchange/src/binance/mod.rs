@@ -3,6 +3,7 @@
 //! used for account endpoints; [`ws`] streams closed klines.
 
 mod broker;
+pub mod feed;
 mod fees;
 pub mod limits;
 mod provider;
