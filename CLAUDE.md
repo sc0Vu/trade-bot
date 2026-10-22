@@ -122,11 +122,15 @@ enum MarketEvent { Candle(Candle), Quote(Quote),
 trait Strategy: Send {
     fn name(&self) -> &str;
     fn on_start(&mut self, _ctx: &mut Context) {}
-    fn on_event(&mut self, ctx: &mut Context, e: &MarketEvent) -> Vec<Signal>;
-    // convenience default for candle-only strategies:
+    // default: Candle → on_candle, other events ignored
+    fn on_event(&mut self, ctx: &mut Context, e: &MarketEvent) -> Vec<Signal> { .. }
     fn on_candle(&mut self, _ctx: &mut Context, _c: &Candle) -> Vec<Signal> { vec![] }
-    fn on_fill(&mut self, _ctx: &mut Context, _f: &Fill) {}
+    fn on_fill(&mut self, _ctx: &mut Context, _f: &Fill) {}  // signals via ctx.submit
 }
+// Context: now, instrument(s) (universe = resolved whitelist), position,
+// history (≤ history_len closed candles, oldest first, ends at current event),
+// params, submit. Engine mutates via `strategy::driver` (strategy calling it
+// only corrupts own view; broker = source of truth).
 
 #[async_trait] trait MarketData { async fn next(&mut self) -> Option<MarketEvent>; }
 #[async_trait] trait Broker {

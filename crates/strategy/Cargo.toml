@@ -7,3 +7,11 @@ publish.workspace = true
 
 [dependencies]
 bot-core.workspace = true
+inventory.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
