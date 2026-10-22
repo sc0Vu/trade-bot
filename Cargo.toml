@@ -42,3 +42,15 @@ tokio = { version = "1.54.0", features = ["macros", "rt-multi-thread"] }
 toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# Dev builds sized for small disks (measured: default 1.2 GB target/).
+# Dependencies are most of target/ and are never debugged here, so they get
+# no debug info; our crates keep line tables so panic backtraces still show
+# file:line. Incremental is off: it saves ~190 MB that otherwise grows with
+# every edit-rebuild, at the cost of slower rebuilds of our own crates.
+[profile.dev]
+incremental = false
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
