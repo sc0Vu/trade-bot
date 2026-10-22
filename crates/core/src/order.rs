@@ -96,8 +96,11 @@ pub enum OrderKind {
 pub enum Size {
     /// Exact base units (sell 0.5 BTC).
     Base(Qty),
-    /// Quote amount to spend or receive (buy 100 USDT of BTC); risk converts
-    /// it to base units through `Instrument::qty_for`.
+    /// Quote amount to spend or receive (buy 100 USDT of BTC). On a market
+    /// buy it stays a budget all the way to the broker, which sizes the fill
+    /// at the actual fill price so spending never exceeds it (Binance
+    /// `quoteOrderQty`). Otherwise risk converts it to base units through
+    /// `Instrument::qty_for` at the order's price.
     Quote(Notional),
 }
 
@@ -127,8 +130,10 @@ pub struct OrderSpec {
     pub id: OrderId,
     pub instrument: InstrumentId,
     pub side: Side,
-    /// Base units, already rounded to the instrument's lot size.
-    pub qty: Qty,
+    /// `Base`: units, already rounded to the instrument's lot size.
+    /// `Quote`: market buys only; a budget the broker turns into units at
+    /// the fill price, so spend (fees included) never exceeds it.
+    pub size: Size,
     pub kind: OrderKind,
     /// Event time the order was decided on. The engine fills it no earlier
     /// than the next event, so a strategy never trades on the price it
@@ -138,7 +143,9 @@ pub struct OrderSpec {
 
 /// Order as risk hands it to a broker.
 ///
-/// Always has a positive quantity and positive prices. Venue-filter
+/// Always has a positive size and positive prices, and a quote-sized order
+/// is always a market buy (the only quote-sized order Binance accepts, so
+/// paper and live agree). Venue-filter
 /// compliance (lot, tick, minimum notional) is risk's job, done with
 /// `Instrument::check_order` before building the order, since a market
 /// order's notional needs a reference price this type doesn't hold.
@@ -148,8 +155,17 @@ pub struct Order(OrderSpec);
 
 impl Order {
     pub fn new(spec: OrderSpec) -> Result<Self, Error> {
-        if !spec.qty.is_positive() {
-            return Err(Error::InvalidOrder("qty must be positive"));
+        match spec.size {
+            Size::Base(q) if !q.is_positive() => {
+                return Err(Error::InvalidOrder("qty must be positive"));
+            }
+            Size::Quote(n) if !n.is_positive() => {
+                return Err(Error::InvalidOrder("quote budget must be positive"));
+            }
+            Size::Quote(_) if spec.kind != OrderKind::Market || spec.side != Side::Buy => {
+                return Err(Error::InvalidOrder("quote size only for market buys"));
+            }
+            _ => {}
         }
         let prices_ok = match spec.kind {
             OrderKind::Market => true,
@@ -194,7 +210,7 @@ mod tests {
             id: OrderId::new("bt-1").unwrap(),
             instrument: "binance:BTCUSDT".parse().unwrap(),
             side: Side::Buy,
-            qty: Qty::new(dec!(0.001)),
+            size: Size::Base(Qty::new(dec!(0.001))),
             kind,
             created_at: Timestamp::from_millis(0),
         }
@@ -214,7 +230,7 @@ mod tests {
     fn rejects_non_positive_qty_or_price() {
         assert!(
             Order::new(OrderSpec {
-                qty: Qty::ZERO,
+                size: Size::Base(Qty::ZERO),
                 ..spec(OrderKind::Market)
             })
             .is_err()
@@ -230,6 +246,36 @@ mod tests {
             tif: TimeInForce::Ioc,
         };
         assert!(Order::new(spec(stop)).is_err());
+    }
+
+    #[test]
+    fn quote_budget_only_on_market_buys() {
+        let budget = Size::Quote(Notional::new(dec!(1000)));
+        let buy = OrderSpec {
+            size: budget,
+            ..spec(OrderKind::Market)
+        };
+        assert!(Order::new(buy.clone()).is_ok());
+        assert!(
+            Order::new(OrderSpec {
+                side: Side::Sell,
+                ..buy.clone()
+            })
+            .is_err()
+        );
+        let limit = OrderKind::Limit {
+            price: Price::new(dec!(100)),
+            tif: TimeInForce::Gtc,
+        };
+        assert!(
+            Order::new(OrderSpec {
+                kind: limit,
+                ..buy.clone()
+            })
+            .is_err()
+        );
+        let zero = Size::Quote(Notional::ZERO);
+        assert!(Order::new(OrderSpec { size: zero, ..buy }).is_err());
     }
 
     #[test]
