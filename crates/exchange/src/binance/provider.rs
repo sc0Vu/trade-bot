@@ -95,6 +95,7 @@ impl Provider for BinanceSpotProvider {
             Box::new(SystemClock),
         );
         client.sync_time().await?;
+        client.check_credentials().await?;
         let instruments = self
             .resolve(&InstrumentQuery::Ids(self.universe.clone()))
             .await?;

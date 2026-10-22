@@ -218,6 +218,40 @@ impl SignedClient {
         Ok(())
     }
 
+    /// Proves the key works before trading: a signed, read-only
+    /// `GET /api/v3/account` that must succeed and report `canTrade`.
+    ///
+    /// Without it a bad key surfaces only on the first order, which on a
+    /// slow strategy can be hours in. Key, signature and permission errors
+    /// (`-2014`, `-2015`, `-1022`) become [`ExchangeError::Credentials`]
+    /// with a hint; other failures pass through unchanged.
+    pub async fn check_credentials(&self) -> Result<(), ExchangeError> {
+        let account = self
+            .signed(
+                Method::Get,
+                "/api/v3/account",
+                &[("omitZeroBalances", "true".to_owned())],
+            )
+            .await
+            .map_err(|e| match e {
+                ExchangeError::Venue { code, msg } if [-2014, -2015, -1022].contains(&code) => {
+                    ExchangeError::Credentials(format!(
+                        "Binance refused the API key ({code}: {msg}); check the key, \
+                         its IP whitelist and spot permission, and that testnet \
+                         keys come from testnet.binance.vision"
+                    ))
+                }
+                other => other,
+            })?;
+        match account["canTrade"].as_bool() {
+            Some(true) => Ok(()),
+            Some(false) => Err(ExchangeError::Credentials(
+                "API key works but the account cannot trade spot".into(),
+            )),
+            None => Err(ExchangeError::Decode("account: canTrade".into())),
+        }
+    }
+
     /// Unsigned request (no key, no signature).
     pub async fn public(
         &self,
@@ -410,6 +444,62 @@ mod tests {
             fake::param(&t.sent()[1].query, "timestamp"),
             Some("1000500")
         );
+    }
+
+    fn client(t: &FakeTransport) -> SignedClient {
+        SignedClient::new(
+            "x",
+            Box::new(t.clone()),
+            Credentials::new("k", "s"),
+            Box::new(FixedClock(0)),
+        )
+    }
+
+    #[tokio::test]
+    async fn credential_check_reads_account() {
+        let t = FakeTransport::default();
+        t.reply(200, r#"{"canTrade":true,"balances":[]}"#);
+        client(&t).check_credentials().await.unwrap();
+        let req = &t.sent()[0];
+        assert_eq!(
+            (req.method, req.path.as_str()),
+            (Method::Get, "/api/v3/account")
+        );
+        assert!(fake::param(&req.query, "signature").is_some());
+    }
+
+    #[tokio::test]
+    async fn rejected_key_is_a_credentials_error() {
+        // The reply testnet gave for an unusable key.
+        let t = FakeTransport::default();
+        t.reply(
+            401,
+            r#"{"code":-2015,"msg":"Invalid API-key, IP, or permissions for action."}"#,
+        );
+        let err = client(&t).check_credentials().await.unwrap_err();
+        let ExchangeError::Credentials(msg) = err else {
+            panic!("{err:?}")
+        };
+        assert!(msg.contains("-2015"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn account_that_cannot_trade_is_refused() {
+        let t = FakeTransport::default();
+        t.reply(200, r#"{"canTrade":false}"#);
+        let err = client(&t).check_credentials().await.unwrap_err();
+        assert!(matches!(err, ExchangeError::Credentials(_)));
+    }
+
+    #[tokio::test]
+    async fn other_failures_pass_through() {
+        let t = FakeTransport::default();
+        t.reply(
+            400,
+            r#"{"code":-1021,"msg":"Timestamp outside recvWindow."}"#,
+        );
+        let err = client(&t).check_credentials().await.unwrap_err();
+        assert!(matches!(err, ExchangeError::Venue { code: -1021, .. }));
     }
 
     #[test]

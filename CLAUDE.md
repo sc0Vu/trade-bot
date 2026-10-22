@@ -197,7 +197,8 @@ ABI — compiler mismatch UB).
    new `Provider` impls, nothing else changes.
    Built: `BinanceSpotProvider` = `KlineStream` (combined ws streams; only
    `"x": true` closed bars emitted; dropped socket = error, no reconnect yet)
-   + `BinanceBroker` (signed REST via `SignedClient`; `Transport`/`Clock`
+   + `BinanceBroker` (signed REST via `SignedClient`; key checked at startup
+by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candle; `Transport`/`Clock`
    traits for no-network tests). Orders carry our `OrderId` as
    `newClientOrderId`; quote budget → `quoteOrderQty` (rounded toward zero,
    8 dp). `settle` polls each open/cancelling order's status + `myTrades`;
