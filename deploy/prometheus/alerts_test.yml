@@ -50,3 +50,40 @@ tests:
             exp_annotations:
               summary: "trade-bot is not answering /metrics"
               description: "The process is down or the endpoint is unreachable. Its orders on Binance are unwatched until it restarts and reconciles."
+
+  # One 429 at minute 3: the alert fires while it is within the last 10 min.
+  - interval: 1m
+    input_series:
+      - series: 'tradebot_binance_rate_limited_total'
+        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: BinanceRateLimited
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: BinanceRateLimited
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "Binance answered 429/418: rate-limited or IP banned"
+              description: "Something exceeded Binance's limits; check other programs on this IP before restarting."
+      - eval_time: 16m
+        alertname: BinanceRateLimited
+        exp_alerts: []
+
+  # 4500 weight held for over 5 minutes fires; a brief spike would not.
+  - interval: 1m
+    input_series:
+      - series: 'tradebot_binance_weight_used'
+        values: '300 4500 4500 4500 4500 4500 4500 4500'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: BinanceWeightHigh
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: BinanceWeightHigh
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Request weight used is 4500 of the 4800 budget"
+              description: "Close to the rate limiter's budget; requests will start to wait."

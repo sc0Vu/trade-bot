@@ -53,3 +53,28 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "trade-bot uses over 500 MB of memory"
+
+      - alert: BinanceRateLimited
+        # 429 (rate-limited) or 418 (IP banned). The bot stops and holds
+        # every request for Retry-After; repeated hits escalate the ban.
+        expr: increase(tradebot_binance_rate_limited_total[10m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Binance answered 429/418: rate-limited or IP banned"
+          description: "Something exceeded Binance's limits; check other programs on this IP before restarting."
+
+      - alert: BinanceWeightHigh
+        # The limiter's budget is 4800 of Binance's 6000 per minute.
+        expr: tradebot_binance_weight_used > 4000
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Request weight used is {{ $value }} of the 4800 budget"
+          description: "Close to the rate limiter's budget; requests will start to wait."
+
+      - alert: RateLimiterWaiting
+        expr: increase(tradebot_rate_limit_waits_total[15m]) > 5
+        labels: { severity: warning }
+        annotations:
+          summary: "The rate limiter held requests {{ $value }} times in 15 min"
+          description: "Requests are queuing for rate-limit room; orders may be placed late."
