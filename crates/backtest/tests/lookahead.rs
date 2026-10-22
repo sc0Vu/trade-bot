@@ -1,5 +1,5 @@
 //! No-lookahead property (invariant 2), end to end: changing the future
-//! must not change the past.
+//! must not change the past, for ratio_hop and for sma_trend.
 //!
 //! For every cut point t, all candles after t are replaced (BTC halved,
 //! ETH doubled) and ratio_hop runs on both feeds. Every fill stamped at or
@@ -131,5 +131,80 @@ async fn changing_the_future_never_changes_the_past() {
     assert!(
         future_mattered,
         "rewriting the future never changed any fill"
+    );
+}
+
+/// The same property for sma_trend on its single-coin fixture: halving
+/// every BTC candle after t must leave every fill and rejection up to t's
+/// close unchanged.
+#[tokio::test]
+async fn sma_trend_never_lets_the_future_change_the_past() {
+    let btc: Vec<InstrumentId> = vec!["binance:BTCUSDT".parse().unwrap()];
+    let dir = DataDir::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sma_trend"
+    ));
+    let cached = BacktestProvider::from_cache(
+        &dir,
+        &btc,
+        Interval::H1,
+        Timestamp::from_millis(0),
+        Timestamp::from_millis(BARS * HOUR),
+        RateFee::zero(),
+        BpsSlippage::zero(),
+    )
+    .unwrap();
+    let (instruments, candles) = (cached.instruments().to_vec(), cached.candles().to_vec());
+    let run = |candles: Vec<Candle>| {
+        let instruments = instruments.clone();
+        let btc = btc.clone();
+        async move {
+            let provider = BacktestProvider::new(
+                instruments,
+                candles,
+                RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+                BpsSlippage::new(dec!(10)).unwrap(),
+            );
+            let params = Params::from_toml(
+                r#"coin = "binance:BTCUSDT"
+                   sma_period = 3
+                   quote_amount = "1009.08"
+                   fee = "0.001"
+                   slippage_bps = "10""#,
+            )
+            .unwrap();
+            let mut s = strategy::build("sma_trend", &params).unwrap();
+            let config = EngineConfig {
+                whitelist: btc,
+                history_len: 10,
+            };
+            engine::run(&provider, s.as_mut(), params, &config)
+                .await
+                .unwrap()
+        }
+    };
+    let base = run(candles.clone()).await;
+    let mut future_mattered = false;
+    for cut in 0..BARS {
+        let alt = run(rewrite_after(&candles, cut)).await;
+        assert_eq!(
+            up_to(&base.fills, cut),
+            up_to(&alt.fills, cut),
+            "sma_trend fills up to t{cut} changed when only candles after t{cut} did"
+        );
+        let horizon = Timestamp::from_millis(cut * HOUR + HOUR - 1);
+        let early = |r: &RunReport| -> Vec<_> {
+            r.rejections
+                .iter()
+                .filter(|x| x.at.is_none_or(|t| t <= horizon))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(early(&base), early(&alt), "rejections up to t{cut} changed");
+        future_mattered |= base.fills != alt.fills;
+    }
+    assert!(
+        future_mattered,
+        "rewriting the future never changed any sma_trend fill"
     );
 }
