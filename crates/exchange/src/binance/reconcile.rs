@@ -178,9 +178,14 @@ async fn close_out(
 }
 
 /// After the journal is closed out, any order still open on a traded
-/// symbol is one the books don't know: placed by hand, by other software,
-/// or by this bot under another database. Its fills would move balances
-/// the books can't see, so trading next to it is refused.
+/// symbol is one the books don't know.
+///
+/// One with this bot's client-id prefix was placed by the bot under
+/// another database: its fills would never reach these books, so the run
+/// is refused. Anyone else's (placed by hand, by other software) is only
+/// logged: the books count only this bot's fills, so it can't corrupt
+/// them. At worst it uses balance a bot order needed, and that order is
+/// refused by Binance (`-2010`), which the engine records and survives.
 async fn refuse_unknown_open_orders(
     client: &SignedClient,
     instruments: &[Instrument],
@@ -199,20 +204,23 @@ async fn refuse_unknown_open_orders(
             .ok_or_else(|| ExchangeError::Decode("openOrders".into()))?
         {
             let cid = o["clientOrderId"].as_str().unwrap_or("?");
-            let whose = if cid.starts_with(CLIENT_ID_PREFIX) {
-                "this bot's, not in this database"
+            if cid.starts_with(CLIENT_ID_PREFIX) {
+                unknown.push(format!("{} {cid}", inst.id));
             } else {
-                "not this bot's"
-            };
-            unknown.push(format!("{} {cid} ({whose})", inst.id));
+                tracing::warn!(
+                    instrument = %inst.id,
+                    client_order_id = cid,
+                    "open order not placed by this bot; its fills are not counted"
+                );
+            }
         }
     }
     if unknown.is_empty() {
         return Ok(());
     }
     Err(ExchangeError::Decode(format!(
-        "open orders on traded symbols that the books don't know: {}; cancel them \
-         or trade these symbols from another account",
+        "open orders placed by this bot but missing from this database: {}; \
+         was it run with another db.url? Cancel them or use that database",
         unknown.join(", ")
     )))
 }
@@ -469,16 +477,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_refuses_orders_the_books_dont_know() {
-        for (cid, whose) in [("web_abc", "not this bot's"), ("tbother-o-1", "this bot's")] {
-            let (t, db) = (FakeTransport::default(), TempDb::new().await);
-            t.reply(
-                200,
-                &format!(r#"[{{"orderId":99,"clientOrderId":"{cid}"}}]"#),
-            );
-            let err = run(&t, &db, Phase::Startup).await.unwrap_err().to_string();
-            assert!(err.contains(cid) && err.contains(whose), "{err}");
-        }
+    async fn startup_refuses_bot_orders_missing_from_the_books() {
+        let (t, db) = (FakeTransport::default(), TempDb::new().await);
+        t.reply(200, r#"[{"orderId":99,"clientOrderId":"tbother-o-1"}]"#);
+        let err = run(&t, &db, Phase::Startup).await.unwrap_err().to_string();
+        assert!(err.contains("tbother-o-1"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn startup_tolerates_orders_placed_by_others() {
+        let (t, db) = (FakeTransport::default(), TempDb::new().await);
+        t.reply(200, r#"[{"orderId":99,"clientOrderId":"web_abc"}]"#);
+        t.reply(200, &account("0"));
+        run(&t, &db, Phase::Startup).await.unwrap();
+        assert!(
+            t.sent().iter().all(|r| r.method != Method::Delete),
+            "someone else's order is left alone"
+        );
     }
 
     #[tokio::test]

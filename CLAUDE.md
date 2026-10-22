@@ -220,8 +220,10 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    id; `-2013` on pending = never placed), cancel if working (strategy state
    not persisted → leftover order has no owner), wait until terminal + trades
    = `executedQty`, record trades idempotently, close. Startup also refuses
-   any open order on traded symbol not in books (manual, other software, other
-   db) and books holding > account free+locked.
+   open `tb…` order not in books (bot under other db: fills untracked) and
+   books holding > account free+locked. Others' open orders (manual, other
+   software) only warned: books count own fills only; worst case bot order
+   gets `-2010` (non-fatal rejection).
    `run --paper` = testnet or demo only; `run --live` needs `mode = "live"` +
    `exchange.network = "live"` + `--i-understand` (`cli::gate`, all combos
    tested); fake-money run refuses `*.binance.com` URL overrides except the
