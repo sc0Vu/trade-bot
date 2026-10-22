@@ -1,6 +1,6 @@
 //! No-lookahead property (invariant 2), end to end: changing the future
-//! must not change the past, for ratio_hop, momentum_rotation, sma_trend and
-//! buy_and_hold.
+//! must not change the past, for ratio_hop, momentum_rotation, sma_trend,
+//! rsi_reversion and buy_and_hold.
 //!
 //! For every cut point t, all candles after t are replaced (BTC halved,
 //! ETH doubled) and ratio_hop runs on both feeds. Every fill stamped at or
@@ -135,13 +135,13 @@ async fn changing_the_future_never_changes_the_past() {
     );
 }
 
-/// The same property on the single-coin BTC fixture: halving every candle
+/// The same property on a 7-bar single-coin BTC fixture: halving every candle
 /// after t must leave every fill and rejection up to t's close unchanged.
-async fn single_coin_property(strategy: &str, params: &str) {
+async fn single_coin_property(fixture: &str, strategy: &str, params: &str) {
     let btc: Vec<InstrumentId> = vec!["binance:BTCUSDT".parse().unwrap()];
-    let dir = DataDir::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/sma_trend"
+    let dir = DataDir::new(format!(
+        "{}/tests/fixtures/{fixture}",
+        env!("CARGO_MANIFEST_DIR")
     ));
     let cached = BacktestProvider::from_cache(
         &dir,
@@ -205,6 +205,7 @@ async fn single_coin_property(strategy: &str, params: &str) {
 async fn sma_trend_never_lets_the_future_change_the_past() {
     single_coin_property(
         "sma_trend",
+        "sma_trend",
         r#"coin = "binance:BTCUSDT"
            sma_period = 3
            quote_amount = "1009.08"
@@ -217,6 +218,7 @@ async fn sma_trend_never_lets_the_future_change_the_past() {
 #[tokio::test]
 async fn buy_and_hold_never_lets_the_future_change_the_past() {
     single_coin_property(
+        "sma_trend",
         "buy_and_hold",
         r#"coin = "binance:BTCUSDT"
            quote_amount = "1009.08"
@@ -298,4 +300,20 @@ async fn momentum_rotation_never_lets_the_future_change_the_past() {
         future_mattered,
         "rewriting the future never changed any momentum_rotation fill"
     );
+}
+
+#[tokio::test]
+async fn rsi_reversion_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "rsi_reversion",
+        "rsi_reversion",
+        r#"coin = "binance:BTCUSDT"
+           rsi_period = 2
+           oversold = "30"
+           overbought = "70"
+           quote_amount = "850.9"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
 }
