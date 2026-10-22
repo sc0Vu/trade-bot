@@ -200,7 +200,9 @@ ABI — compiler mismatch UB).
    demo.binance.com; `live`). Keys not interchangeable across networks. Same signing, same code path. More venues =
    new `Provider` impls, nothing else changes.
    Built: `BinanceSpotProvider` = `KlineStream` (combined ws streams; only
-   `"x": true` closed bars emitted; dropped socket = error, no reconnect yet)
+   `"x": true` closed bars emitted; dropped socket = error, no reconnect yet; no closed candle within
+   `ws::stale_after` = 2×interval + 60s → `Feed` "stalled" error, so half-open
+   socket can't leave bot running blind)
    + `BinanceBroker` (signed REST via `SignedClient`; key checked at startup
 by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candle; `Transport`/`Clock`
    traits for no-network tests). Orders carry run tag + our `OrderId`

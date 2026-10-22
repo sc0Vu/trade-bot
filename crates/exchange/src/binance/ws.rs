@@ -22,11 +22,25 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 /// Closed-kline feed for a set of instruments at one interval.
 ///
 /// A dropped connection is an error, not a silent end of data: the engine
-/// stops rather than trade on a gap.
+/// stops rather than trade on a gap. So is a stalled one: if no closed
+/// candle arrives within [`stale_after`] of the last (or of connecting),
+/// `next` fails. A half-open TCP connection, or a socket still answering
+/// pings but sending no closed bars, would otherwise leave the bot running
+/// and blind.
 pub struct KlineStream {
     socket: Socket,
     by_symbol: HashMap<String, InstrumentId>,
     interval: Interval,
+    stale_after: std::time::Duration,
+    deadline: tokio::time::Instant,
+}
+
+/// How long a feed may go without a closed candle before it counts as
+/// stalled: two bar lengths plus a minute for Binance's publishing delay
+/// (3 minutes at 1m, 2 hours 1 minute at 1h).
+pub fn stale_after(interval: Interval) -> std::time::Duration {
+    let ms = u64::try_from(2 * interval.as_millis()).unwrap_or(u64::MAX);
+    std::time::Duration::from_millis(ms) + std::time::Duration::from_secs(60)
 }
 
 /// `<base>/stream?streams=btcusdt@kline_1m/ethusdt@kline_1m`.
@@ -59,6 +73,7 @@ impl KlineStream {
         let (socket, _) = tokio_tungstenite::connect_async(stream_url(base, ids, interval))
             .await
             .map_err(|e| ExchangeError::Feed(e.to_string()))?;
+        let stale = stale_after(interval);
         Ok(Self {
             socket,
             by_symbol: ids
@@ -66,7 +81,17 @@ impl KlineStream {
                 .map(|id| (id.symbol().to_string(), id.clone()))
                 .collect(),
             interval,
+            stale_after: stale,
+            deadline: tokio::time::Instant::now() + stale,
         })
+    }
+
+    /// Overrides the stall limit (tests).
+    #[cfg(test)]
+    fn with_stale_after(mut self, d: std::time::Duration) -> Self {
+        self.stale_after = d;
+        self.deadline = tokio::time::Instant::now() + d;
+        self
     }
 }
 
@@ -74,15 +99,20 @@ impl KlineStream {
 impl MarketData for KlineStream {
     async fn next(&mut self) -> Result<Option<MarketEvent>, ExchangeError> {
         loop {
-            let msg = self
-                .socket
-                .next()
+            let msg = tokio::time::timeout_at(self.deadline, self.socket.next())
                 .await
+                .map_err(|_| {
+                    ExchangeError::Feed(format!(
+                        "no closed candle for {}s; feed stalled",
+                        self.stale_after.as_secs()
+                    ))
+                })?
                 .ok_or_else(|| ExchangeError::Feed("websocket closed".into()))?
                 .map_err(|e| ExchangeError::Feed(e.to_string()))?;
             match msg {
                 Message::Text(text) => {
                     if let Some(c) = parse_kline_message(&text, &self.by_symbol, self.interval)? {
+                        self.deadline = tokio::time::Instant::now() + self.stale_after;
                         return Ok(Some(MarketEvent::Candle(c)));
                     }
                 }
@@ -156,6 +186,48 @@ pub(crate) fn parse_kline_message(
 mod tests {
     use super::*;
     use rust_decimal_macros::dec;
+    use std::time::Duration;
+
+    #[test]
+    fn stall_limit_is_two_bars_plus_a_minute() {
+        assert_eq!(stale_after(Interval::M1), Duration::from_secs(180));
+        assert_eq!(stale_after(Interval::H1), Duration::from_secs(7_260));
+    }
+
+    /// A local server that accepts the WebSocket and then only sends
+    /// still-open kline updates: no closed bar ever arrives, so `next`
+    /// fails at the stall limit instead of waiting forever.
+    #[tokio::test]
+    async fn stalled_feed_is_an_error() {
+        use futures_util::SinkExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let open_update = msg(false);
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            loop {
+                if ws
+                    .send(Message::Text(open_update.clone().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        let ids: Vec<InstrumentId> = vec!["binance:BTCUSDT".parse().unwrap()];
+        let mut feed = KlineStream::connect(&format!("ws://{addr}"), &ids, Interval::M1)
+            .await
+            .unwrap()
+            .with_stale_after(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let err = feed.next().await.unwrap_err();
+        assert!(err.to_string().contains("stalled"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        server.abort();
+    }
 
     fn ids() -> HashMap<String, InstrumentId> {
         [("BTCUSDT".to_owned(), "binance:BTCUSDT".parse().unwrap())].into()
