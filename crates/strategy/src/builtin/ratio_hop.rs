@@ -8,6 +8,15 @@
 //! the original lacks refuses to rotate into a coin that fell more than
 //! `freefall_pct` over the last `freefall_candles` candles.
 //!
+//! Strategy state (phase, baselines) is not persisted. Started with a coin
+//! already held (a live restart: the engine seeds positions from the
+//! broker's books), it skips the initial buy and resumes holding that coin,
+//! the most valuable one if several are; baselines restart from that
+//! evaluation's ratios, so the ratchet's history is lost. A restart between
+//! the legs of a rotation (sold, not yet bought) holds no coin and buys
+//! afresh with `quote_amount`; the earlier proceeds stay in the bridge
+//! asset.
+//!
 //! Decisions use only closed candles and positions read through `Context`
 //! (invariants 2 and 5). Expected edge is unverified: rotation pays two
 //! fees and the spread each hop, so it only wins when relative moves
@@ -178,6 +187,24 @@ impl RatioHop {
         self.p.limit_timeout.is_some_and(|t| waited + 1 >= t)
     }
 
+    /// The coin to resume holding: of the coins held in a sellable amount
+    /// (venue filters at the last close), the one worth most at that close.
+    /// `None` when flat, as every backtest starts.
+    fn held_coin(&self, ctx: &Context) -> Option<InstrumentId> {
+        self.p
+            .coins
+            .iter()
+            .filter_map(|id| {
+                let inst = ctx.instrument(id)?;
+                let units = Self::sellable(ctx, id)?;
+                let close = ctx.last_candle(id)?.close;
+                inst.check_order(units, close).ok()?;
+                Some((inst.notional(units, close), id))
+            })
+            .max_by(|x, y| x.0.cmp(&y.0))
+            .map(|(_, id)| id.clone())
+    }
+
     /// Lot-rounded units of `id` held, i.e. what a sell can actually move.
     fn sellable(ctx: &Context, id: &InstrumentId) -> Option<Qty> {
         Some(ctx.instrument(id)?.round_qty(ctx.position(id).qty()))
@@ -226,6 +253,10 @@ impl RatioHop {
     fn evaluate(&mut self, ctx: &mut Context) -> Vec<Signal> {
         match self.phase.clone() {
             Phase::Start => {
+                if let Some(held) = self.held_coin(ctx) {
+                    self.phase = Phase::Holding(held.clone());
+                    return self.consider_rotation(ctx, &held);
+                }
                 let first = self.p.coins[0].clone();
                 let budget = self.p.quote_amount;
                 let Some(buy) = self.order(ctx, &first, Side::Buy, Size::Quote(budget)) else {
@@ -505,6 +536,163 @@ mod tests {
                 build(NAME, &Params::from_toml(bad).unwrap()).is_err(),
                 "{bad}"
             );
+        }
+    }
+
+    mod resume {
+        use super::*;
+        use crate::driver;
+        use bot_core::{
+            Asset, AssetClass, CandleSpec, Instrument, InstrumentSpec, Interval, Position, Price,
+        };
+        use rust_decimal_macros::dec;
+
+        fn inst(symbol: &str, base: &str, lot: Decimal) -> Instrument {
+            Instrument::new(InstrumentSpec {
+                id: format!("binance:{symbol}").parse().unwrap(),
+                class: AssetClass::Spot,
+                base: Asset::new(base).unwrap(),
+                quote: Asset::new("USDT").unwrap(),
+                tick_size: Price::new(dec!(0.01)),
+                lot_size: Qty::new(lot),
+                min_qty: Qty::new(lot),
+                min_notional: Notional::new(dec!(5)),
+            })
+            .unwrap()
+        }
+
+        fn btc() -> Instrument {
+            inst("BTCUSDT", "BTC", dec!(0.00001))
+        }
+
+        fn eth() -> Instrument {
+            inst("ETHUSDT", "ETH", dec!(0.0001))
+        }
+
+        fn held(i: &Instrument, qty: Decimal, cost: Decimal) -> Position {
+            Position::from_parts(
+                i.id.clone(),
+                Qty::new(qty),
+                Notional::new(cost),
+                Notional::ZERO,
+            )
+            .unwrap()
+        }
+
+        const HOUR: i64 = 3_600_000;
+
+        /// One hourly close of both coins, fed the way the engine does;
+        /// returns every signal the strategy emitted.
+        fn close(
+            s: &mut dyn Strategy,
+            ctx: &mut Context,
+            n: i64,
+            btc_px: Decimal,
+            eth_px: Decimal,
+        ) -> Vec<Signal> {
+            let mut out = Vec::new();
+            for (i, px) in [(btc(), btc_px), (eth(), eth_px)] {
+                let c = Candle::new(CandleSpec {
+                    instrument: i.id.clone(),
+                    interval: Interval::H1,
+                    open_time: Timestamp::from_millis(n * HOUR),
+                    close_time: Timestamp::from_millis((n + 1) * HOUR - 1),
+                    open: Price::new(px),
+                    high: Price::new(px),
+                    low: Price::new(px),
+                    close: Price::new(px),
+                    volume: Qty::new(dec!(1)),
+                    quote_volume: Notional::new(px),
+                })
+                .unwrap();
+                driver::set_now(ctx, c.close_time);
+                driver::push_candle(ctx, c.clone());
+                out.extend(s.on_candle(ctx, &c));
+                out.extend(driver::take_signals(ctx));
+            }
+            out
+        }
+
+        fn start(positions: Vec<Position>) -> (Box<dyn Strategy>, Context) {
+            let p = params("");
+            let mut ctx = driver::new(vec![btc(), eth()], p.clone(), 10);
+            for pos in positions {
+                driver::set_position(&mut ctx, pos);
+            }
+            let mut s = build(NAME, &p).unwrap();
+            s.on_start(&mut ctx);
+            (s, ctx)
+        }
+
+        fn sell_btc(qty: Decimal) -> Signal {
+            Signal::Submit {
+                instrument: btc().id.clone(),
+                side: Side::Sell,
+                size: Size::Base(Qty::new(qty)),
+                kind: OrderKind::Market,
+            }
+        }
+
+        /// Hand-worked, fee 0.001, slippage 10 bps, BTC flat at 60000:
+        /// selling 0.01 BTC fills at 59940 -> 599.4 * 0.999 = 598.8006 USDT.
+        /// t0, ETH 3000 (buy at 3003): lot(0.199400...) = 0.1994 * 0.999 =
+        /// 0.1992006 ETH, the baseline. t2, ETH 2900 (buy at 2902.90):
+        /// lot(0.206276...) = 0.2062 * 0.999 = 0.2059938 ETH > 0.1992006,
+        /// and 2900/3000 is no freefall at 20%: rotate, selling 0.01 BTC.
+        #[test]
+        fn restart_holding_a_coin_resumes_instead_of_buying() {
+            let (mut s, mut ctx) = start(vec![held(&btc(), dec!(0.01), dec!(600))]);
+            assert!(close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000)).is_empty());
+            assert!(close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(3000)).is_empty());
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 2, dec!(60000), dec!(2900)),
+                vec![sell_btc(dec!(0.01))]
+            );
+        }
+
+        #[test]
+        fn flat_start_still_buys_the_first_coin() {
+            let (mut s, mut ctx) = start(vec![]);
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000)),
+                vec![Signal::Submit {
+                    instrument: btc().id.clone(),
+                    side: Side::Buy,
+                    size: Size::Quote(Notional::new(dec!(1000))),
+                    kind: OrderKind::Market,
+                }]
+            );
+        }
+
+        /// 0.01 BTC (600 USDT) outweighs 0.1 ETH (300 USDT): BTC is the
+        /// held coin, so the t2 rotation sells BTC.
+        #[test]
+        fn several_coins_held_resumes_the_most_valuable() {
+            let (mut s, mut ctx) = start(vec![
+                held(&btc(), dec!(0.01), dec!(600)),
+                held(&eth(), dec!(0.1), dec!(300)),
+            ]);
+            close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(3000));
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 2, dec!(60000), dec!(2900)),
+                vec![sell_btc(dec!(0.01))]
+            );
+        }
+
+        /// 0.00001 BTC is worth 0.6 USDT, under the 5 USDT minimum: it
+        /// can't be sold, so it isn't a holding to resume.
+        #[test]
+        fn unsellable_dust_is_not_a_holding() {
+            let (mut s, mut ctx) = start(vec![held(&btc(), dec!(0.00001), dec!(0.6))]);
+            let first = close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            assert!(matches!(
+                first.as_slice(),
+                [Signal::Submit {
+                    side: Side::Buy,
+                    ..
+                }]
+            ));
         }
     }
 }

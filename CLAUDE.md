@@ -340,6 +340,11 @@ next open + slippage; leg unfilled 2 evals → stops) or `limit` (GTC at last
 close, maker, estimate without slippage; needs `limit_timeout`: stale buy
 cancelled by id via `ctx.open_orders` + re-priced at new close, same budget;
 stale sell cancelled → keep holding). Limit may never fill: real cost.
+State (phase, baselines) not persisted. Start with sellable coin held (live
+restart; engine seeds positions) → skip initial buy, hold it (most valuable
+at last close if several), baselines restart from that eval's ratios. Flat
+start (every backtest) unchanged. Restart between legs holds nothing → buys
+afresh with `quote_amount`; earlier proceeds stay in bridge.
 
 ## Layout
 ```
