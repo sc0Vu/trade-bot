@@ -101,9 +101,32 @@ pub trait Transport: Send + Sync {
     async fn send(&self, base: &str, req: HttpRequest) -> Result<HttpResponse, ExchangeError>;
 }
 
-/// [`Transport`] over reqwest.
-#[derive(Clone, Default)]
+/// [`Transport`] over reqwest. Every request is bounded by a timeout; one
+/// that runs out fails with [`ExchangeError::Http`], which stops the run (a
+/// submit that timed out may still have reached Binance; reconcile finds
+/// it).
+#[derive(Clone)]
 pub struct ReqwestTransport(reqwest::Client);
+
+impl ReqwestTransport {
+    pub fn new(timeout: std::time::Duration) -> Result<Self, ExchangeError> {
+        reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map(Self)
+            .map_err(|e| ExchangeError::Http(format!("building HTTP client: {e}")))
+    }
+}
+
+impl Default for ReqwestTransport {
+    /// [`super::DEFAULT_HTTP_TIMEOUT`].
+    fn default() -> Self {
+        // `build` fails only if the TLS backend can't start, and then
+        // `Client::new` panics with the same cause: never a client without
+        // the timeout.
+        Self::new(super::DEFAULT_HTTP_TIMEOUT).unwrap_or_else(|_| Self(reqwest::Client::new()))
+    }
+}
 
 #[async_trait]
 impl Transport for ReqwestTransport {
@@ -501,6 +524,31 @@ mod tests {
         );
         let err = client(&t).check_credentials().await.unwrap_err();
         assert!(matches!(err, ExchangeError::Venue { code: -1021, .. }));
+    }
+
+    /// A server that accepts the connection and never answers: the request
+    /// must fail at the timeout instead of hanging.
+    #[tokio::test]
+    async fn stalled_server_times_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hold = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(conn);
+        });
+        let t = ReqwestTransport::new(std::time::Duration::from_millis(200)).unwrap();
+        let started = std::time::Instant::now();
+        let req = HttpRequest {
+            method: Method::Get,
+            path: "/api/v3/time".into(),
+            query: String::new(),
+            api_key: None,
+        };
+        let err = t.send(&format!("http://{addr}"), req).await.unwrap_err();
+        assert!(matches!(err, ExchangeError::Http(_)), "{err:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        hold.join().unwrap();
     }
 
     #[test]

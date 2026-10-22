@@ -82,6 +82,9 @@ pub struct ExchangeSection {
     pub ws_url: Option<String>,
     #[serde(default = "one_minute")]
     pub interval: Interval,
+    /// Longest one Binance REST request may take, in seconds. Default 10.
+    #[serde(default = "ten")]
+    pub http_timeout_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +116,9 @@ fn one_minute() -> Interval {
 }
 fn five_hundred() -> usize {
     500
+}
+fn ten() -> u64 {
+    10
 }
 
 impl Config {
@@ -151,6 +157,9 @@ impl Config {
         if self.engine.history_len == 0 {
             bail!("engine.history_len must be >= 1");
         }
+        if self.exchange.http_timeout_secs == 0 {
+            bail!("exchange.http_timeout_secs must be >= 1");
+        }
         Ok(())
     }
 }
@@ -182,6 +191,7 @@ mod tests {
             assert_eq!(c.exchange.network, Network::Testnet);
             assert_eq!(c.exchange.interval, Interval::M1);
             assert_eq!(c.engine.history_len, 500);
+            assert_eq!(c.exchange.http_timeout_secs, 10);
             assert_eq!(c.strategy.params["quote_amount"].as_str(), Some("100"));
             Ok(())
         });
@@ -221,6 +231,9 @@ mod tests {
                 parse(&MIN.replace("[exchange]", "[exchange]\nnetwork = \"mainnet\"")).is_err()
             );
             assert!(parse(&MIN.replace(r#"["binance:BTCUSDT"]"#, "[]")).is_err());
+            assert!(
+                parse(&MIN.replace("[exchange]", "[exchange]\nhttp_timeout_secs = 0")).is_err()
+            );
             Ok(())
         });
     }
@@ -231,7 +244,9 @@ mod tests {
             jail.set_env("BOT_EXCHANGE__NETWORK", "live");
             jail.set_env("BOT_MODE", "live");
             jail.set_env("BOT_CONFIG", "ignored.toml");
+            jail.set_env("BOT_EXCHANGE__HTTP_TIMEOUT_SECS", "30");
             let c = parse(MIN).unwrap();
+            assert_eq!(c.exchange.http_timeout_secs, 30);
             assert_eq!(c.exchange.network, Network::Live);
             assert_eq!(c.mode, Mode::Live);
             Ok(())

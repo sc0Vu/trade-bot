@@ -24,6 +24,10 @@ pub use ws::KlineStream;
 /// backtest wants even when trading targets testnet.
 pub const PUBLIC_DATA_URL: &str = "https://data-api.binance.vision";
 
+/// Longest any Binance HTTP request may take, unless configured otherwise.
+/// Without a limit a stalled connection hangs the bot, close-out included.
+pub const DEFAULT_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Spot REST host for real trading. Reached only through the live gate.
 pub const LIVE_REST_URL: &str = "https://api.binance.com";
 /// Spot testnet REST host: fake balances, same API.

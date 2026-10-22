@@ -25,10 +25,21 @@ pub struct PublicClient {
 
 impl PublicClient {
     /// `base` is the REST host, e.g. [`super::PUBLIC_DATA_URL`]. Instruments
-    /// are tagged with venue `binance`.
+    /// are tagged with venue `binance`. Requests time out after
+    /// [`super::DEFAULT_HTTP_TIMEOUT`].
     pub fn new(base: impl Into<String>) -> Self {
+        Self::with_timeout(base, super::DEFAULT_HTTP_TIMEOUT)
+    }
+
+    /// [`new`](Self::new) with a request timeout of `timeout`.
+    pub fn with_timeout(base: impl Into<String>, timeout: std::time::Duration) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            // Fails only if TLS can't start; `Client::new` then panics too.
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            http: reqwest::Client::new(),
+            http,
             base: base.into().trim_end_matches('/').to_owned(),
             venue: VenueId::new("binance").unwrap_or_else(|_| unreachable!("valid venue id")),
         }

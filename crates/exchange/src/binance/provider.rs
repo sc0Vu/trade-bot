@@ -44,6 +44,9 @@ pub struct BinanceConfig {
     pub ws_url: Option<String>,
     /// Kline interval the feed subscribes to.
     pub interval: Interval,
+    /// Longest one REST request may take ([`super::DEFAULT_HTTP_TIMEOUT`]
+    /// unless configured).
+    pub http_timeout: std::time::Duration,
 }
 
 impl BinanceConfig {
@@ -113,7 +116,7 @@ impl BinanceSpotProvider {
     async fn client(&self) -> Result<SignedClient, ExchangeError> {
         let mut client = SignedClient::new(
             self.config.rest_url(),
-            Box::new(ReqwestTransport::default()),
+            Box::new(ReqwestTransport::new(self.config.http_timeout)?),
             self.creds.clone(),
             Box::new(SystemClock),
         );
@@ -179,7 +182,7 @@ impl Provider for BinanceSpotProvider {
 
     async fn resolve(&self, query: &InstrumentQuery) -> Result<Vec<Instrument>, ExchangeError> {
         let InstrumentQuery::Ids(ids) = query;
-        let public = PublicClient::new(self.config.rest_url());
+        let public = PublicClient::with_timeout(self.config.rest_url(), self.config.http_timeout);
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             if id.venue().as_str() != "binance" {
@@ -201,6 +204,7 @@ mod tests {
             rest_url: None,
             ws_url: None,
             interval: Interval::M1,
+            http_timeout: crate::binance::DEFAULT_HTTP_TIMEOUT,
         }
     }
 

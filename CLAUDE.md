@@ -232,6 +232,10 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `exchange.network = "live"` + `--i-understand` (`cli::gate`, all combos
    tested); fake-money run refuses `*.binance.com` URL overrides except the
    two demo hosts.
+   Every REST request bounded by `exchange.http_timeout_secs` (default 10,
+   ≥ 1; `DEFAULT_HTTP_TIMEOUT` for clients built without config): stalled
+   Binance → `Http` error → run stops, reconcile finds what a timed-out
+   submit placed.
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety

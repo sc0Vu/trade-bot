@@ -92,6 +92,7 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
             rest_url: cfg.exchange.rest_url.clone(),
             ws_url: cfg.exchange.ws_url.clone(),
             interval: cfg.exchange.interval,
+            http_timeout: std::time::Duration::from_secs(cfg.exchange.http_timeout_secs),
         },
         creds,
         cfg.whitelist.clone(),
