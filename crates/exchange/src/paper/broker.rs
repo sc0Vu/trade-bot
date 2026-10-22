@@ -56,11 +56,6 @@ impl PaperBroker {
         }
     }
 
-    /// Orders accepted but not yet filled, expired, or cancelled.
-    pub fn open_orders(&self) -> impl Iterator<Item = &Order> {
-        self.pending.iter().map(|p| &p.order)
-    }
-
     fn pending_sell_qty(&self, id: &InstrumentId) -> Qty {
         self.pending
             .iter()
@@ -240,6 +235,10 @@ impl Broker for PaperBroker {
             .cloned()
             .unwrap_or_else(|| Position::flat(instrument.clone()))
     }
+
+    fn open_orders(&self) -> Vec<Order> {
+        self.pending.iter().map(|p| p.order.clone()).collect()
+    }
 }
 
 #[cfg(test)]
@@ -284,7 +283,7 @@ mod tests {
             .unwrap();
         let fills = b.settle(&ev(0, ["100", "101", "99", "100"])).await.unwrap();
         assert!(fills.is_empty());
-        assert_eq!(b.open_orders().count(), 1);
+        assert_eq!(b.open_orders().len(), 1);
     }
 
     /// Buy 10 @ next open 101, no slippage, fee 0.1% in base:
@@ -310,7 +309,7 @@ mod tests {
         let pos = b.position(&btcusdt().id);
         assert_eq!(pos.qty(), Qty::new(dec!(9.99)));
         assert_eq!(pos.cost_basis(), Notional::new(dec!(1010)));
-        assert_eq!(b.open_orders().count(), 0);
+        assert_eq!(b.open_orders().len(), 0);
     }
 
     /// Same with 10 bps: 101 * 1.001 = 101.101, up to tick 101.11;
@@ -390,7 +389,7 @@ mod tests {
                 .is_empty()
         );
         assert!(b.position(&btcusdt().id).is_flat());
-        assert_eq!(b.open_orders().count(), 0);
+        assert_eq!(b.open_orders().len(), 0);
     }
 
     #[tokio::test]

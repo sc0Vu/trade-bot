@@ -130,6 +130,7 @@ trait Strategy: Send {
     fn on_fill(&mut self, _ctx: &mut Context, _f: &Fill) {}  // signals via ctx.submit
 }
 // Context: now, instrument(s) (universe = resolved whitelist), position,
+// open_orders (ids for Signal::Cancel; as of last settle),
 // history (≤ history_len closed candles, oldest first, ends at current event),
 // params, submit. Engine mutates via `strategy::driver` (strategy calling it
 // only corrupts own view; broker = source of truth).
@@ -140,6 +141,7 @@ trait Strategy: Send {
     async fn cancel(&mut self, id: OrderId) -> Result<()>;
     async fn settle(&mut self, e: &MarketEvent) -> Result<Vec<Fill>>; // pending vs NEW event; live: drain venue fills
     fn position(&self, i: &InstrumentId) -> Position;
+    fn open_orders(&self) -> Vec<Order>;  // snapshot → ctx after each settle
 }
 ```
 

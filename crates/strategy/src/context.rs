@@ -1,10 +1,10 @@
 use crate::Params;
-use bot_core::{Candle, Instrument, InstrumentId, Position, Signal, Timestamp};
+use bot_core::{Candle, Instrument, InstrumentId, Order, Position, Signal, Timestamp};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 /// A strategy's only window to the world (invariant 5): the trading
-/// universe, positions, rolling candle history, params, and a way to submit
-/// signals. It holds no broker, provider, or network handle.
+/// universe, positions, open orders, rolling candle history, params, and a
+/// way to submit signals. It holds no broker, provider, or network handle.
 ///
 /// History holds data up to and including the current event and nothing
 /// later (invariant 2): the engine adds each event before calling the
@@ -19,6 +19,7 @@ pub struct Context {
     now: Option<Timestamp>,
     instruments: BTreeMap<InstrumentId, Instrument>,
     positions: HashMap<InstrumentId, Position>,
+    open_orders: Vec<Order>,
     history: HashMap<InstrumentId, VecDeque<Candle>>,
     history_len: usize,
     params: Params,
@@ -48,6 +49,13 @@ impl Context {
             .get(id)
             .cloned()
             .unwrap_or_else(|| Position::flat(id.clone()))
+    }
+
+    /// The strategy's orders still open on `id`, as of the broker's last
+    /// settle (before this event's signals were routed). Their ids are what
+    /// `Signal::Cancel` takes.
+    pub fn open_orders(&self, id: &InstrumentId) -> impl Iterator<Item = &Order> {
+        self.open_orders.iter().filter(move |o| o.instrument == *id)
     }
 
     /// Closed candles for `id`, oldest first, ending with the current one.
@@ -86,6 +94,7 @@ pub mod driver {
             now: None,
             instruments: instruments.into_iter().map(|i| (i.id.clone(), i)).collect(),
             positions: HashMap::new(),
+            open_orders: Vec::new(),
             history: HashMap::new(),
             history_len: history_len.max(1),
             params,
@@ -115,6 +124,11 @@ pub mod driver {
     pub fn set_position(ctx: &mut Context, position: Position) {
         ctx.positions
             .insert(position.instrument().clone(), position);
+    }
+
+    /// Replaces the strategy's view of open orders with the broker's.
+    pub fn set_open_orders(ctx: &mut Context, orders: Vec<Order>) {
+        ctx.open_orders = orders;
     }
 
     /// Drains queued signals in submission order.

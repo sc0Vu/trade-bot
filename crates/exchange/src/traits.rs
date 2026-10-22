@@ -58,4 +58,9 @@ pub trait Broker: Send {
 
     /// Current position; flat if never traded.
     fn position(&self, instrument: &InstrumentId) -> Position;
+
+    /// Orders accepted but not yet filled, cancelled or expired, in
+    /// submission order. The engine copies this into the strategy's
+    /// `Context` so a strategy can cancel by id without a broker handle.
+    fn open_orders(&self) -> Vec<Order>;
 }

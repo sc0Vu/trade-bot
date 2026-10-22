@@ -40,7 +40,8 @@ pub struct RunReport {
 /// 1. The feed must not go backwards in time.
 /// 2. The broker settles pending orders against the event. Orders were
 ///    decided on earlier events, so they fill no earlier than this one.
-/// 3. Each fill updates the context's position and reaches `on_fill`,
+/// 3. The context's open orders are refreshed from the broker. Each fill
+///    updates the context's position and reaches `on_fill`,
 ///    before the event joins the history: a fill at a candle's open must
 ///    not see that candle's close.
 /// 4. The event joins the history and reaches `on_event`.
@@ -88,7 +89,9 @@ pub async fn run<P: Provider + ?Sized>(
         last = Some(ts);
         run.report.events += 1;
 
-        for fill in run.broker.settle(&event).await? {
+        let fills = run.broker.settle(&event).await?;
+        driver::set_open_orders(&mut ctx, run.broker.open_orders());
+        for fill in fills {
             driver::set_position(&mut ctx, run.broker.position(&fill.instrument));
             strategy.on_fill(&mut ctx, &fill);
             run.report.fills.push(fill);
@@ -331,5 +334,50 @@ mod tests {
         run(&provider, &mut probe, params, &config()).await.unwrap();
         // Fill at c1's open: only c0 in history; position already updated.
         assert_eq!(probe.seen, vec![(1, Qty::new(dec!(9.89108901)))]);
+    }
+
+    /// A strategy sees its resting order's id through the context and can
+    /// cancel it; the next settle shows it gone.
+    #[tokio::test]
+    async fn strategy_sees_open_orders_and_cancels_by_id() {
+        #[derive(Default)]
+        struct Canceller {
+            seen: Vec<Vec<String>>,
+        }
+        impl Strategy for Canceller {
+            fn name(&self) -> &str {
+                "canceller"
+            }
+            fn on_candle(&mut self, ctx: &mut Context, c: &bot_core::Candle) -> Vec<Signal> {
+                let open: Vec<_> = ctx
+                    .open_orders(&c.instrument)
+                    .map(|o| o.id.clone())
+                    .collect();
+                self.seen
+                    .push(open.iter().map(|id| id.to_string()).collect());
+                match self.seen.len() {
+                    // Rest a buy far below the market: never fills.
+                    1 => vec![Signal::Submit {
+                        instrument: c.instrument.clone(),
+                        side: bot_core::Side::Buy,
+                        size: bot_core::Size::Base(Qty::new(dec!(1))),
+                        kind: bot_core::OrderKind::Limit {
+                            price: Price::new(dec!(50)),
+                            tif: bot_core::TimeInForce::Gtc,
+                        },
+                    }],
+                    2 => open.into_iter().map(Signal::Cancel).collect(),
+                    _ => Vec::new(),
+                }
+            }
+        }
+        let provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        let mut s = Canceller::default();
+        let r = run(&provider, &mut s, Params::default(), &config())
+            .await
+            .unwrap();
+        assert_eq!(s.seen, vec![vec![], vec!["o-1".to_owned()], vec![]]);
+        assert!(r.rejections.is_empty());
+        assert!(r.fills.is_empty());
     }
 }
