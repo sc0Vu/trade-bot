@@ -273,6 +273,18 @@ ratio beats last-held amount of B, so unit count only ratchets up. Ships
 than `risk.freefall_pct` over last N candles, so reverse-greedy loop can't
 accumulate coin collapsing to zero. Worked trait example, and
 reminder: max units ≠ max value.
+Params (`strategy.params`): `coins` (same bridge quote; first bought at
+start with `quote_amount`), `fee` + `slippage_bps` (per-leg estimate;
+slippage required, match backtest), `scout_margin`,
+`freefall_pct` + `freefall_candles` (the `risk.freefall_pct` guard; lives in
+params until config exists; `history_len` must exceed `freefall_candles`).
+Evaluates once per close time when all coins' candles in. Est units of B =
+lot(notional(lot(held A), sellpx A)·(1−fee) / buypx B)·(1−fee), sellpx =
+close·(1−s) tick-down, buypx = close·(1+s) tick-up; rotate if
+> baseline[B]·(1+margin), not in freefall, best ratio wins; leaving A sets
+baseline[A] = units sold. Sell A, then on fill buy B with exact proceeds
+(quote budget → never overspends). Leg unfilled 2 evals → stops (no
+rejection hook yet).
 
 ## Layout
 ```

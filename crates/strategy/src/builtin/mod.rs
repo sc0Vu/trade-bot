@@ -1,6 +1,7 @@
 //! Strategies shipped with the bot. Each file registers itself.
 
 pub mod buy_and_hold;
+pub mod ratio_hop;
 
 #[cfg(test)]
 pub(crate) mod test_support {

@@ -28,3 +28,13 @@ impl Params {
             })
     }
 }
+
+/// Serde helper for strategy params: an exact decimal written as a string
+/// (`fee = "0.001"`). A TOML number is rejected, since it would pass
+/// through a float first (invariant 1).
+pub fn exact_decimal<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<bot_core::Decimal, D::Error> {
+    let s = <String as serde::Deserialize>::deserialize(d)?;
+    bot_core::Decimal::from_str_exact(&s).map_err(serde::de::Error::custom)
+}

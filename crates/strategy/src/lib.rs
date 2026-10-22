@@ -13,7 +13,7 @@ mod registry;
 
 pub use context::{Context, driver};
 pub use error::StrategyError;
-pub use params::Params;
+pub use params::{Params, exact_decimal};
 pub use registry::{StrategyRegistration, build, names};
 
 use bot_core::{Candle, Fill, MarketEvent, Signal};

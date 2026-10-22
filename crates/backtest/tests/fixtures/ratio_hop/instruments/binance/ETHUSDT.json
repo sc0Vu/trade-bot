@@ -1,0 +1,10 @@
+{
+  "id": "binance:ETHUSDT",
+  "class": "spot",
+  "base": "ETH",
+  "quote": "USDT",
+  "tick_size": "0.01",
+  "lot_size": "0.00001",
+  "min_qty": "0.00001",
+  "min_notional": "5"
+}
