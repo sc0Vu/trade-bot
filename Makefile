@@ -10,6 +10,8 @@ INTERVAL     ?= 1h
 FROM         ?= 2024-01-01
 TO           ?= 2024-06-01
 STRATEGY     ?= ratio_hop
+# Taker slippage for backtests, in bps. No default on purpose: set it.
+SLIPPAGE_BPS ?=
 
 CLI := cargo run -p cli --
 
@@ -58,14 +60,15 @@ migrate-status: ## Show applied and pending migrations
 migrate-fresh: ## DROP ALL TABLES, then re-apply every migration (dev only)
 	DATABASE_URL='$(DATABASE_URL)' sea-orm-cli migrate fresh -d migration
 
-## --- Bot (override SYMBOL, INTERVAL, FROM, TO, STRATEGY, PARAMS) ---------
+## --- Bot (override SYMBOL, INTERVAL, FROM, TO, STRATEGY, PARAMS, SLIPPAGE_BPS)
 
 fetch-data: ## Cache klines into data/
 	$(CLI) fetch-data --symbol $(SYMBOL) --interval $(INTERVAL) --from $(FROM)
 
-backtest: ## Backtest STRATEGY on SYMBOL over FROM..TO (PARAMS=file.toml)
+backtest: ## Backtest STRATEGY on SYMBOL over FROM..TO (SLIPPAGE_BPS required, PARAMS=file.toml)
+	@test -n "$(SLIPPAGE_BPS)" || { echo "set SLIPPAGE_BPS, e.g. make backtest SLIPPAGE_BPS=5"; exit 2; }
 	$(CLI) backtest --strategy $(STRATEGY) --symbol $(SYMBOL) --interval $(INTERVAL) \
-		--from $(FROM) --to $(TO) $(if $(PARAMS),--params $(PARAMS))
+		--from $(FROM) --to $(TO) --slippage-bps $(SLIPPAGE_BPS) $(if $(PARAMS),--params $(PARAMS))
 
 run-paper: ## Paper trade against testnet prices (the safe default)
 	$(CLI) run --paper

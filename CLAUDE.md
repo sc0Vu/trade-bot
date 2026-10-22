@@ -226,6 +226,8 @@ ABI — compiler mismatch UB).
    running peak (starts at initial cash). Closed trade = sell; win = realized
    delta > 0. Sharpe = mean/sample-sd of per-bar equity returns × √(bars/yr,
    24/7: 8760 at 1h), rf 0; `None` if < 2 returns or zero sd.
+   `cli backtest --slippage-bps` (and `make backtest SLIPPAGE_BPS=`) required,
+   no default: market order never fills at price decision saw; silent 0 hides cost.
 5. **User strategies** — implement `Strategy`, self-register via `inventory`.
    Config selects `strategy.name` + `strategy.params`. Trait
    provider-agnostic, so every user strategy runs in backtest free. Growth: import ladder above.

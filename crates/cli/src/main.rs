@@ -57,8 +57,10 @@ struct BacktestArgs {
     /// received asset like Binance spot.
     #[arg(long, default_value = "0.001", value_parser = parse_decimal)]
     fee: Decimal,
-    /// Taker slippage in basis points.
-    #[arg(long, default_value = "0", value_parser = parse_decimal)]
+    /// Taker slippage in basis points. Required, no default: a market order
+    /// never fills at the price the decision saw, and a silent 0 would hide
+    /// that cost.
+    #[arg(long, value_parser = parse_decimal)]
     slippage_bps: Decimal,
     /// Candles of history kept per instrument for the strategy.
     #[arg(long, default_value_t = 500)]
