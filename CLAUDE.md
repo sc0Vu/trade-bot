@@ -390,7 +390,11 @@ Start. No/refused state: resume on most valuable sellable held coin
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, rsi_reversion) only version;
-buy_and_hold `decided`; momentum_rotation `last_eval`.
+buy_and_hold `decided`; momentum_rotation `last_eval`. Pinned by
+`crates/backtest/tests/restart.rs`: every strategy, every idle cut point
+(no working order): run₁ + save → fresh strategy + restore + Backfill
+warm-up + same broker → fills identical to uninterrupted run. New strategy
+→ add a case.
 
 ## Other built-ins
 `buy_and_hold` — the benchmark every strategy is measured against: can't beat
