@@ -23,6 +23,10 @@ pub struct Report {
     pub final_equity: Notional,
     /// Profit closed out by sells, after fees (average-cost accounting).
     pub realized_pnl: Notional,
+    /// Lowest cash balance after any fill, starting at `initial_cash`.
+    /// Negative means the strategy spent quote it didn't have: the paper
+    /// broker has no cash balance to refuse it, so this is where it shows.
+    pub min_cash: Notional,
     /// Largest fall from a running equity peak, as a fraction of that peak
     /// (`0.25` = 25%). The peak starts at `initial_cash`.
     pub max_drawdown: Decimal,
@@ -56,6 +60,7 @@ impl Report {
 
         let mut ledger = Ledger {
             cash: initial_cash,
+            min_cash: initial_cash,
             positions: HashMap::new(),
             marks: HashMap::new(),
             closed: 0,
@@ -95,6 +100,7 @@ impl Report {
             initial_cash,
             final_equity,
             realized_pnl,
+            min_cash: ledger.min_cash,
             max_drawdown: max_drawdown(initial_cash, &equity),
             fills: run.fills.len(),
             closed_trades: ledger.closed,
@@ -107,6 +113,7 @@ impl Report {
 
 struct Ledger {
     cash: Notional,
+    min_cash: Notional,
     positions: HashMap<InstrumentId, Position>,
     marks: HashMap<InstrumentId, Price>,
     closed: usize,
@@ -140,6 +147,7 @@ impl Ledger {
                 }
             }
         }
+        self.min_cash = self.min_cash.min(self.cash);
     }
 
     fn equity(&self, by_id: &HashMap<&InstrumentId, &Instrument>) -> Notional {
@@ -215,6 +223,7 @@ impl fmt::Display for Report {
             "realized P&L     {}",
             self.realized_pnl.get().round_dp(8)
         )?;
+        writeln!(f, "min cash         {}", self.min_cash.get().round_dp(8))?;
         writeln!(f, "max drawdown     {}", pct(self.max_drawdown))?;
         writeln!(f, "fills            {}", self.fills)?;
         writeln!(f, "closed trades    {}", self.closed_trades)?;
@@ -295,6 +304,8 @@ mod tests {
 
         assert_eq!(r.final_equity, Notional::new(dec!(1098.9)));
         assert_eq!(r.realized_pnl, Notional::new(dec!(98.9)));
+        // Cash 1000 -> 499.5 after the buy -> 1098.9 after the sell.
+        assert_eq!(r.min_cash, Notional::new(dec!(499.5)));
         assert_eq!(r.max_drawdown, dec!(100) / dec!(1049.5));
         assert_eq!(r.max_drawdown.round_dp(10), dec!(0.0952834683));
         assert_eq!(r.fills, 2);
@@ -322,9 +333,32 @@ mod tests {
             Interval::H1,
         );
         assert_eq!(r.final_equity, Notional::new(dec!(1000)));
+        assert_eq!(r.min_cash, Notional::new(dec!(1000)));
         assert_eq!(r.max_drawdown, Decimal::ZERO);
         assert_eq!(r.win_rate, None);
         assert_eq!(r.sharpe, None);
+    }
+
+    /// Buying 20 @ 100 with 1000 cash spends 2000: cash -1000. The broker
+    /// can't refuse it (no cash model), so the report must expose it.
+    #[test]
+    fn overspend_shows_as_negative_min_cash() {
+        let id = btcusdt().id.clone();
+        let candles: Vec<Candle> = (0..2)
+            .map(|i| candle(&id, i, ["100", "100", "100", "100"]))
+            .collect();
+        let run = RunReport {
+            fills: vec![fill(Side::Buy, dec!(20), dec!(100), dec!(0), HOUR)],
+            ..RunReport::default()
+        };
+        let r = Report::compute(
+            &run,
+            &candles,
+            &[btcusdt()],
+            Notional::new(dec!(1000)),
+            Interval::H1,
+        );
+        assert_eq!(r.min_cash, Notional::new(dec!(-1000)));
     }
 
     #[test]

@@ -223,7 +223,8 @@ ABI — compiler mismatch UB).
    `engine::run`; `run_backtest` → `Report` (all `Decimal`). Report keeps own
    cash ledger (broker has none) replaying fills vs candles; equity = cash +
    holdings at latest close, once per close time. Max drawdown = fraction of
-   running peak (starts at initial cash). Closed trade = sell; win = realized
+   running peak (starts at initial cash). `min_cash` = lowest cash after any
+   fill; negative = overspent (broker can't refuse, report must show). Closed trade = sell; win = realized
    delta > 0. Sharpe = mean/sample-sd of per-bar equity returns × √(bars/yr,
    24/7: 8760 at 1h), rf 0; `None` if < 2 returns or zero sd.
    `cli backtest --slippage-bps` (and `make backtest SLIPPAGE_BPS=`) required,

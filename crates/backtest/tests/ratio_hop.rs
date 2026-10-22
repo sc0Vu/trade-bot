@@ -94,6 +94,9 @@ async fn rotates_twice_and_ratchets_units() {
     assert_eq!(r.rejected_signals, 0);
     assert_eq!(r.final_equity, Notional::new(dec!(1237.2505588106)));
     assert_eq!(r.realized_pnl.get().round_dp(10), dec!(239.7275235151));
+    // Cash after each fill: 0.001, 996.006996001, 0.001062901,
+    // 1239.7274859106, 0.0019989106. Never spends quote it doesn't have.
+    assert_eq!(r.min_cash, Notional::new(dec!(0.001)));
     assert_eq!(r.max_drawdown, dec!(0.003993003999));
     assert_eq!(r.sharpe.unwrap().round_dp(6), dec!(36.735515));
 }
@@ -108,5 +111,6 @@ async fn freefall_guard_blocks_rotation_into_falling_coin() {
     assert_eq!(r.closed_trades, 0);
     assert_eq!(r.win_rate, None);
     assert_eq!(r.final_equity, Notional::new(dec!(998.002)));
+    assert_eq!(r.min_cash, Notional::new(dec!(0.001)));
     assert_eq!(r.max_drawdown, dec!(0.001998));
 }

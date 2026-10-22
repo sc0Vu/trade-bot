@@ -77,5 +77,7 @@ mod tests {
         assert_eq!(r.closed_trades, 0);
         assert_eq!(r.realized_pnl, Notional::ZERO);
         assert_eq!(r.final_equity, Notional::new(dec!(1018.78217803)));
+        // 1000 budget, 999.99999 spent: never below zero.
+        assert_eq!(r.min_cash, Notional::new(dec!(0.00001)));
     }
 }
