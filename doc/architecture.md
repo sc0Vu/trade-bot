@@ -361,6 +361,12 @@ amounts.
 | `tradebot_reconcile_orders_closed_total` | counter | `phase` | Journal orders reconcile closed |
 | `tradebot_reconcile_fills_recovered_total` | counter | `phase` | Fills reconcile recorded that the books lacked |
 
+Live state beyond counters reaches the outside through
+`engine::run_observed`: the same loop as `run`, handing an `Observer` a
+`Snapshot` (positions, open orders, last candle per instrument, counts) after
+every event. The observer can't change the run and must return quickly;
+plain `run` builds no snapshot at all.
+
 Metric values are `f64`, converted at the moment of recording. They are for
 display and alerting only and are never read back into a decision or the
 books, so invariant 1 still holds where money is decided.

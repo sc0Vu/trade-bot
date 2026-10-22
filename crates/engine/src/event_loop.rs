@@ -1,7 +1,9 @@
 use crate::EngineError;
 use crate::metrics as m;
 use crate::risk;
-use bot_core::{Fill, InstrumentId, MarketEvent, OrderId, Position, Signal, Timestamp};
+use bot_core::{
+    Candle, Fill, InstrumentId, MarketEvent, Order, OrderId, Position, Signal, Timestamp,
+};
 use exchange::{Broker, ExchangeError, InstrumentQuery, Provider};
 use strategy::{Context, Params, Strategy, driver};
 
@@ -34,6 +36,30 @@ pub struct RunReport {
     pub positions: Vec<Position>,
 }
 
+/// What a live run looks like after one event: enough for a status page,
+/// an API or metrics, without a handle on the broker or the strategy.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    /// Time of the latest event (a candle's close time).
+    pub at: Option<Timestamp>,
+    pub events: u64,
+    pub fills: usize,
+    pub rejections: usize,
+    /// Broker position per whitelisted instrument, in whitelist order.
+    pub positions: Vec<Position>,
+    /// The broker's working orders.
+    pub open_orders: Vec<Order>,
+    /// Latest closed candle per whitelisted instrument that has one.
+    pub last_candles: Vec<Candle>,
+}
+
+/// Watches a run from outside. Called after every event has been fully
+/// handled (settled, decided, routed); it must return quickly, since the
+/// loop waits for it. It can't change the run.
+pub trait Observer: Send {
+    fn on_snapshot(&mut self, snapshot: &Snapshot);
+}
+
 /// Runs `strategy` against `provider` until the feed ends.
 ///
 /// Each event goes through the same steps, in an order that is the core of
@@ -59,6 +85,28 @@ pub async fn run<P: Provider + ?Sized>(
     strategy: &mut dyn Strategy,
     params: Params,
     config: &EngineConfig,
+) -> Result<RunReport, EngineError> {
+    run_inner(provider, strategy, params, config, None).await
+}
+
+/// [`run`], handing `observer` a [`Snapshot`] after every event. The loop is
+/// otherwise identical, so what is observed is exactly what [`run`] does.
+pub async fn run_observed<P: Provider + ?Sized>(
+    provider: &P,
+    strategy: &mut dyn Strategy,
+    params: Params,
+    config: &EngineConfig,
+    observer: &mut dyn Observer,
+) -> Result<RunReport, EngineError> {
+    run_inner(provider, strategy, params, config, Some(observer)).await
+}
+
+async fn run_inner<P: Provider + ?Sized>(
+    provider: &P,
+    strategy: &mut dyn Strategy,
+    params: Params,
+    config: &EngineConfig,
+    mut observer: Option<&mut dyn Observer>,
 ) -> Result<RunReport, EngineError> {
     let instruments = provider
         .resolve(&InstrumentQuery::Ids(config.whitelist.clone()))
@@ -132,6 +180,26 @@ pub async fn run<P: Provider + ?Sized>(
         let mut signals = driver::take_signals(&mut ctx);
         signals.extend(returned);
         run.route(&ctx, signals).await?;
+
+        if let Some(o) = observer.as_deref_mut() {
+            o.on_snapshot(&Snapshot {
+                at: Some(ts),
+                events: run.report.events,
+                fills: run.report.fills.len(),
+                rejections: run.report.rejections.len(),
+                positions: config
+                    .whitelist
+                    .iter()
+                    .map(|id| run.broker.position(id))
+                    .collect(),
+                open_orders: run.broker.open_orders(),
+                last_candles: config
+                    .whitelist
+                    .iter()
+                    .filter_map(|id| ctx.last_candle(id).cloned())
+                    .collect(),
+            });
+        }
     }
 
     run.report.positions = config
@@ -499,6 +567,42 @@ mod tests {
             ),
             Some(1)
         );
+    }
+
+    /// One snapshot per event; the last shows the run's end state: 3
+    /// events, the one fill, the held position and c2 as the last candle.
+    #[tokio::test]
+    async fn observer_sees_every_event() {
+        struct Keep(Vec<Snapshot>);
+        impl Observer for Keep {
+            fn on_snapshot(&mut self, s: &Snapshot) {
+                self.0.push(s.clone());
+            }
+        }
+        let provider = TestProvider::new(three_candles(), dec!(0), dec!(0.001));
+        let (mut s, params) = buy_and_hold("1000");
+        let mut keep = Keep(Vec::new());
+        let r = run_observed(&provider, s.as_mut(), params, &config(), &mut keep)
+            .await
+            .unwrap();
+        assert_eq!(keep.0.len(), 3);
+        let last = keep.0.last().unwrap();
+        assert_eq!(last.events, 3);
+        assert_eq!(last.fills, 1);
+        assert_eq!(last.positions, r.positions);
+        assert!(last.open_orders.is_empty());
+        assert_eq!(last.last_candles, vec![three_candles_last()]);
+        assert_eq!(last.at, Some(three_candles_last().close_time));
+        // The first snapshot is after c0: the buy is decided, not filled.
+        assert_eq!(keep.0[0].fills, 0);
+        assert_eq!(keep.0[0].open_orders.len(), 1);
+    }
+
+    fn three_candles_last() -> bot_core::Candle {
+        match three_candles().pop() {
+            Some(MarketEvent::Candle(c)) => c,
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]

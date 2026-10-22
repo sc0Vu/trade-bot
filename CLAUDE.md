@@ -169,7 +169,9 @@ at t+1. Prevents deciding on close and trading at it.
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
 broker, `created_at` = event ts. Risk v1: whitelist, sizing (quote → base
 at order price, except market buy keeps quote budget), lot/tick rounding
-(never more aggressive), `check_order`. Rejected signal (risk, or venue refusing that one order:
+(never more aggressive), `check_order`. `run_observed(.., &mut dyn Observer)` = same loop + `Snapshot` (positions,
+open orders, last candles, counts) after each event; `run` = no observer, no
+snapshot cost. Observer can't change run, must return fast. Rejected signal (risk, or venue refusing that one order:
 `ExchangeError::is_order_rejection`) → `RunReport`, not fatal; other broker
 errors (auth `-2015`, transport, clock, rate limit) stop run. Order ids deterministic (`o-1`, `o-2`, …).
 
