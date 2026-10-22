@@ -92,6 +92,7 @@ pub async fn run<P: Provider + ?Sized>(
         let fills = run.broker.settle(&event).await?;
         driver::set_open_orders(&mut ctx, run.broker.open_orders());
         for fill in fills {
+            tracing::info!(order = %fill.order_id, instrument = %fill.instrument, side = ?fill.side, "fill");
             driver::set_position(&mut ctx, run.broker.position(&fill.instrument));
             strategy.on_fill(&mut ctx, &fill);
             run.report.fills.push(fill);
@@ -138,7 +139,10 @@ impl Run<'_> {
         for signal in signals {
             let outcome = match &signal {
                 Signal::Cancel(id) => match self.broker.cancel(id.clone()).await {
-                    Ok(()) => Ok(()),
+                    Ok(()) => {
+                        tracing::info!(order = %id, "cancel requested");
+                        Ok(())
+                    }
                     Err(e) => Err(refusal(e)?),
                 },
                 Signal::Submit {
@@ -159,16 +163,23 @@ impl Run<'_> {
                         reference,
                         now,
                     ) {
-                        Ok(order) => match self.broker.submit(order).await {
-                            Ok(_) => Ok(()),
-                            Err(e) => Err(refusal(e)?),
-                        },
+                        Ok(order) => {
+                            let (id, instrument, side) =
+                                (order.id.clone(), order.instrument.clone(), order.side);
+                            match self.broker.submit(order).await {
+                                Ok(_) => {
+                                    tracing::info!(order = %id, %instrument, ?side, "order submitted");
+                                    Ok(())
+                                }
+                                Err(e) => Err(refusal(e)?),
+                            }
+                        }
                         Err(r) => Err(r.to_string()),
                     }
                 }
             };
             if let Err(reason) = outcome {
-                tracing::debug!(%reason, "signal rejected");
+                tracing::info!(%reason, "signal rejected");
                 self.report.rejections.push(Rejection {
                     at: ctx.now(),
                     signal,

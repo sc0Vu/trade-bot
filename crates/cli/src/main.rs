@@ -250,10 +250,20 @@ async fn fetch_data(a: FetchArgs) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    // A live run must show its orders and fills without RUST_LOG set; a
+    // backtest logging every simulated order would bury its report.
+    let default = match cli.command {
+        Command::Run(_) => "info",
+        _ => "warn",
+    };
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default)),
+        )
         .init();
-    match Cli::parse().command {
+    match cli.command {
         Command::FetchData(a) => fetch_data(a).await,
         Command::Backtest(a) => backtest(a).await,
         Command::Run(a) => run_bot(a).await,
