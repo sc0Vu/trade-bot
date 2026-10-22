@@ -375,7 +375,9 @@ crates/
   cli/         binary: run | backtest | fetch-data | migrate
 migration/     SeaORM migrations
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.
-data/          downloaded klines (gitignored)
+data/          downloaded klines, per-network run dbs (gitignored)
+doc/           architecture.md (human-facing; update with design changes)
+README.md      user-facing overview, quick start, config, limitations
 ```
 
 ## Commands
