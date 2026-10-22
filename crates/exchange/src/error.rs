@@ -21,6 +21,13 @@ pub enum ExchangeError {
     /// HTTP or transport failure talking to a venue.
     #[error("venue request failed: {0}")]
     Http(String),
+    /// The venue refused the request with its own error code (Binance
+    /// `{"code":-2010,"msg":"..."}`). `msg` is the venue's text.
+    #[error("venue error {code}: {msg}")]
+    Venue { code: i64, msg: String },
+    /// Credentials missing or unusable. Names the env var, never a value.
+    #[error("credentials: {0}")]
+    Credentials(String),
     /// The venue answered with something this client can't use. Fails
     /// loudly: a silently misparsed price is worse than no data.
     #[error("unexpected venue response: {0}")]
