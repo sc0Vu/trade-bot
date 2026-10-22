@@ -101,6 +101,9 @@ v1 positions non-negative owned inventory (spot). Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as
 type-level law (no unsigned/`NonZero` qty, no `try_from` rejecting negatives).
+Sign = runtime policy: `Instrument::allows_short()` (false all v1 classes),
+checked by `Position::check_against(&Instrument)`; `from_parts` checks only
+sign-agnostic consistency (basis sign = qty sign, flat ⇒ zero basis).
 
 Strategy reacts to **MarketEvent**, not only candle, so loop
 survives non-price events equities/options bring (session boundaries,

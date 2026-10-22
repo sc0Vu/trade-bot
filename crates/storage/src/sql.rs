@@ -229,6 +229,11 @@ impl Ledger for SqlStore {
         fill: &Fill,
         instrument: &Instrument,
     ) -> Result<(TradeId, Position), StorageError> {
+        if fill.instrument != instrument.id {
+            return Err(StorageError::Rejected(bot_core::Error::PositionUpdate(
+                "fill is for a different instrument",
+            )));
+        }
         // Every early return drops `txn`, which rolls it back.
         let txn = self.db.begin().await.map_err(StorageError::backend)?;
         // FOR UPDATE on MySQL so a concurrent writer can't fold into the same
@@ -243,6 +248,11 @@ impl Ledger for SqlStore {
             Some(row) => from_holding_row(row)?,
             None => Position::flat(fill.instrument.clone()),
         };
+        // A stored holding that breaks the asset-class policy (a negative spot
+        // holding) is corruption, not a bad fill: refuse to trade on it.
+        position
+            .check_against(instrument)
+            .map_err(|e| StorageError::corrupt(HOLDINGS, e))?;
         position
             .apply(fill, instrument)
             .map_err(StorageError::Rejected)?;
@@ -464,7 +474,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_stored_holding_is_an_error() {
         let s = store().await;
-        s.db.execute_unprepared("INSERT INTO holdings VALUES ('binance:BTCUSDT', '-1', '0', '0')")
+        s.db.execute_unprepared("INSERT INTO holdings VALUES ('binance:BTCUSDT', '0', '5', '0')")
             .await
             .unwrap();
         assert!(matches!(
@@ -657,5 +667,53 @@ mod tests {
         assert!(matches!(err, StorageError::Backend(_)));
         assert_eq!(trade_count(&s).await, 0);
         assert_eq!(s.get_holding(&btc()).await.unwrap(), None);
+    }
+
+    /// A negative spot holding is a valid `Position` value but breaks spot
+    /// policy: `record_fill` must refuse to fold into it and write nothing.
+    #[tokio::test]
+    async fn record_fill_refuses_negative_spot_holding() {
+        let s = store().await;
+        s.db.execute_unprepared(
+            "INSERT INTO holdings VALUES ('binance:BTCUSDT', '-1', '-100', '0')",
+        )
+        .await
+        .unwrap();
+        let buy = fill(
+            Side::Buy,
+            Qty::new(dec!(1)),
+            Price::new(dec!(100)),
+            quote_fee(dec!(0)),
+            1,
+        );
+        let err = s.record_fill(&buy, &btcusdt()).await.unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::Corrupt {
+                table: "holdings",
+                ..
+            }
+        ));
+        assert_eq!(trade_count(&s).await, 0);
+    }
+
+    #[tokio::test]
+    async fn record_fill_rejects_mismatched_instrument() {
+        let s = store().await;
+        let eth = Fill::new(FillSpec {
+            instrument: "binance:ETHUSDT".parse().unwrap(),
+            ..fill(
+                Side::Buy,
+                Qty::new(dec!(1)),
+                Price::new(dec!(100)),
+                quote_fee(dec!(0)),
+                1,
+            )
+            .into()
+        })
+        .unwrap();
+        let err = s.record_fill(&eth, &btcusdt()).await.unwrap_err();
+        assert!(matches!(err, StorageError::Rejected(_)));
+        assert_eq!(s.list_holdings().await.unwrap(), vec![]);
     }
 }

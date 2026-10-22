@@ -7,9 +7,15 @@ use serde::{Deserialize, Serialize};
 /// rather than a stored average price, so repeated buys don't accumulate
 /// division rounding; the average is derived on demand. Because fees sit in
 /// the cost basis and are subtracted from sale proceeds, `realized_pnl` is
-/// after costs. Spot positions never go negative (no shorting). Changes only
-/// through [`apply`](Self::apply); restored from storage only through
-/// [`from_parts`](Self::from_parts), which deserializing also goes through.
+/// after costs.
+///
+/// Quantity is signed in the type: whether it may go negative is asset-class
+/// policy ([`Instrument::allows_short`]), checked at runtime by
+/// [`check_against`](Self::check_against), so v2 short and perp positions
+/// reuse this type. In v1 no class allows shorts and `apply` handles long
+/// positions only. Changes only through [`apply`](Self::apply); restored
+/// from storage only through [`from_parts`](Self::from_parts), which
+/// deserializing also goes through.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "PositionParts", into = "PositionParts")]
 pub struct Position {
@@ -30,20 +36,24 @@ impl Position {
         }
     }
 
-    /// Rebuilds a position saved earlier (database, snapshot). Rejects state
-    /// `apply` could never produce: negative qty (spot can't short), negative
-    /// cost basis, or a cost basis left on a flat position.
+    /// Rebuilds a position saved earlier (database, snapshot).
+    ///
+    /// Checks only rules that hold for any sign: a cost basis never has the
+    /// opposite sign to qty, and a flat position has none. Does not reject a
+    /// negative qty; that is asset-class policy, checked by
+    /// [`check_against`](Self::check_against) once the instrument is known.
     pub fn from_parts(
         instrument: InstrumentId,
         qty: Qty,
         cost_basis: Notional,
         realized_pnl: Notional,
     ) -> Result<Self, Error> {
-        if qty.is_negative() {
-            return Err(Error::InvalidPosition("qty must be non-negative"));
-        }
-        if cost_basis.is_negative() {
-            return Err(Error::InvalidPosition("cost basis must be non-negative"));
+        if (qty.is_positive() && cost_basis.is_negative())
+            || (qty.is_negative() && cost_basis.is_positive())
+        {
+            return Err(Error::InvalidPosition(
+                "cost basis sign must match qty sign",
+            ));
         }
         if qty.is_zero() && !cost_basis.is_zero() {
             return Err(Error::InvalidPosition(
@@ -56,6 +66,24 @@ impl Position {
             cost_basis,
             realized_pnl,
         })
+    }
+
+    /// Checks this position against `instrument`'s asset-class policy: same
+    /// instrument, and no negative qty unless the class allows shorts. Run
+    /// it on any position restored from outside (`from_parts`, serde) before
+    /// trading on it.
+    pub fn check_against(&self, instrument: &Instrument) -> Result<(), Error> {
+        if instrument.id != self.instrument {
+            return Err(Error::InvalidPosition(
+                "position is for a different instrument",
+            ));
+        }
+        if self.qty.is_negative() && !instrument.allows_short() {
+            return Err(Error::InvalidPosition(
+                "asset class can't hold a negative position",
+            ));
+        }
+        Ok(())
     }
 
     pub fn instrument(&self) -> &InstrumentId {
@@ -99,12 +127,18 @@ impl Position {
     /// cost of what remains is unchanged.
     ///
     /// Rejected, leaving the position unchanged: a fill for another
-    /// instrument, a sell larger than the holding (spot can't short), a base
-    /// fee that consumes the whole buy, and `Fee::Other` (v1 can't value it,
-    /// and ignoring it would overstate P&L).
+    /// instrument, a position that is already negative (short accounting is
+    /// v2), a sell larger than the holding (no v1 class allows shorts), a
+    /// base fee that consumes the whole buy, and `Fee::Other` (v1 can't
+    /// value it, and ignoring it would overstate P&L).
     pub fn apply(&mut self, fill: &Fill, instrument: &Instrument) -> Result<(), Error> {
         if fill.instrument != self.instrument || instrument.id != self.instrument {
             return Err(Error::PositionUpdate("fill is for a different instrument"));
+        }
+        if self.qty.is_negative() {
+            return Err(Error::PositionUpdate(
+                "short position accounting not supported in v1",
+            ));
         }
         let gross = instrument.notional(fill.qty, fill.price);
         match fill.side {
@@ -446,12 +480,50 @@ mod tests {
         assert!(Position::from_parts(id, Qty::ZERO, Notional::ZERO, n(dec!(-0.6))).is_ok());
     }
 
+    /// The type admits a short (negative qty, negative basis): sign is
+    /// asset-class policy, not a type rule (CLAUDE.md).
     #[test]
-    fn from_parts_rejects_unreachable_state() {
+    fn from_parts_admits_signed_qty() {
+        let id: InstrumentId = "binance:BTCUSDT".parse().unwrap();
+        let short = Position::from_parts(id, q(dec!(-1)), n(dec!(-100)), Notional::ZERO).unwrap();
+        assert_eq!(short.qty(), q(dec!(-1)));
+    }
+
+    #[test]
+    fn from_parts_rejects_inconsistent_state() {
         let id = || -> InstrumentId { "binance:BTCUSDT".parse().unwrap() };
-        assert!(Position::from_parts(id(), q(dec!(-1)), Notional::ZERO, Notional::ZERO).is_err());
         assert!(Position::from_parts(id(), q(dec!(1)), n(dec!(-1)), Notional::ZERO).is_err());
+        assert!(Position::from_parts(id(), q(dec!(-1)), n(dec!(100)), Notional::ZERO).is_err());
         assert!(Position::from_parts(id(), Qty::ZERO, n(dec!(5)), Notional::ZERO).is_err());
+    }
+
+    #[test]
+    fn check_against_enforces_spot_policy() {
+        let i = btcusdt();
+        let long = Position::from_parts(i.id.clone(), q(dec!(1)), n(dec!(100)), Notional::ZERO);
+        assert_eq!(long.unwrap().check_against(&i), Ok(()));
+
+        let short = Position::from_parts(i.id.clone(), q(dec!(-1)), n(dec!(-100)), Notional::ZERO);
+        assert!(short.unwrap().check_against(&i).is_err());
+
+        let eth = Position::flat("binance:ETHUSDT".parse().unwrap());
+        assert!(eth.check_against(&i).is_err());
+    }
+
+    #[test]
+    fn apply_refuses_a_negative_position() {
+        let i = btcusdt();
+        let mut short =
+            Position::from_parts(i.id.clone(), q(dec!(-1)), n(dec!(-100)), Notional::ZERO).unwrap();
+        let before = short.clone();
+        let buy = fill(
+            Side::Buy,
+            q(dec!(1)),
+            p(dec!(100)),
+            Fee::Quote(Notional::ZERO),
+        );
+        assert!(short.apply(&buy, &i).is_err());
+        assert_eq!(short, before);
     }
 
     #[test]
@@ -460,7 +532,9 @@ mod tests {
             r#"{"instrument":"binance:BTCUSDT","qty":"1","cost_basis":"100","realized_pnl":"0"}"#;
         let pos: Position = serde_json::from_str(ok).unwrap();
         assert_eq!(serde_json::to_string(&pos).unwrap(), ok);
-        let short = ok.replace(r#""qty":"1""#, r#""qty":"-1""#);
-        assert!(serde_json::from_str::<Position>(&short).is_err());
+        let mismatched = ok.replace(r#""qty":"1""#, r#""qty":"-1""#);
+        assert!(serde_json::from_str::<Position>(&mismatched).is_err());
+        let short = mismatched.replace(r#""cost_basis":"100""#, r#""cost_basis":"-100""#);
+        assert!(serde_json::from_str::<Position>(&short).is_ok());
     }
 }

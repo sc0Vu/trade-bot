@@ -114,6 +114,19 @@ impl Instrument {
         }
     }
 
+    /// Whether a position in this instrument may go negative (a short).
+    ///
+    /// Asset-class policy, checked at runtime by
+    /// [`Position::check_against`](crate::Position::check_against), not
+    /// encoded in `Qty` or `Position`, so a signed (short, perp) position can
+    /// reuse the same types in v2. False for every v1 class: spot can't
+    /// short, and equity shorting needs margin, which v1 doesn't model.
+    pub fn allows_short(&self) -> bool {
+        match self.class {
+            AssetClass::Spot | AssetClass::UsEquity => false,
+        }
+    }
+
     /// Spot settles instantly; US equities at T+1.
     pub fn settlement(&self) -> Settlement {
         match self.class {
@@ -312,6 +325,11 @@ mod tests {
             i.check_order(Qty::new(dec!(0.0001)), p),
             Err(FilterError::BelowMinNotional)
         );
+    }
+
+    #[test]
+    fn no_v1_class_allows_short() {
+        assert!(!btcusdt().allows_short());
     }
 
     #[test]
