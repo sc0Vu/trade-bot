@@ -76,6 +76,25 @@ impl Strategy for BuyAndHold {
         NAME
     }
 
+    /// Whether the one decision has been made, so a restart never buys a
+    /// second time (even if a rejected buy left the books flat).
+    fn save_state(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "v": super::STATE_VERSION, "decided": self.decided }))
+    }
+
+    fn restore_state(
+        &mut self,
+        state: serde_json::Value,
+        _ctx: &Context,
+    ) -> Result<(), StrategyError> {
+        super::check_version(NAME, &state)?;
+        let decided = state["decided"]
+            .as_bool()
+            .ok_or_else(|| super::state_error(NAME, "missing decided"))?;
+        self.decided = decided;
+        Ok(())
+    }
+
     fn on_candle(&mut self, ctx: &mut Context, c: &Candle) -> Vec<Signal> {
         let coin = &self.p.coin;
         // The fill lands a candle later, so "still flat" alone would buy
@@ -236,6 +255,30 @@ mod tests {
                 size: Size::Quote(Notional::new(dec!(1000))),
                 kind: OrderKind::Market,
             }]
+        );
+    }
+
+    /// Restored as decided, a flat restart does not buy again.
+    #[test]
+    fn a_decided_restart_never_buys_again() {
+        let mut s = build(NAME, &params()).unwrap();
+        let mut ctx = driver::new(vec![btcusdt()], Params::default(), 10);
+        s.on_event(&mut ctx, &MarketEvent::Candle(candle(0, "100")));
+        let state = s.save_state().unwrap();
+        assert_eq!(state, serde_json::json!({ "v": 1, "decided": true }));
+
+        let mut fresh = build(NAME, &params()).unwrap();
+        let mut ctx = driver::new(vec![btcusdt()], Params::default(), 10);
+        fresh.restore_state(state, &ctx).unwrap();
+        assert!(
+            fresh
+                .on_event(&mut ctx, &MarketEvent::Candle(candle(1, "100")))
+                .is_empty()
+        );
+        assert!(
+            fresh
+                .restore_state(serde_json::json!({ "v": 1 }), &ctx)
+                .is_err()
         );
     }
 }

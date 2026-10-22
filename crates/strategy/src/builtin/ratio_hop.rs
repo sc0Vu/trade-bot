@@ -8,14 +8,15 @@
 //! the original lacks refuses to rotate into a coin that fell more than
 //! `freefall_pct` over the last `freefall_candles` candles.
 //!
-//! Strategy state (phase, baselines) is not persisted. Started with a coin
-//! already held (a live restart: the engine seeds positions from the
-//! broker's books), it skips the initial buy and resumes holding that coin,
-//! the most valuable one if several are; baselines restart from that
-//! evaluation's ratios, so the ratchet's history is lost. A restart between
-//! the legs of a rotation (sold, not yet bought) holds no coin and buys
-//! afresh with `quote_amount`; the earlier proceeds stay in the bridge
-//! asset.
+//! A live run saves phase, baselines and last evaluation after every
+//! event (`save_state`), and a restart restores them, checked against the
+//! books: a sell cancelled by the restart's reconcile goes back to holding,
+//! a cancelled buy is placed again with the same budget, and a sell that
+//! filled while the bot was down arrives as a recovered fill and buys with
+//! its proceeds. Without saved state (first run, other params, refused
+//! state) it starts afresh: holding a sellable coin, it resumes on it (the
+//! most valuable if several) with baselines from that evaluation's ratios;
+//! holding none, it buys with `quote_amount`.
 //!
 //! Decisions use only closed candles and positions read through `Context`
 //! (invariants 2 and 5). Expected edge is unverified: rotation pays two
@@ -27,7 +28,7 @@ use bot_core::{
     Candle, Decimal, Fee, Fill, InstrumentId, Notional, OrderKind, Qty, Side, Signal, Size,
     TimeInForce, Timestamp,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 const NAME: &str = "ratio_hop";
@@ -79,7 +80,8 @@ struct RatioHopParams {
     limit_timeout: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum Phase {
     Start,
     Buying {
@@ -104,6 +106,20 @@ pub struct RatioHop {
     phase: Phase,
     /// Units of each coin a rotation into it must beat.
     baseline: HashMap<InstrumentId, Qty>,
+    last_eval: Option<Timestamp>,
+    /// Restored mid-buy with the order gone (a restart's reconcile
+    /// cancelled it): place the buy again, same budget, at the next
+    /// evaluation.
+    resubmit: bool,
+}
+
+/// What `save_state` writes. Baselines as a sorted list, so the same state
+/// always serializes the same way.
+#[derive(Serialize, Deserialize)]
+struct Saved {
+    v: u64,
+    phase: Phase,
+    baseline: Vec<(InstrumentId, Qty)>,
     last_eval: Option<Timestamp>,
 }
 
@@ -148,6 +164,7 @@ impl RatioHop {
             phase: Phase::Start,
             baseline: HashMap::new(),
             last_eval: None,
+            resubmit: false,
         }))
     }
 
@@ -269,6 +286,17 @@ impl RatioHop {
                 };
                 vec![buy]
             }
+            Phase::Buying { to, budget, .. } if self.resubmit => {
+                self.resubmit = false;
+                self.phase = Phase::Buying {
+                    to: to.clone(),
+                    budget,
+                    waited: 0,
+                };
+                self.order(ctx, &to, Side::Buy, Size::Quote(budget))
+                    .into_iter()
+                    .collect()
+            }
             Phase::Buying { to, budget, waited } => match self.p.order_type {
                 // A stale limit buy: cancel and re-price at the new close,
                 // same budget, so the leg follows the market.
@@ -370,6 +398,77 @@ inventory::submit! {
 impl Strategy for RatioHop {
     fn name(&self) -> &str {
         NAME
+    }
+
+    /// Phase, baselines and last evaluation: everything the ratchet has
+    /// learned.
+    fn save_state(&self) -> Option<serde_json::Value> {
+        let mut baseline: Vec<(InstrumentId, Qty)> =
+            self.baseline.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        baseline.sort_by(|a, b| a.0.cmp(&b.0));
+        serde_json::to_value(Saved {
+            v: super::STATE_VERSION,
+            phase: self.phase.clone(),
+            baseline,
+            last_eval: self.last_eval,
+        })
+        .ok()
+    }
+
+    /// Checked against the books. A restart's reconcile has cancelled any
+    /// order left working, so: `Holding(a)` needs `a` held; `Selling` with
+    /// the coin still held means the sell was cancelled, so it becomes
+    /// `Holding`, and with the coin gone it waits for the recovered fill;
+    /// `Buying` with the target not held places the buy again; `Stopped`
+    /// starts over, a restart being the operator stepping in.
+    fn restore_state(
+        &mut self,
+        state: serde_json::Value,
+        ctx: &Context,
+    ) -> Result<(), StrategyError> {
+        if self.phase == Phase::Stopped {
+            return Err(super::state_error(
+                NAME,
+                "universe doesn't fit; staying stopped",
+            ));
+        }
+        super::check_version(NAME, &state)?;
+        let saved: Saved =
+            serde_json::from_value(state).map_err(|e| super::state_error(NAME, e))?;
+        let held = |id: &InstrumentId| Self::sellable(ctx, id).is_some_and(|q| q.is_positive());
+        let known = |id: &InstrumentId| self.p.coins.contains(id);
+        let mut resubmit = false;
+        let phase = match saved.phase {
+            Phase::Holding(a) if known(&a) && held(&a) => Phase::Holding(a),
+            Phase::Holding(_) => {
+                return Err(super::state_error(
+                    NAME,
+                    "holding a coin the books don't hold",
+                ));
+            }
+            Phase::Selling { from, .. } if known(&from) && held(&from) => Phase::Holding(from),
+            Phase::Buying { to, budget, waited } if known(&to) => {
+                resubmit = !held(&to);
+                Phase::Buying { to, budget, waited }
+            }
+            Phase::Buying { .. } => {
+                return Err(super::state_error(
+                    NAME,
+                    "buying a coin not in this universe",
+                ));
+            }
+            Phase::Stopped => Phase::Start,
+            other => other,
+        };
+        if saved.baseline.iter().any(|(_, q)| !q.is_positive()) {
+            return Err(super::state_error(NAME, "non-positive baseline"));
+        }
+        // All checks passed: apply at once.
+        self.phase = phase;
+        self.baseline = saved.baseline.into_iter().collect();
+        self.last_eval = saved.last_eval;
+        self.resubmit = resubmit;
+        Ok(())
     }
 
     fn on_start(&mut self, ctx: &mut Context) {
@@ -693,6 +792,84 @@ mod tests {
                     ..
                 }]
             ));
+        }
+
+        /// After warming up on a held coin (baselines set), the saved state
+        /// restores into a fresh strategy exactly.
+        #[test]
+        fn state_round_trips() {
+            let (mut s, mut ctx) = start(vec![held(&btc(), dec!(0.01), dec!(600))]);
+            close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            let state = s.save_state().unwrap();
+            assert_eq!(
+                state["phase"],
+                serde_json::json!({ "holding": "binance:BTCUSDT" })
+            );
+            assert_eq!(state["baseline"].as_array().unwrap().len(), 2);
+            let mut fresh = build(NAME, &params("")).unwrap();
+            fresh.on_start(&mut ctx);
+            fresh.restore_state(state.clone(), &ctx).unwrap();
+            assert_eq!(fresh.save_state(), Some(state));
+        }
+
+        /// Saved as holding BTC, but the books are flat: refused, and the
+        /// strategy is left as it was.
+        #[test]
+        fn holding_what_the_books_dont_hold_is_refused() {
+            let (mut s, mut ctx) = start(vec![held(&btc(), dec!(0.01), dec!(600))]);
+            close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            let state = s.save_state().unwrap();
+            let (mut flat, ctx) = start(vec![]);
+            let before = flat.save_state();
+            assert!(flat.restore_state(state, &ctx).is_err());
+            assert_eq!(flat.save_state(), before);
+        }
+
+        fn saved(phase: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({ "v": 1, "phase": phase, "baseline": [], "last_eval": null })
+        }
+
+        /// Saved mid-sell, but BTC is still held: the restart's reconcile
+        /// cancelled the sell, so it is holding BTC again.
+        #[test]
+        fn cancelled_sell_restores_as_holding() {
+            let (mut s, ctx) = start(vec![held(&btc(), dec!(0.01), dec!(600))]);
+            let state = saved(serde_json::json!({ "selling": {
+                "from": "binance:BTCUSDT", "to": "binance:ETHUSDT", "waited": 0 } }));
+            s.restore_state(state, &ctx).unwrap();
+            assert_eq!(
+                s.save_state().unwrap()["phase"],
+                serde_json::json!({ "holding": "binance:BTCUSDT" })
+            );
+        }
+
+        /// Saved mid-buy with 500 USDT to spend, ETH not held: the buy is
+        /// placed again, same budget, at the next evaluation.
+        #[test]
+        fn cancelled_buy_is_placed_again() {
+            let (mut s, mut ctx) = start(vec![]);
+            let state = saved(serde_json::json!({ "buying": {
+                "to": "binance:ETHUSDT", "budget": "500", "waited": 1 } }));
+            s.restore_state(state, &ctx).unwrap();
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000)),
+                vec![Signal::Submit {
+                    instrument: eth().id.clone(),
+                    side: Side::Buy,
+                    size: Size::Quote(Notional::new(dec!(500))),
+                    kind: OrderKind::Market,
+                }]
+            );
+            // Placed once, not on every evaluation.
+            assert!(close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(3000)).is_empty());
+        }
+
+        #[test]
+        fn other_versions_are_refused() {
+            let (mut s, ctx) = start(vec![]);
+            let mut state = saved(serde_json::json!("start"));
+            state["v"] = serde_json::json!(2);
+            assert!(s.restore_state(state, &ctx).is_err());
         }
     }
 }

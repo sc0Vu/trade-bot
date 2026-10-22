@@ -1,5 +1,42 @@
 //! Strategies shipped with the bot. Each file registers itself.
 
+use crate::StrategyError;
+
+/// State format version of the built-in strategies' `save_state`.
+pub(crate) const STATE_VERSION: u64 = 1;
+
+/// `save_state` for a strategy whose decisions depend only on history and
+/// positions (both rebuilt on restart): nothing to carry but the version.
+pub(crate) fn stateless_save() -> Option<serde_json::Value> {
+    Some(serde_json::json!({ "v": STATE_VERSION }))
+}
+
+/// `restore_state` for such a strategy: accepts its own version only.
+pub(crate) fn stateless_restore(
+    name: &str,
+    state: &serde_json::Value,
+) -> Result<(), StrategyError> {
+    check_version(name, state)
+}
+
+/// Refuses state saved in another format version.
+pub(crate) fn check_version(name: &str, state: &serde_json::Value) -> Result<(), StrategyError> {
+    match state["v"].as_u64() {
+        Some(STATE_VERSION) => Ok(()),
+        v => Err(state_error(
+            name,
+            format!("format version {v:?}, expected {STATE_VERSION}"),
+        )),
+    }
+}
+
+pub(crate) fn state_error(name: &str, reason: impl ToString) -> StrategyError {
+    StrategyError::State {
+        strategy: name.to_owned(),
+        reason: reason.to_string(),
+    }
+}
+
 pub mod buy_and_hold;
 pub mod donchian_breakout;
 pub mod dual_ma_cross;

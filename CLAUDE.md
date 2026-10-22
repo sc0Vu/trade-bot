@@ -378,11 +378,16 @@ next open + slippage; leg unfilled 2 evals → stops) or `limit` (GTC at last
 close, maker, estimate without slippage; needs `limit_timeout`: stale buy
 cancelled by id via `ctx.open_orders` + re-priced at new close, same budget;
 stale sell cancelled → keep holding). Limit may never fill: real cost.
-State (phase, baselines) not persisted. Start with sellable coin held (live
-restart; engine seeds positions) → skip initial buy, hold it (most valuable
-at last close if several), baselines restart from that eval's ratios. Flat
-start (every backtest) unchanged. Restart between legs holds nothing → buys
-afresh with `quote_amount`; earlier proceeds stay in bridge.
+State (phase, baselines, last eval) saved each event, restored on restart
+checked vs books: Holding needs coin held; Selling + coin held → Holding
+(reconcile cancelled sell); Selling + coin gone → wait recovered fill → buy
+with proceeds; Buying + target not held → re-place buy same budget; Stopped →
+Start. No/refused state: resume on most valuable sellable held coin
+(baselines from that eval), else buy `quote_amount`. Flat start (every
+backtest) unchanged.
+Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
+(sma_trend, dual_ma_cross, donchian_breakout, rsi_reversion) only version;
+buy_and_hold `decided`; momentum_rotation `last_eval`.
 
 ## Other built-ins
 `buy_and_hold` — the benchmark every strategy is measured against: can't beat

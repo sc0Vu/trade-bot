@@ -112,6 +112,20 @@ impl Strategy for DualMaCross {
         NAME
     }
 
+    /// Decisions come from history and positions alone, both rebuilt on a
+    /// restart: only the format version is saved.
+    fn save_state(&self) -> Option<serde_json::Value> {
+        super::stateless_save()
+    }
+
+    fn restore_state(
+        &mut self,
+        state: serde_json::Value,
+        _ctx: &Context,
+    ) -> Result<(), StrategyError> {
+        super::stateless_restore(NAME, &state)
+    }
+
     fn on_candle(&mut self, ctx: &mut Context, c: &Candle) -> Vec<Signal> {
         let coin = &self.p.coin;
         // An order still working would be doubled by deciding again.
@@ -318,5 +332,18 @@ mod tests {
         for (i, price) in [(0, "100"), (1, "200"), (2, "300")] {
             assert!(bar(s.as_mut(), &mut ctx, i, price).is_empty());
         }
+    }
+
+    #[test]
+    fn saves_only_its_version() {
+        let mut s = build(NAME, &params()).unwrap();
+        let state = s.save_state().unwrap();
+        assert_eq!(state, serde_json::json!({ "v": 1 }));
+        let ctx = driver::new(vec![btcusdt()], params(), 10);
+        assert!(s.restore_state(state, &ctx).is_ok());
+        assert!(
+            s.restore_state(serde_json::json!({ "v": 2 }), &ctx)
+                .is_err()
+        );
     }
 }

@@ -187,6 +187,24 @@ impl Strategy for MomentumRotation {
         NAME
     }
 
+    /// The last close time evaluated, so a restart doesn't evaluate it
+    /// again. `stopped` isn't saved: `on_start` re-checks the universe.
+    fn save_state(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "v": super::STATE_VERSION, "last_eval": self.last_eval }))
+    }
+
+    fn restore_state(
+        &mut self,
+        state: serde_json::Value,
+        _ctx: &Context,
+    ) -> Result<(), StrategyError> {
+        super::check_version(NAME, &state)?;
+        let last_eval: Option<Timestamp> = serde_json::from_value(state["last_eval"].clone())
+            .map_err(|e| super::state_error(NAME, e))?;
+        self.last_eval = last_eval;
+        Ok(())
+    }
+
     /// Checks the universe only; never trades.
     fn on_start(&mut self, ctx: &mut Context) {
         let quotes: Option<Vec<_>> = self
@@ -538,5 +556,22 @@ mod tests {
         for n in 0..3 {
             assert!(feed(s.as_mut(), &mut ctx, candle(&btcusdt(), n, "100")).is_empty());
         }
+    }
+
+    /// A close time already evaluated before the restart isn't evaluated
+    /// again: the saved last_eval holds bar 2, so bar 2 decides nothing.
+    #[test]
+    fn restored_last_eval_prevents_a_second_decision() {
+        let (mut s, mut ctx) = start("");
+        bar(s.as_mut(), &mut ctx, 0, "100", "10");
+        bar(s.as_mut(), &mut ctx, 1, "100", "10");
+        let state = serde_json::json!({ "v": 1, "last_eval": (3 * HOUR - 1) });
+        s.restore_state(state.clone(), &ctx).unwrap();
+        assert!(bar(s.as_mut(), &mut ctx, 2, "110", "12").is_empty());
+        assert_eq!(s.save_state(), Some(state));
+        assert!(
+            s.restore_state(serde_json::json!({ "v": 9 }), &ctx)
+                .is_err()
+        );
     }
 }
