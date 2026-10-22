@@ -243,7 +243,9 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    (`Restart=always`) so orders aren't unwatched long. Each unfinished journal order: find (venue id, else client
    id; `-2013` on pending = never placed), cancel if working (strategy state
    not persisted → leftover order has no owner), wait until terminal + trades
-   = `executedQty`, record trades idempotently, close. Startup also refuses
+   = `executedQty`, record trades idempotently, close. Startup-recovered fills
+   (`Reconciled.fills`) → `BinanceBroker::with_recovered` →
+   `take_recovered_fills` → strategy `on_fill`. Startup also refuses
    open `tb…` order not in books (bot under other db: fills untracked) and
    books holding > account free+locked. Others' open orders (manual, other
    software) only warned: books count own fills only; worst case bot order

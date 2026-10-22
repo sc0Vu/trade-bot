@@ -205,7 +205,9 @@ impl Provider for BinanceSpotProvider {
             .collect();
         let tag = run_tag(SystemClock.now_millis());
         Ok(Box::new(
-            BinanceBroker::open(client, instruments, tag, self.books.clone()).await?,
+            BinanceBroker::open(client, instruments, tag, self.books.clone())
+                .await?
+                .with_recovered(r.fills),
         ))
     }
 

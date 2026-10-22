@@ -84,6 +84,8 @@ pub struct BinanceBroker {
     run_tag: String,
     books: Arc<dyn Books>,
     fees: FeeValuer,
+    /// Fills the startup reconcile recovered, until the engine takes them.
+    recovered: Vec<Fill>,
 }
 
 impl BinanceBroker {
@@ -111,7 +113,15 @@ impl BinanceBroker {
             open: Vec::new(),
             books,
             fees: FeeValuer::default(),
+            recovered: Vec::new(),
         })
+    }
+
+    /// Fills a startup reconcile recovered (made while the bot was down),
+    /// to be handed to the strategy once through `take_recovered_fills`.
+    pub fn with_recovered(mut self, fills: Vec<Fill>) -> Self {
+        self.recovered = fills;
+        self
     }
 
     fn pending_sell_qty(&self, id: &InstrumentId) -> Qty {
@@ -447,6 +457,10 @@ impl Broker for BinanceBroker {
             .filter(|o| !o.cancelling)
             .map(|o| o.order.clone())
             .collect()
+    }
+
+    fn take_recovered_fills(&mut self) -> Vec<Fill> {
+        std::mem::take(&mut self.recovered)
     }
 }
 
@@ -882,6 +896,21 @@ mod tests {
         assert!(b.settle(&any_event()).await.unwrap().is_empty());
         assert!(b.open_orders().is_empty(), "order complete");
         assert!(db.store.unfinished_orders().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn recovered_fills_are_handed_over_once() {
+        let (b, _t, _db) = broker().await;
+        let fill = trade_to_fill(
+            &btcusdt(),
+            &OrderId::new("tbold-o-3").unwrap(),
+            Side::Buy,
+            &serde_json::from_str(&trade(7, "100", "1", "0.001", "BTC", true)).unwrap(),
+        )
+        .unwrap();
+        let mut b = b.with_recovered(vec![fill.clone()]);
+        assert_eq!(b.take_recovered_fills(), vec![fill]);
+        assert!(b.take_recovered_fills().is_empty());
     }
 
     #[test]

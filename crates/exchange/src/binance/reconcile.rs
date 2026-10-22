@@ -37,13 +37,16 @@ pub enum Phase {
     Exit,
 }
 
-/// What a reconcile changed. Counts only: no money values, safe to log.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What a reconcile changed. Log the counts; the fills carry money
+/// values and are for the strategy (`Broker::take_recovered_fills`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reconciled {
     /// Journal orders closed (cancelled, finished, or never placed).
     pub orders_closed: usize,
     /// Fills recorded that the books didn't have yet.
     pub fills_recovered: usize,
+    /// Those fills, in the order recorded.
+    pub fills: Vec<bot_core::Fill>,
 }
 
 /// Reconciles the books with Binance for `instruments`, which must cover
@@ -75,8 +78,9 @@ pub(crate) async fn reconcile_with(
         let inst = by_id
             .get(&order.instrument)
             .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?;
-        done.fills_recovered +=
-            close_out(client, inst, books, &mut fees, &order, retry_delay).await?;
+        let fills = close_out(client, inst, books, &mut fees, &order, retry_delay).await?;
+        done.fills_recovered += fills.len();
+        done.fills.extend(fills);
         done.orders_closed += 1;
     }
     let label = match phase {
@@ -102,7 +106,7 @@ async fn close_out(
     fees: &mut FeeValuer,
     order: &JournalOrder,
     retry_delay: Duration,
-) -> Result<usize, ExchangeError> {
+) -> Result<Vec<bot_core::Fill>, ExchangeError> {
     let symbol = inst.id.symbol().to_string();
     // A pending order has no venue id yet: the reply to its submit was
     // lost. Its client id is unique (run tag), so it finds the order.
@@ -124,7 +128,7 @@ async fn close_out(
         }) if order.venue_order_id.is_none() => {
             // The submit never reached Binance.
             books.mark_closed(&order.client_order_id).await?;
-            return Ok(0);
+            return Ok(Vec::new());
         }
         other => other?,
     };
@@ -150,7 +154,7 @@ async fn close_out(
     }
     let order_id = OrderId::new(order.client_order_id.as_str())
         .map_err(|e| ExchangeError::Decode(format!("journaled client id: {e}")))?;
-    let mut recovered = 0;
+    let mut recovered = Vec::new();
     // Trades already handled by an earlier attempt: counted, not re-valued.
     let mut handled = HashSet::new();
     for attempt in 0..ATTEMPTS {
@@ -180,7 +184,7 @@ async fn close_out(
                 .await?
                 .is_some()
             {
-                recovered += 1;
+                recovered.push(fill);
             }
         }
         // Same rule as the broker: closed only when Binance says so AND
@@ -364,13 +368,7 @@ mod tests {
         journal(&db, None).await;
         t.reply(400, r#"{"code":-2013,"msg":"Order does not exist."}"#);
         let r = run(&t, &db, Phase::Exit).await.unwrap();
-        assert_eq!(
-            r,
-            Reconciled {
-                orders_closed: 1,
-                fills_recovered: 0
-            }
-        );
+        assert_eq!((r.orders_closed, r.fills_recovered), (1, 0));
         assert_eq!(
             param(&t.sent()[0].query, "origClientOrderId"),
             Some("tbold-o-3")
@@ -385,13 +383,11 @@ mod tests {
         t.reply(200, r#"{"orderId":28,"status":"FILLED","executedQty":"1"}"#);
         t.reply(200, &format!("[{}]", trade(7, "1")));
         let r = run(&t, &db, Phase::Exit).await.unwrap();
-        assert_eq!(
-            r,
-            Reconciled {
-                orders_closed: 1,
-                fills_recovered: 1
-            }
-        );
+        assert_eq!((r.orders_closed, r.fills_recovered), (1, 1));
+        // The fill itself, for the strategy: under the journaled client id.
+        assert_eq!(r.fills.len(), 1);
+        assert_eq!(r.fills[0].order_id.as_str(), "tbold-o-3");
+        assert_eq!(r.fills[0].qty, Qty::new(dec!(1)));
         assert_eq!(held(&db).await, Some(Qty::new(dec!(1))));
         assert!(
             t.sent().iter().all(|r| r.method != Method::Delete),
@@ -413,13 +409,7 @@ mod tests {
         );
         t.reply(200, &format!("[{}]", trade(7, "0.4")));
         let r = run(&t, &db, Phase::Exit).await.unwrap();
-        assert_eq!(
-            r,
-            Reconciled {
-                orders_closed: 1,
-                fills_recovered: 1
-            }
-        );
+        assert_eq!((r.orders_closed, r.fills_recovered), (1, 1));
         let del = &t.sent()[1];
         assert_eq!(
             (del.method, param(&del.query, "orderId")),
