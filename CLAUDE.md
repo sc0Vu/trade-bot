@@ -206,7 +206,12 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    status/cancel by Binance `orderId` from submit ack, never client id; quote budget → `quoteOrderQty` (rounded toward zero,
    8 dp). `settle` polls each open/cancelling order's status + `myTrades`;
    order dropped only when terminal AND trades sum to `executedQty`.
-   Positions from bot's own fills only (start flat; prior balances ignored).
+   Books (`exchange::Books` = `Ledger + OrderJournal + HoldingRepository`,
+   `SqlStore`): order journaled before submit, fills recorded by Binance trade
+   id, position = stored holding → survives restart (engine seeds ctx
+   positions from broker before `on_start`). Balances outside bot's own fills
+   ignored. `run` db: `db.url`, default `sqlite://data/<network>.db`, migrated
+   on open, network-stamped.
    Refusals identical to PaperBroker. Fee in third asset (BNB) → error:
    disable BNB fee payment. Ctrl-C does NOT cancel venue orders.
    `run --paper` = testnet or demo only; `run --live` needs `mode = "live"` +

@@ -1,5 +1,5 @@
 use super::signed::{Method, SignedClient};
-use crate::{Broker, ExchangeError};
+use crate::{Books, Broker, ExchangeError};
 use async_trait::async_trait;
 use bot_core::{
     Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent, Notional, Order,
@@ -9,6 +9,7 @@ use rust_decimal::{Decimal, RoundingStrategy};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::Arc;
 
 /// Decimal places Binance accepts for a USDT `quoteOrderQty`.
 const QUOTE_DP: u32 = 8;
@@ -40,6 +41,8 @@ pub fn run_tag(start_millis: i64) -> String {
 
 struct LiveOrder {
     order: Order,
+    /// `newClientOrderId` as sent; the journal's key.
+    client_id: String,
     /// Binance's own id, from the submit reply. Status and cancel go by
     /// this, never by client id: a client id is unique only among open
     /// orders, so an old closed order can share it.
@@ -62,8 +65,12 @@ struct LiveOrder {
 /// `Broker` contract identical to the paper broker's: fills surface at the
 /// next event, never mid-strategy.
 ///
-/// Positions come only from this bot's fills, starting flat; balances the
-/// account already held are ignored. Pre-submit checks match
+/// Every order and fill goes through [`Books`]: an order is journaled
+/// `pending` before the request is sent and `open` on the ack, each trade
+/// is recorded by its Binance trade id (idempotently), and the order is
+/// journaled `closed` only after its last trade is recorded. Positions are
+/// the books' holdings, so they survive a restart; balances the account
+/// holds outside this bot's fills are ignored. Pre-submit checks match
 /// `PaperBroker` (unknown instrument, reused id, sell beyond holding minus
 /// pending sells), so a strategy sees the same refusals in paper and live
 /// (invariant 3). A fee charged in a third asset (BNB) is an error: v1
@@ -74,19 +81,34 @@ pub struct BinanceBroker {
     positions: HashMap<InstrumentId, Position>,
     open: Vec<LiveOrder>,
     run_tag: String,
+    books: Arc<dyn Books>,
 }
 
 impl BinanceBroker {
-    /// `run_tag` prefixes every client order id sent this run; see
-    /// [`run_tag`].
-    pub fn new(client: SignedClient, instruments: Vec<Instrument>, run_tag: String) -> Self {
-        Self {
+    /// Starts from the holdings `books` has for `instruments`. `run_tag`
+    /// prefixes every client order id sent this run; see [`run_tag`].
+    pub async fn open(
+        client: SignedClient,
+        instruments: Vec<Instrument>,
+        run_tag: String,
+        books: Arc<dyn Books>,
+    ) -> Result<Self, ExchangeError> {
+        let mut positions = HashMap::new();
+        for i in &instruments {
+            if let Some(p) = books.get_holding(&i.id).await? {
+                p.check_against(i)
+                    .map_err(|e| ExchangeError::Decode(format!("stored holding: {e}")))?;
+                positions.insert(i.id.clone(), p);
+            }
+        }
+        Ok(Self {
             client,
             run_tag,
             instruments: instruments.into_iter().map(|i| (i.id.clone(), i)).collect(),
-            positions: HashMap::new(),
+            positions,
             open: Vec::new(),
-        }
+            books,
+        })
     }
 
     fn pending_sell_qty(&self, id: &InstrumentId) -> Qty {
@@ -140,16 +162,19 @@ impl BinanceBroker {
                 .instruments
                 .get(&fill.instrument)
                 .ok_or_else(|| ExchangeError::UnknownInstrument(fill.instrument.clone()))?;
-            self.positions
-                .entry(fill.instrument.clone())
-                .or_insert_with(|| Position::flat(fill.instrument.clone()))
-                .apply(&fill, inst)
-                .map_err(|e| {
-                    ExchangeError::Decode(format!("fill can't be applied to position: {e}"))
-                })?;
+            // Storage folds the fill into the stored holding; that holding
+            // is the position. `None`: already recorded (by a reconcile),
+            // so it was reported then and must not be reported twice.
+            let recorded = self
+                .books
+                .record_venue_fill(&fill, inst, &id.to_string())
+                .await?;
             self.open[idx].seen_trades.insert(id);
             self.open[idx].seen_qty += fill.qty;
-            fills.push(fill);
+            if let Some((_, position)) = recorded {
+                self.positions.insert(fill.instrument.clone(), position);
+                fills.push(fill);
+            }
         }
         // Closed only when Binance says nothing more will fill AND every
         // executed unit has shown up as a trade: the two endpoints can lag
@@ -163,6 +188,9 @@ impl BinanceBroker {
             .and_then(|s| Decimal::from_str(s).ok())
             .ok_or_else(|| ExchangeError::Decode("order executedQty".into()))?;
         let done = terminal && self.open[idx].seen_qty.get() == executed;
+        if done {
+            self.books.mark_closed(&self.open[idx].client_id).await?;
+        }
         Ok((fills, done))
     }
 
@@ -307,20 +335,38 @@ impl Broker for BinanceBroker {
                 "client order id longer than 36 chars",
             ));
         }
-        let ack = self
+        // Journal first: if the request reaches Binance and the reply is
+        // lost, the pending row is how a restart finds the order.
+        self.books
+            .insert_pending(&client_id, &order.instrument, order.side, order.created_at)
+            .await?;
+        let ack = match self
             .client
             .signed(
                 Method::Post,
                 "/api/v3/order",
-                &order_params(&order, client_id),
+                &order_params(&order, client_id.clone()),
             )
-            .await?;
+            .await
+        {
+            Ok(ack) => ack,
+            Err(e) => {
+                // A refusal means no order exists. Anything else (timeout,
+                // garbled reply) leaves it pending for a reconcile.
+                if e.is_order_rejection() {
+                    self.books.mark_closed(&client_id).await?;
+                }
+                return Err(e);
+            }
+        };
         let venue_id = ack["orderId"]
             .as_i64()
             .ok_or_else(|| ExchangeError::Decode("order ack orderId".into()))?;
+        self.books.mark_open(&client_id, venue_id).await?;
         let id = order.id.clone();
         self.open.push(LiveOrder {
             order,
+            client_id,
             venue_id,
             cancelling: false,
             seen_trades: HashSet::new(),
@@ -386,8 +432,10 @@ mod tests {
     use super::*;
     use crate::binance::signed::fake::{FakeTransport, FixedClock, param};
     use crate::binance::signed::{Credentials, sign};
+    use crate::test_db::TempDb;
     use bot_core::{Asset, AssetClass, InstrumentSpec, OrderSpec};
     use rust_decimal_macros::dec;
+    use storage::{HoldingRepository, Ledger, OrderJournal, OrderStatus};
 
     const SECRET: &str = "test-secret";
 
@@ -405,18 +453,22 @@ mod tests {
         .unwrap()
     }
 
-    fn broker() -> (BinanceBroker, FakeTransport) {
-        let t = FakeTransport::default();
+    async fn broker_with(t: &FakeTransport, db: &TempDb) -> BinanceBroker {
         let client = SignedClient::new(
             "https://testnet.binance.vision",
             Box::new(t.clone()),
             Credentials::new("test-key", SECRET),
             Box::new(FixedClock(1_700_000_000_000)),
         );
-        (
-            BinanceBroker::new(client, vec![btcusdt()], "tbrun".into()),
-            t,
-        )
+        BinanceBroker::open(client, vec![btcusdt()], "tbrun".into(), db.store.clone())
+            .await
+            .unwrap()
+    }
+
+    async fn broker() -> (BinanceBroker, FakeTransport, TempDb) {
+        let t = FakeTransport::default();
+        let db = TempDb::new().await;
+        (broker_with(&t, &db).await, t, db)
     }
 
     fn order(id: &str, side: Side, size: Size, kind: OrderKind) -> Order {
@@ -458,7 +510,7 @@ mod tests {
     /// fee 0.00990099 BTC -> hold 9.89108901 BTC at cost 999.99999.
     #[tokio::test]
     async fn market_quote_buy_round_trip() {
-        let (mut b, t) = broker();
+        let (mut b, t, _db) = broker().await;
         t.reply(200, r#"{"symbol":"BTCUSDT","orderId":28,"orderListId":-1,"clientOrderId":"o-1","transactTime":1700000000000}"#);
         let buy = order(
             "o-1",
@@ -524,7 +576,7 @@ mod tests {
 
     #[tokio::test]
     async fn partial_fills_are_reported_once_each() {
-        let (mut b, t) = broker();
+        let (mut b, t, _db) = broker().await;
         t.reply(200, r#"{"orderId":28}"#);
         let limit = Order::new(OrderSpec {
             kind: OrderKind::Limit {
@@ -580,7 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_is_polled_until_closed() {
-        let (mut b, t) = broker();
+        let (mut b, t, _db) = broker().await;
         t.reply(200, r#"{"orderId":28}"#);
         let limit = Order::new(OrderSpec {
             kind: OrderKind::Limit {
@@ -623,7 +675,7 @@ mod tests {
     /// open until the trade shows, or the fill would be lost.
     #[tokio::test]
     async fn filled_status_ahead_of_trades_keeps_polling() {
-        let (mut b, t) = broker();
+        let (mut b, t, _db) = broker().await;
         t.reply(200, r#"{"orderId":28}"#);
         b.submit(order(
             "o-1",
@@ -648,7 +700,7 @@ mod tests {
 
     #[tokio::test]
     async fn bnb_fee_stops_rather_than_misaccounts() {
-        let (mut b, t) = broker();
+        let (mut b, t, _db) = broker().await;
         t.reply(200, r#"{"orderId":28}"#);
         b.submit(order(
             "o-1",
@@ -670,7 +722,7 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_like_the_paper_broker_without_calling_binance() {
-        let (mut b, t) = broker();
+        let (mut b, t, _db) = broker().await;
         let sell = order(
             "o-1",
             Side::Sell,
@@ -686,7 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn venue_rejection_leaves_no_open_order() {
-        let (mut b, t) = broker();
+        let (mut b, t, _db) = broker().await;
         t.reply(400, r#"{"code":-1013,"msg":"Filter failure: NOTIONAL"}"#);
         let buy = order(
             "o-1",
@@ -699,6 +751,109 @@ mod tests {
             Err(ExchangeError::Venue { code: -1013, .. })
         ));
         assert!(b.open_orders().is_empty());
+    }
+
+    fn market_buy(id: &str) -> Order {
+        order(
+            id,
+            Side::Buy,
+            Size::Base(Qty::new(dec!(1))),
+            OrderKind::Market,
+        )
+    }
+
+    #[tokio::test]
+    async fn submit_journals_pending_then_open() {
+        let (mut b, t, db) = broker().await;
+        t.reply(200, r#"{"orderId":28}"#);
+        b.submit(market_buy("o-1")).await.unwrap();
+        let rows = db.store.unfinished_orders().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].client_order_id, "tbrun-o-1");
+        assert_eq!(
+            (rows[0].status, rows[0].venue_order_id),
+            (OrderStatus::Open, Some(28))
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_submit_closes_its_journal_row() {
+        let (mut b, t, db) = broker().await;
+        t.reply(400, r#"{"code":-2010,"msg":"insufficient balance"}"#);
+        assert!(b.submit(market_buy("o-1")).await.is_err());
+        assert!(db.store.unfinished_orders().await.unwrap().is_empty());
+    }
+
+    /// No reply: Binance may or may not have the order. The row must stay
+    /// pending so a restart checks it.
+    #[tokio::test]
+    async fn lost_submit_reply_leaves_order_pending() {
+        let (mut b, _t, db) = broker().await;
+        // FakeTransport with no canned reply fails like a dropped connection.
+        let err = b.submit(market_buy("o-1")).await.unwrap_err();
+        assert!(matches!(err, ExchangeError::Http(_)));
+        let rows = db.store.unfinished_orders().await.unwrap();
+        assert_eq!(rows[0].status, OrderStatus::Pending);
+        assert!(b.open_orders().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fills_land_in_the_books_and_survive_a_restart() {
+        let (mut b, t, db) = broker().await;
+        t.reply(200, r#"{"orderId":28}"#);
+        b.submit(market_buy("o-1")).await.unwrap();
+        t.reply(200, r#"{"orderId":28,"status":"FILLED","executedQty":"1"}"#);
+        t.reply(
+            200,
+            &format!("[{}]", trade(7, "100", "1", "0.001", "BTC", true)),
+        );
+        assert_eq!(b.settle(&any_event()).await.unwrap().len(), 1);
+        // 1 BTC @ 100, fee 0.001 BTC: hold 0.999 at cost 100.
+        let expected = Position::from_parts(
+            btcusdt().id.clone(),
+            Qty::new(dec!(0.999)),
+            Notional::new(dec!(100)),
+            Notional::ZERO,
+        )
+        .unwrap();
+        assert_eq!(
+            db.store.get_holding(&btcusdt().id).await.unwrap(),
+            Some(expected.clone())
+        );
+        assert!(db.store.unfinished_orders().await.unwrap().is_empty());
+
+        // A new broker over the same books starts from that holding, so it
+        // may sell what the last run bought.
+        let restarted = broker_with(&t, &db).await;
+        assert_eq!(restarted.position(&btcusdt().id), expected);
+    }
+
+    /// A trade already in the books (recorded by a reconcile) still counts
+    /// toward the order being complete but is not reported again.
+    #[tokio::test]
+    async fn trade_already_in_books_is_not_reported_twice() {
+        let (mut b, t, db) = broker().await;
+        t.reply(200, r#"{"orderId":28}"#);
+        b.submit(market_buy("o-1")).await.unwrap();
+        let earlier = b
+            .trade_to_fill(
+                &market_buy("o-1"),
+                &serde_json::from_str(&trade(7, "100", "1", "0.001", "BTC", true)).unwrap(),
+            )
+            .unwrap();
+        db.store
+            .record_venue_fill(&earlier, &btcusdt(), "7")
+            .await
+            .unwrap()
+            .unwrap();
+        t.reply(200, r#"{"orderId":28,"status":"FILLED","executedQty":"1"}"#);
+        t.reply(
+            200,
+            &format!("[{}]", trade(7, "100", "1", "0.001", "BTC", true)),
+        );
+        assert!(b.settle(&any_event()).await.unwrap().is_empty());
+        assert!(b.open_orders().is_empty(), "order complete");
+        assert!(db.store.unfinished_orders().await.unwrap().is_empty());
     }
 
     #[test]
@@ -716,7 +871,7 @@ mod tests {
 
     #[tokio::test]
     async fn ack_without_order_id_is_an_error() {
-        let (mut b, t) = broker();
+        let (mut b, t, _db) = broker().await;
         t.reply(200, "{}");
         let buy = order(
             "o-1",

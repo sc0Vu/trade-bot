@@ -11,7 +11,9 @@
 pub mod binance;
 mod error;
 pub mod paper;
+#[cfg(test)]
+mod test_db;
 mod traits;
 
 pub use error::ExchangeError;
-pub use traits::{Broker, InstrumentQuery, MarketData, Provider};
+pub use traits::{Books, Broker, InstrumentQuery, MarketData, Provider};

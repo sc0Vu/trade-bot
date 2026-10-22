@@ -55,6 +55,9 @@ pub struct TestProvider {
     /// When set, every submit fails with this Binance error code instead of
     /// reaching the paper broker.
     pub submit_error: Option<i64>,
+    /// When set, the broker reports this position at start, as a live
+    /// broker does with holdings from an earlier run.
+    pub prior: Option<Position>,
 }
 
 impl TestProvider {
@@ -65,12 +68,39 @@ impl TestProvider {
             slippage_bps,
             fee_rate,
             submit_error: None,
+            prior: None,
         }
     }
 }
 
 /// Paper broker whose submits all fail with one venue error code.
 struct FailingSubmit(PaperBroker, i64);
+
+/// Paper broker that reports a fixed position for its instrument.
+struct Holding(PaperBroker, Position);
+
+#[async_trait]
+impl Broker for Holding {
+    async fn submit(&mut self, o: Order) -> Result<OrderId, ExchangeError> {
+        self.0.submit(o).await
+    }
+    async fn cancel(&mut self, id: OrderId) -> Result<(), ExchangeError> {
+        self.0.cancel(id).await
+    }
+    async fn settle(&mut self, e: &MarketEvent) -> Result<Vec<Fill>, ExchangeError> {
+        self.0.settle(e).await
+    }
+    fn position(&self, i: &InstrumentId) -> Position {
+        if self.1.instrument() == i {
+            self.1.clone()
+        } else {
+            self.0.position(i)
+        }
+    }
+    fn open_orders(&self) -> Vec<Order> {
+        self.0.open_orders()
+    }
+}
 
 #[async_trait]
 impl Broker for FailingSubmit {
@@ -124,9 +154,10 @@ impl Provider for TestProvider {
             Box::new(BpsSlippage::new(self.slippage_bps).unwrap()),
             Box::new(RateFee::new(self.fee_rate, self.fee_rate, FeeAsset::Received).unwrap()),
         );
-        Ok(match self.submit_error {
-            Some(code) => Box::new(FailingSubmit(paper, code)),
-            None => Box::new(paper),
+        Ok(match (self.submit_error, &self.prior) {
+            (Some(code), _) => Box::new(FailingSubmit(paper, code)),
+            (None, Some(p)) => Box::new(Holding(paper, p.clone())),
+            (None, None) => Box::new(paper),
         })
     }
 

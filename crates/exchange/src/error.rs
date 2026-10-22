@@ -32,6 +32,10 @@ pub enum ExchangeError {
     /// loudly: a silently misparsed price is worse than no data.
     #[error("unexpected venue response: {0}")]
     Decode(String),
+    /// The broker's books (database) failed. Trading on without a record
+    /// of fills would lose them, so the run stops.
+    #[error(transparent)]
+    Storage(#[from] storage::StorageError),
 }
 
 /// Binance codes that refuse one order and say nothing about the account:
@@ -57,7 +61,8 @@ impl ExchangeError {
             | Self::Feed(_)
             | Self::Http(_)
             | Self::Credentials(_)
-            | Self::Decode(_) => false,
+            | Self::Decode(_)
+            | Self::Storage(_) => false,
         }
     }
 }

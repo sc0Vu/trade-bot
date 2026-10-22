@@ -58,3 +58,10 @@ limit_timeout = 3
 # Candles of history kept per instrument for the strategy. Must exceed
 # ratio_hop's freefall_candles.
 history_len = 500
+
+[db]
+# Where `run` keeps its books: orders sent, fills, holdings. Default: one
+# SQLite file per network, data/<network>.db (data/ is gitignored). The
+# database is stamped with its network on first use; opening it for another
+# network is refused, so fake fills never count as real holdings.
+# url = "sqlite://data/demo.db?mode=rwc"

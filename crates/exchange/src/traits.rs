@@ -1,6 +1,13 @@
 use crate::ExchangeError;
 use async_trait::async_trait;
 use bot_core::{AssetClass, Fill, Instrument, InstrumentId, MarketEvent, Order, OrderId, Position};
+use storage::{HoldingRepository, Ledger, OrderJournal};
+
+/// The persistence a venue broker keeps its books in: holdings to start
+/// from, an idempotent fill ledger, and the order journal. Any type with
+/// all three (`storage::SqlStore`) qualifies.
+pub trait Books: Ledger + OrderJournal + HoldingRepository {}
+impl<T: Ledger + OrderJournal + HoldingRepository + ?Sized> Books for T {}
 
 /// Which instruments to fetch reference data for.
 #[derive(Clone, Debug, PartialEq, Eq)]

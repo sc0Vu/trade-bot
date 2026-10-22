@@ -3,10 +3,11 @@ use super::{
     LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL,
     TESTNET_WS_URL, run_tag,
 };
-use crate::{Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
+use crate::{Books, Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
 use async_trait::async_trait;
 use bot_core::{AssetClass, Instrument, InstrumentId, Interval};
 use serde::Deserialize;
+use std::sync::Arc;
 
 /// Which Binance spot environment to trade on. Each takes its own keys:
 /// a key from one is refused (`-2015`) by the others.
@@ -74,15 +75,24 @@ pub struct BinanceSpotProvider {
     config: BinanceConfig,
     creds: Credentials,
     universe: Vec<InstrumentId>,
+    books: Arc<dyn Books>,
 }
 
 impl BinanceSpotProvider {
     /// `universe` is the whitelist: the symbols the feed subscribes to.
-    pub fn new(config: BinanceConfig, creds: Credentials, universe: Vec<InstrumentId>) -> Self {
+    /// `books` holds this network's orders, fills and holdings; it must not
+    /// be shared with another network (`SqlStore::bind_network`).
+    pub fn new(
+        config: BinanceConfig,
+        creds: Credentials,
+        universe: Vec<InstrumentId>,
+        books: Arc<dyn Books>,
+    ) -> Self {
         Self {
             config,
             creds,
             universe,
+            books,
         }
     }
 
@@ -125,7 +135,9 @@ impl Provider for BinanceSpotProvider {
             .resolve(&InstrumentQuery::Ids(self.universe.clone()))
             .await?;
         let tag = run_tag(SystemClock.now_millis());
-        Ok(Box::new(BinanceBroker::new(client, instruments, tag)))
+        Ok(Box::new(
+            BinanceBroker::open(client, instruments, tag, self.books.clone()).await?,
+        ))
     }
 
     async fn resolve(&self, query: &InstrumentQuery) -> Result<Vec<Instrument>, ExchangeError> {
@@ -180,9 +192,15 @@ mod tests {
         assert_eq!(c.ws_url(), "wss://stream.testnet.binance.vision");
     }
 
-    #[test]
-    fn provider_reports_network() {
-        let p = BinanceSpotProvider::new(cfg(Network::Demo), Credentials::new("k", "s"), vec![]);
+    #[tokio::test]
+    async fn provider_reports_network() {
+        let db = crate::test_db::TempDb::new().await;
+        let p = BinanceSpotProvider::new(
+            cfg(Network::Demo),
+            Credentials::new("k", "s"),
+            vec![],
+            db.store.clone(),
+        );
         assert_eq!(p.network(), Network::Demo);
         assert_eq!(p.id(), "binance-demo");
     }

@@ -48,6 +48,10 @@ pub struct RunReport {
 /// 5. Signals from `on_fill` and `on_event` go through risk to the broker,
 ///    stamped with this event's time.
 ///
+/// Before `on_start`, the context gets the broker's position for every
+/// whitelisted instrument (flat in a backtest; a live broker's stored
+/// holdings).
+///
 /// Backtest and live call this same function; only `provider` differs.
 pub async fn run<P: Provider + ?Sized>(
     provider: &P,
@@ -67,6 +71,11 @@ pub async fn run<P: Provider + ?Sized>(
     let mut feed = provider.market_data().await?;
     let mut broker = provider.broker().await?;
     let mut ctx = driver::new(instruments, params, config.history_len);
+    // A live broker may start from holdings an earlier run left; the
+    // strategy must see them from `on_start` on.
+    for id in &config.whitelist {
+        driver::set_position(&mut ctx, broker.position(id));
+    }
     let mut run = Run {
         broker: broker.as_mut(),
         next_order: 1,
@@ -329,6 +338,33 @@ mod tests {
             err,
             EngineError::Exchange(ExchangeError::Venue { code: -2015, .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn strategy_starts_with_the_brokers_positions() {
+        struct Peek(Option<Position>);
+        impl Strategy for Peek {
+            fn name(&self) -> &str {
+                "peek"
+            }
+            fn on_start(&mut self, ctx: &mut Context) {
+                self.0 = Some(ctx.position(&btcusdt().id));
+            }
+        }
+        let held = Position::from_parts(
+            btcusdt().id.clone(),
+            Qty::new(dec!(2)),
+            Notional::new(dec!(200)),
+            Notional::ZERO,
+        )
+        .unwrap();
+        let mut provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        provider.prior = Some(held.clone());
+        let mut s = Peek(None);
+        run(&provider, &mut s, Params::default(), &config())
+            .await
+            .unwrap();
+        assert_eq!(s.0, Some(held));
     }
 
     #[tokio::test]

@@ -18,7 +18,9 @@ use exchange::binance::{
 };
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use storage::SqlStore;
 use strategy::Params;
 
 #[derive(Parser)]
@@ -58,6 +60,19 @@ struct RunArgs {
     config: Option<PathBuf>,
 }
 
+/// Opens (and migrates) the run's database and checks it belongs to
+/// `network`.
+async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<Arc<SqlStore>> {
+    let url = db.url_for(network);
+    if db.url.is_none() {
+        // The default SQLite file lives under data/ (gitignored).
+        std::fs::create_dir_all("data").context("creating data/")?;
+    }
+    let store = SqlStore::open(&url).await.context("opening the database")?;
+    store.bind_network(config::network_name(network)).await?;
+    Ok(Arc::new(store))
+}
+
 async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
     let cfg = config::Config::load(a.config.as_deref())?;
     let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
@@ -70,6 +85,7 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
     )?;
     // Hard error in every mode: fake-money networks need their own keys too.
     let creds = Credentials::from_env()?;
+    let books = open_books(&cfg.db, network).await?;
     let provider = BinanceSpotProvider::new(
         BinanceConfig {
             network,
@@ -79,6 +95,7 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
         },
         creds,
         cfg.whitelist.clone(),
+        books,
     );
     let params = Params::new(cfg.strategy.params);
     let mut strategy = strategy::build(&cfg.strategy.name, &params)?;

@@ -39,6 +39,37 @@ pub struct Config {
     pub strategy: StrategySection,
     #[serde(default)]
     pub engine: EngineSection,
+    #[serde(default)]
+    pub db: DbSection,
+}
+
+/// Where a live run keeps its books (orders, fills, holdings).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DbSection {
+    /// Database URL. Default: one SQLite file per network,
+    /// `data/<network>.db`. The database is stamped with its network on
+    /// first use, and opening it for another network is refused.
+    pub url: Option<String>,
+}
+
+impl DbSection {
+    /// The configured URL, or the per-network default.
+    pub fn url_for(&self, network: Network) -> String {
+        self.url
+            .clone()
+            .unwrap_or_else(|| format!("sqlite://data/{}.db?mode=rwc", network_name(network)))
+    }
+}
+
+/// The name a network goes by in config, file names and the database
+/// stamp.
+pub fn network_name(network: Network) -> &'static str {
+    match network {
+        Network::Testnet => "testnet",
+        Network::Demo => "demo",
+        Network::Live => "live",
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,6 +185,21 @@ mod tests {
             assert_eq!(c.strategy.params["quote_amount"].as_str(), Some("100"));
             Ok(())
         });
+    }
+
+    #[test]
+    fn each_network_gets_its_own_default_database() {
+        let d = DbSection::default();
+        assert_eq!(
+            d.url_for(Network::Testnet),
+            "sqlite://data/testnet.db?mode=rwc"
+        );
+        assert_eq!(d.url_for(Network::Demo), "sqlite://data/demo.db?mode=rwc");
+        assert_eq!(d.url_for(Network::Live), "sqlite://data/live.db?mode=rwc");
+        let set = DbSection {
+            url: Some("mysql://bot@db/bot".into()),
+        };
+        assert_eq!(set.url_for(Network::Live), "mysql://bot@db/bot");
     }
 
     #[test]
