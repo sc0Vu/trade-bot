@@ -1,0 +1,8 @@
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":0,"close_time":3599999,"open":"10","high":"10","low":"10","close":"10","volume":"1","quote_volume":"10"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":3600000,"close_time":7199999,"open":"10","high":"10","low":"10","close":"10","volume":"1","quote_volume":"10"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":7200000,"close_time":10799999,"open":"10","high":"10","low":"10","close":"10","volume":"1","quote_volume":"10"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":10800000,"close_time":14399999,"open":"10.5","high":"10.5","low":"10.5","close":"10.5","volume":"1","quote_volume":"10.5"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":14400000,"close_time":17999999,"open":"12.5","high":"12.5","low":"12.5","close":"12.5","volume":"1","quote_volume":"12.5"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":18000000,"close_time":21599999,"open":"12","high":"12","low":"12","close":"12","volume":"1","quote_volume":"12"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":21600000,"close_time":25199999,"open":"11","high":"11","low":"11","close":"11","volume":"1","quote_volume":"11"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":25200000,"close_time":28799999,"open":"11","high":"11","low":"11","close":"11","volume":"1","quote_volume":"11"}
