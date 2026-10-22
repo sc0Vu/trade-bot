@@ -8,7 +8,7 @@ pub mod public;
 pub mod signed;
 pub mod ws;
 
-pub use broker::BinanceBroker;
+pub use broker::{BinanceBroker, CLIENT_ID_PREFIX, run_tag};
 pub use provider::{BinanceConfig, BinanceSpotProvider, Network};
 pub use public::PublicClient;
 pub use signed::{

@@ -12,9 +12,38 @@ use std::str::FromStr;
 
 /// Decimal places Binance accepts for a USDT `quoteOrderQty`.
 const QUOTE_DP: u32 = 8;
+/// Binance's limit on `newClientOrderId` (`^[a-zA-Z0-9-_]{1,36}$`).
+const CLIENT_ID_MAX: usize = 36;
+/// Start of every client order id this bot sends, so its orders can be
+/// told apart from ones placed by hand or by other software.
+pub const CLIENT_ID_PREFIX: &str = "tb";
+
+/// A per-run tag for client order ids: [`CLIENT_ID_PREFIX`] plus the run's
+/// start time in base 36 (8 digits until 2059). Engine order ids restart at
+/// `o-1` every run; the tag keeps `newClientOrderId` unique across runs.
+pub fn run_tag(start_millis: i64) -> String {
+    let mut n = start_millis.unsigned_abs();
+    let mut digits = Vec::new();
+    loop {
+        digits.push(char::from_digit((n % 36) as u32, 36).unwrap_or('0'));
+        n /= 36;
+        if n == 0 {
+            break;
+        }
+    }
+    digits.reverse();
+    format!(
+        "{CLIENT_ID_PREFIX}{}",
+        digits.into_iter().collect::<String>()
+    )
+}
 
 struct LiveOrder {
     order: Order,
+    /// Binance's own id, from the submit reply. Status and cancel go by
+    /// this, never by client id: a client id is unique only among open
+    /// orders, so an old closed order can share it.
+    venue_id: i64,
     /// Cancel sent; still polled until Binance reports it closed, so a fill
     /// that raced the cancel isn't lost.
     cancelling: bool,
@@ -25,7 +54,8 @@ struct LiveOrder {
 
 /// Binance spot broker over signed REST.
 ///
-/// `submit` places the order with our `OrderId` as `newClientOrderId`;
+/// `submit` places the order with `newClientOrderId` = run tag + our
+/// `OrderId` ([`run_tag`]) and keeps Binance's `orderId` from the reply;
 /// `settle` polls each open order's trades (`myTrades?orderId=`) and
 /// status, turning new trades into fills (partial fills included) and
 /// dropping orders Binance reports closed. Polling per event keeps the
@@ -43,12 +73,16 @@ pub struct BinanceBroker {
     instruments: HashMap<InstrumentId, Instrument>,
     positions: HashMap<InstrumentId, Position>,
     open: Vec<LiveOrder>,
+    run_tag: String,
 }
 
 impl BinanceBroker {
-    pub fn new(client: SignedClient, instruments: Vec<Instrument>) -> Self {
+    /// `run_tag` prefixes every client order id sent this run; see
+    /// [`run_tag`].
+    pub fn new(client: SignedClient, instruments: Vec<Instrument>, run_tag: String) -> Self {
         Self {
             client,
+            run_tag,
             instruments: instruments.into_iter().map(|i| (i.id.clone(), i)).collect(),
             positions: HashMap::new(),
             open: Vec::new(),
@@ -67,21 +101,21 @@ impl BinanceBroker {
     }
 
     async fn poll(&mut self, idx: usize) -> Result<(Vec<Fill>, bool), ExchangeError> {
-        let (symbol, client_id) = {
-            let o = &self.open[idx].order;
-            (o.instrument.symbol().to_string(), o.id.to_string())
+        let (symbol, exchange_id) = {
+            let o = &self.open[idx];
+            (o.order.instrument.symbol().to_string(), o.venue_id)
         };
         let status = self
             .client
             .signed(
                 Method::Get,
                 "/api/v3/order",
-                &[("symbol", symbol.clone()), ("origClientOrderId", client_id)],
+                &[
+                    ("symbol", symbol.clone()),
+                    ("orderId", exchange_id.to_string()),
+                ],
             )
             .await?;
-        let exchange_id = status["orderId"]
-            .as_i64()
-            .ok_or_else(|| ExchangeError::Decode("order orderId".into()))?;
         let trades = self
             .client
             .signed(
@@ -202,7 +236,7 @@ fn tif(t: TimeInForce) -> String {
 }
 
 /// Order parameters for `POST /api/v3/order`.
-fn order_params(o: &Order) -> Vec<(&'static str, String)> {
+fn order_params(o: &Order, client_id: String) -> Vec<(&'static str, String)> {
     let mut p = vec![
         ("symbol", o.instrument.symbol().to_string()),
         (
@@ -247,7 +281,7 @@ fn order_params(o: &Order) -> Vec<(&'static str, String)> {
         )),
     }
     p.extend(extra);
-    p.push(("newClientOrderId", o.id.to_string()));
+    p.push(("newClientOrderId", client_id));
     p.push(("newOrderRespType", "ACK".to_owned()));
     p
 }
@@ -267,12 +301,27 @@ impl Broker for BinanceBroker {
                 return Err(ExchangeError::Rejected("sell exceeds holding"));
             }
         }
-        self.client
-            .signed(Method::Post, "/api/v3/order", &order_params(&order))
+        let client_id = format!("{}-{}", self.run_tag, order.id);
+        if client_id.len() > CLIENT_ID_MAX {
+            return Err(ExchangeError::Rejected(
+                "client order id longer than 36 chars",
+            ));
+        }
+        let ack = self
+            .client
+            .signed(
+                Method::Post,
+                "/api/v3/order",
+                &order_params(&order, client_id),
+            )
             .await?;
+        let venue_id = ack["orderId"]
+            .as_i64()
+            .ok_or_else(|| ExchangeError::Decode("order ack orderId".into()))?;
         let id = order.id.clone();
         self.open.push(LiveOrder {
             order,
+            venue_id,
             cancelling: false,
             seen_trades: HashSet::new(),
             seen_qty: Qty::ZERO,
@@ -292,7 +341,7 @@ impl Broker for BinanceBroker {
                 "/api/v3/order",
                 &[
                     ("symbol", o.order.instrument.symbol().to_string()),
-                    ("origClientOrderId", id.to_string()),
+                    ("orderId", o.venue_id.to_string()),
                 ],
             )
             .await?;
@@ -364,7 +413,10 @@ mod tests {
             Credentials::new("test-key", SECRET),
             Box::new(FixedClock(1_700_000_000_000)),
         );
-        (BinanceBroker::new(client, vec![btcusdt()]), t)
+        (
+            BinanceBroker::new(client, vec![btcusdt()], "tbrun".into()),
+            t,
+        )
     }
 
     fn order(id: &str, side: Side, size: Size, kind: OrderKind) -> Order {
@@ -425,7 +477,7 @@ mod tests {
         let (unsigned, sig) = req.query.rsplit_once("&signature=").unwrap();
         assert_eq!(
             unsigned,
-            "symbol=BTCUSDT&side=BUY&type=MARKET&quoteOrderQty=1000&newClientOrderId=o-1\
+            "symbol=BTCUSDT&side=BUY&type=MARKET&quoteOrderQty=1000&newClientOrderId=tbrun-o-1\
              &newOrderRespType=ACK&recvWindow=5000&timestamp=1700000000000"
         );
         assert_eq!(sig, sign(SECRET, unsigned));
@@ -445,7 +497,9 @@ mod tests {
         let fills = b.settle(&any_event()).await.unwrap();
 
         let sent = t.sent();
-        assert_eq!(param(&sent[1].query, "origClientOrderId"), Some("o-1"));
+        // Looked up by Binance's id from the ack, not by client id.
+        assert_eq!(param(&sent[1].query, "orderId"), Some("28"));
+        assert_eq!(param(&sent[1].query, "origClientOrderId"), None);
         assert_eq!(
             (sent[2].path.as_str(), param(&sent[2].query, "orderId")),
             ("/api/v3/myTrades", Some("28"))
@@ -547,8 +601,8 @@ mod tests {
         b.cancel(OrderId::new("o-1").unwrap()).await.unwrap();
         let del = &t.sent()[1];
         assert_eq!(
-            (del.method, param(&del.query, "origClientOrderId")),
-            (Method::Delete, Some("o-1"))
+            (del.method, param(&del.query, "orderId")),
+            (Method::Delete, Some("28"))
         );
         assert!(
             b.open_orders().is_empty(),
@@ -648,6 +702,32 @@ mod tests {
     }
 
     #[test]
+    fn run_tag_is_base36_start_time() {
+        assert_eq!(run_tag(0), "tb0");
+        assert_eq!(run_tag(35), "tbz");
+        assert_eq!(run_tag(36), "tb10");
+        // 2026-10-22T00:00:00Z.
+        assert_eq!(run_tag(1_792_627_200_000), "tbmviry800");
+        // Any start time with a 9-digit tag (until about year 5100) fits
+        // Binance's 36-char limit with the largest engine id.
+        let longest = format!("{}-o-{}", run_tag(36_i64.pow(9) - 1), u64::MAX);
+        assert!(longest.len() <= CLIENT_ID_MAX, "{longest}");
+    }
+
+    #[tokio::test]
+    async fn ack_without_order_id_is_an_error() {
+        let (mut b, t) = broker();
+        t.reply(200, "{}");
+        let buy = order(
+            "o-1",
+            Side::Buy,
+            Size::Base(Qty::new(dec!(1))),
+            OrderKind::Market,
+        );
+        assert!(matches!(b.submit(buy).await, Err(ExchangeError::Decode(_))));
+    }
+
+    #[test]
     fn quote_budget_rounds_toward_zero_to_8dp() {
         let o = order(
             "o-1",
@@ -655,7 +735,7 @@ mod tests {
             Size::Quote(Notional::new(dec!(1239.7264230096))),
             OrderKind::Market,
         );
-        let p = order_params(&o);
+        let p = order_params(&o, "tbrun-o-1".into());
         assert!(p.contains(&(
             "quoteOrderQty",
             "1239.72642300".trim_end_matches('0').to_owned()

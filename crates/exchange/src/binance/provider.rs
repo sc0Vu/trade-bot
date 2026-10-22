@@ -1,7 +1,7 @@
 use super::{
-    BinanceBroker, Credentials, DEMO_REST_URL, DEMO_WS_URL, KlineStream, LIVE_REST_URL,
+    BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_URL, KlineStream, LIVE_REST_URL,
     LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL,
-    TESTNET_WS_URL,
+    TESTNET_WS_URL, run_tag,
 };
 use crate::{Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
 use async_trait::async_trait;
@@ -124,7 +124,8 @@ impl Provider for BinanceSpotProvider {
         let instruments = self
             .resolve(&InstrumentQuery::Ids(self.universe.clone()))
             .await?;
-        Ok(Box::new(BinanceBroker::new(client, instruments)))
+        let tag = run_tag(SystemClock.now_millis());
+        Ok(Box::new(BinanceBroker::new(client, instruments, tag)))
     }
 
     async fn resolve(&self, query: &InstrumentQuery) -> Result<Vec<Instrument>, ExchangeError> {

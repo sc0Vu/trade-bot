@@ -201,8 +201,9 @@ ABI — compiler mismatch UB).
    `"x": true` closed bars emitted; dropped socket = error, no reconnect yet)
    + `BinanceBroker` (signed REST via `SignedClient`; key checked at startup
 by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candle; `Transport`/`Clock`
-   traits for no-network tests). Orders carry our `OrderId` as
-   `newClientOrderId`; quote budget → `quoteOrderQty` (rounded toward zero,
+   traits for no-network tests). Orders carry run tag + our `OrderId`
+   as `newClientOrderId` (`tb<start-ms base36>-o-N`: unique across runs);
+   status/cancel by Binance `orderId` from submit ack, never client id; quote budget → `quoteOrderQty` (rounded toward zero,
    8 dp). `settle` polls each open/cancelling order's status + `myTrades`;
    order dropped only when terminal AND trades sum to `executedQty`.
    Positions from bot's own fills only (start flat; prior balances ignored).
