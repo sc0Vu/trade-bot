@@ -157,6 +157,14 @@ holds for every event type, not just candles.
 Loop order matters: each event, broker settles pending orders against
 NEW event *before* strategy runs, so order decided at t fills
 at t+1. Prevents deciding on close and trading at it.
+`engine::run` per event: (1) feed ts must not go backwards → else stop;
+(2) `broker.settle(event)`; (3) each fill → ctx position from broker →
+`on_fill`, *before* event joins history (fill at open must not see that
+close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
+broker, `created_at` = event ts. Risk v1: whitelist, sizing (quote → base
+at order price, except market buy keeps quote budget), lot/tick rounding
+(never more aggressive), `check_order`. Rejected signal → `RunReport`,
+not fatal. Order ids deterministic (`o-1`, `o-2`, …).
 
 ## Strategy import — the Rust-specific problem
 Python imports `.py` at runtime; Rust compiled, so "drop in strategy" has

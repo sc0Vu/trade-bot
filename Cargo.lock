@@ -793,9 +793,15 @@ dependencies = [
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bot-core",
  "exchange",
+ "rust_decimal",
+ "rust_decimal_macros",
  "strategy",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

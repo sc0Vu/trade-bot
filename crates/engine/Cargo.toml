@@ -7,5 +7,13 @@ publish.workspace = true
 
 [dependencies]
 bot-core.workspace = true
-strategy.workspace = true
 exchange.workspace = true
+strategy.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+tokio.workspace = true
