@@ -64,7 +64,7 @@ async fn run(fixture: &str, limit_timeout: u32) -> Report {
     .unwrap()
 }
 
-/// Worked by hand. Each leg is a limit at the last close; the next bar
+/// Worked by hand, confirmed by owner 2026-10-22. Each leg is a limit at the last close; the next bar
 /// trades through it, so it fills at the limit as maker, stamped at that
 /// bar's close. Estimates use closes with no slippage (limits can't slip):
 ///   t0 limit buy BTC @100, budget 1000 -> 10 BTC; t1 low 99 < 100 fills:
