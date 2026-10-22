@@ -45,7 +45,8 @@ async fn run(freefall_pct: &str) -> Report {
            fee = "0.001"
            slippage_bps = "{SLIPPAGE_BPS}"
            freefall_pct = "{freefall_pct}"
-           freefall_candles = 2"#
+           freefall_candles = 2
+           order_type = "market""#
     ))
     .unwrap();
     let mut s = strategy::build("ratio_hop", &params).unwrap();

@@ -290,8 +290,11 @@ lot(notional(lot(held A), sellpx A)·(1−fee) / buypx B)·(1−fee), sellpx =
 close·(1−s) tick-down, buypx = close·(1+s) tick-up; rotate if
 > baseline[B]·(1+margin), not in freefall, best ratio wins; leaving A sets
 baseline[A] = units sold. Sell A, then on fill buy B with exact proceeds
-(quote budget → never overspends). Leg unfilled 2 evals → stops (no
-rejection hook yet).
+(quote budget → never overspends). `order_type` required: `market` (taker,
+next open + slippage; leg unfilled 2 evals → stops) or `limit` (GTC at last
+close, maker, estimate without slippage; needs `limit_timeout`: stale buy
+cancelled by id via `ctx.open_orders` + re-priced at new close, same budget;
+stale sell cancelled → keep holding). Limit may never fill: real cost.
 
 ## Layout
 ```

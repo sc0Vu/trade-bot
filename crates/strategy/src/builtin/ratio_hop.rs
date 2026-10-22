@@ -16,7 +16,7 @@
 use crate::{Context, Params, Strategy, StrategyError, StrategyRegistration, exact_decimal};
 use bot_core::{
     Candle, Decimal, Fee, Fill, InstrumentId, Notional, OrderKind, Qty, Side, Signal, Size,
-    Timestamp,
+    TimeInForce, Timestamp,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -25,6 +25,17 @@ const NAME: &str = "ratio_hop";
 /// Evaluations a leg may stay unfilled before the strategy stops. Strategies
 /// can't see rejections yet, so a refused leg would otherwise wait forever.
 const MAX_WAIT: u32 = 2;
+
+/// How each leg is placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum OrderType {
+    /// Taker: fills next open plus slippage; certain but pays the spread.
+    Market,
+    /// Maker: GTC limit at the last close; fills only if price trades
+    /// through it, never worse than the limit, maybe never.
+    Limit,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +62,12 @@ struct RatioHopParams {
     freefall_pct: Decimal,
     /// …over this many candles. Engine `history_len` must exceed it.
     freefall_candles: usize,
+    /// `"market"` or `"limit"`. Required: the two have different costs and
+    /// fill risk, so neither is a safe silent default.
+    order_type: OrderType,
+    /// Limit mode only: evaluations a leg may rest unfilled before it is
+    /// cancelled and re-priced at the new close.
+    limit_timeout: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +75,8 @@ enum Phase {
     Start,
     Buying {
         to: InstrumentId,
+        /// Quote this leg may spend: the start amount or the sell proceeds.
+        budget: Notional,
         waited: u32,
     },
     Holding(InstrumentId),
@@ -112,6 +131,9 @@ impl RatioHop {
         if p.freefall_candles == 0 {
             return bad("freefall_candles must be >= 1");
         }
+        if p.order_type == OrderType::Limit && !p.limit_timeout.is_some_and(|t| t >= 1) {
+            return bad("limit_timeout (>= 1) is required with order_type = \"limit\"");
+        }
         Ok(Box::new(Self {
             p,
             phase: Phase::Start,
@@ -120,13 +142,40 @@ impl RatioHop {
         }))
     }
 
-    fn market(instrument: &InstrumentId, side: Side, size: Size) -> Signal {
-        Signal::Submit {
+    /// One leg as `order_type` says: a market order, or a GTC limit at the
+    /// instrument's last known close. `None` if there's no close yet.
+    fn order(
+        &self,
+        ctx: &Context,
+        instrument: &InstrumentId,
+        side: Side,
+        size: Size,
+    ) -> Option<Signal> {
+        let kind = match self.p.order_type {
+            OrderType::Market => OrderKind::Market,
+            OrderType::Limit => OrderKind::Limit {
+                price: ctx.last_candle(instrument)?.close,
+                tif: TimeInForce::Gtc,
+            },
+        };
+        Some(Signal::Submit {
             instrument: instrument.clone(),
             side,
             size,
-            kind: OrderKind::Market,
-        }
+            kind,
+        })
+    }
+
+    /// Cancels for every open order of ours on `id`.
+    fn cancels(ctx: &Context, id: &InstrumentId) -> Vec<Signal> {
+        ctx.open_orders(id)
+            .map(|o| Signal::Cancel(o.id.clone()))
+            .collect()
+    }
+
+    /// The leg has now rested `waited + 1` evaluations, reaching the limit.
+    fn timed_out(&self, waited: u32) -> bool {
+        self.p.limit_timeout.is_some_and(|t| waited + 1 >= t)
     }
 
     /// Lot-rounded units of `id` held, i.e. what a sell can actually move.
@@ -135,9 +184,10 @@ impl RatioHop {
     }
 
     /// Units of `to` held after selling `units` of `from` and buying `to`
-    /// with the proceeds, starting from current closes. Each leg pays
-    /// slippage (sell at close*(1-s) rounded down to tick, buy at
-    /// close*(1+s) rounded up, as the paper broker does) and `fee`: the
+    /// with the proceeds, starting from current closes. Each market leg
+    /// pays slippage (sell at close*(1-s) rounded down to tick, buy at
+    /// close*(1+s) rounded up, as the paper broker does); a limit leg fills
+    /// at its limit, the close, so pays none. Every leg pays `fee`: the
     /// sell fee in quote, the buy fee in base (Binance spot).
     fn estimate(
         &self,
@@ -147,7 +197,10 @@ impl RatioHop {
         to: &InstrumentId,
     ) -> Option<Qty> {
         let (fi, ti) = (ctx.instrument(from)?, ctx.instrument(to)?);
-        let s = self.p.slippage_bps / Decimal::from(10_000);
+        let s = match self.p.order_type {
+            OrderType::Market => self.p.slippage_bps / Decimal::from(10_000),
+            OrderType::Limit => Decimal::ZERO,
+        };
         // round_price(.., Buy) rounds down, (.., Sell) up: against the trader.
         let pf = fi.round_price(ctx.last_candle(from)?.close * (Decimal::ONE - s), Side::Buy);
         let pt = ti.round_price(ctx.last_candle(to)?.close * (Decimal::ONE + s), Side::Sell);
@@ -173,40 +226,64 @@ impl RatioHop {
     fn evaluate(&mut self, ctx: &mut Context) -> Vec<Signal> {
         match self.phase.clone() {
             Phase::Start => {
-                let first = &self.p.coins[0];
+                let first = self.p.coins[0].clone();
+                let budget = self.p.quote_amount;
+                let Some(buy) = self.order(ctx, &first, Side::Buy, Size::Quote(budget)) else {
+                    return Vec::new();
+                };
                 self.phase = Phase::Buying {
-                    to: first.clone(),
+                    to: first,
+                    budget,
                     waited: 0,
                 };
-                vec![Self::market(
-                    first,
-                    Side::Buy,
-                    Size::Quote(self.p.quote_amount),
-                )]
+                vec![buy]
             }
-            Phase::Buying { to, waited } => {
-                self.phase = if waited >= MAX_WAIT {
-                    Phase::Stopped
-                } else {
-                    Phase::Buying {
+            Phase::Buying { to, budget, waited } => match self.p.order_type {
+                // A stale limit buy: cancel and re-price at the new close,
+                // same budget, so the leg follows the market.
+                OrderType::Limit if self.timed_out(waited) => {
+                    let mut out = Self::cancels(ctx, &to);
+                    out.extend(self.order(ctx, &to, Side::Buy, Size::Quote(budget)));
+                    self.phase = Phase::Buying {
                         to,
+                        budget,
+                        waited: 0,
+                    };
+                    out
+                }
+                OrderType::Market if waited >= MAX_WAIT => {
+                    self.phase = Phase::Stopped;
+                    Vec::new()
+                }
+                _ => {
+                    self.phase = Phase::Buying {
+                        to,
+                        budget,
                         waited: waited + 1,
-                    }
-                };
-                Vec::new()
-            }
-            Phase::Selling { from, to, waited } => {
-                self.phase = if waited >= MAX_WAIT {
-                    Phase::Stopped
-                } else {
-                    Phase::Selling {
+                    };
+                    Vec::new()
+                }
+            },
+            Phase::Selling { from, to, waited } => match self.p.order_type {
+                // A stale limit sell: cancel and keep holding; the next
+                // evaluation decides afresh at the new prices.
+                OrderType::Limit if self.timed_out(waited) => {
+                    self.phase = Phase::Holding(from.clone());
+                    Self::cancels(ctx, &from)
+                }
+                OrderType::Market if waited >= MAX_WAIT => {
+                    self.phase = Phase::Stopped;
+                    Vec::new()
+                }
+                _ => {
+                    self.phase = Phase::Selling {
                         from,
                         to,
                         waited: waited + 1,
-                    }
-                };
-                Vec::new()
-            }
+                    };
+                    Vec::new()
+                }
+            },
             Phase::Holding(a) => self.consider_rotation(ctx, &a),
             Phase::Stopped => Vec::new(),
         }
@@ -249,7 +326,9 @@ impl RatioHop {
             to: b,
             waited: 0,
         };
-        vec![Self::market(a, Side::Sell, Size::Base(units))]
+        self.order(ctx, a, Side::Sell, Size::Base(units))
+            .into_iter()
+            .collect()
     }
 }
 
@@ -309,8 +388,17 @@ impl Strategy for RatioHop {
                 };
                 let proceeds = inst.notional(f.qty, f.price) - fee;
                 // Spend exactly what the sell raised, never more.
-                ctx.submit(Self::market(&to, Side::Buy, Size::Quote(proceeds)));
-                self.phase = Phase::Buying { to, waited: 0 };
+                match self.order(ctx, &to, Side::Buy, Size::Quote(proceeds)) {
+                    Some(buy) => {
+                        ctx.submit(buy);
+                        self.phase = Phase::Buying {
+                            to,
+                            budget: proceeds,
+                            waited: 0,
+                        };
+                    }
+                    None => self.phase = Phase::Stopped,
+                }
             }
             Phase::Buying { to, .. } if f.instrument == to && f.side == Side::Buy => {
                 self.phase = Phase::Holding(to);
@@ -333,10 +421,25 @@ mod tests {
                slippage_bps = "10"
                freefall_pct = "0.2"
                freefall_candles = 2
+               order_type = "market"
                {extra}"#
         ))
         .unwrap()
     }
+
+    #[test]
+    fn limit_mode_builds_with_timeout() {
+        assert!(build(NAME, &Params::from_toml(&LIMIT.replace("X", "")).unwrap()).is_ok());
+    }
+
+    const LIMIT: &str = r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
+               quote_amount = "1000"
+               fee = "0.001"
+               slippage_bps = "10"
+               freefall_pct = "0.2"
+               freefall_candles = 2
+               order_type = "limit"
+               limit_timeout = 3X"#;
 
     #[test]
     fn self_registers() {
@@ -352,25 +455,51 @@ mod tests {
                fee = "0.001"
                slippage_bps = "10"
                freefall_pct = "0.2"
-               freefall_candles = 2"#,
+               freefall_candles = 2
+               order_type = "market""#,
             r#"coins = ["binance:BTCUSDT", "binance:BTCUSDT"]
                quote_amount = "1000"
                fee = "0.001"
                slippage_bps = "10"
                freefall_pct = "0.2"
-               freefall_candles = 2"#,
+               freefall_candles = 2
+               order_type = "market""#,
             r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
                quote_amount = "1000"
                fee = 0.001
                slippage_bps = "10"
                freefall_pct = "0.2"
-               freefall_candles = 2"#,
+               freefall_candles = 2
+               order_type = "market""#,
             r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
                quote_amount = "1000"
                fee = "0.001"
                slippage_bps = "10"
                freefall_pct = "1.5"
+               freefall_candles = 2
+               order_type = "market""#,
+            // slippage_bps missing: must be explicit.
+            r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
+               quote_amount = "1000"
+               fee = "0.001"
+               freefall_pct = "0.2"
+               freefall_candles = 2
+               order_type = "market""#,
+            // order_type missing: must be explicit.
+            r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
+               quote_amount = "1000"
+               fee = "0.001"
+               slippage_bps = "10"
+               freefall_pct = "0.2"
                freefall_candles = 2"#,
+            // limit without limit_timeout.
+            r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
+               quote_amount = "1000"
+               fee = "0.001"
+               slippage_bps = "10"
+               freefall_pct = "0.2"
+               freefall_candles = 2
+               order_type = "limit""#,
         ] {
             assert!(
                 build(NAME, &Params::from_toml(bad).unwrap()).is_err(),

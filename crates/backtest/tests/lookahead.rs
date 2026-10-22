@@ -85,7 +85,8 @@ async fn run(instruments: &[bot_core::Instrument], candles: Vec<Candle>) -> RunR
            fee = "0.001"
            slippage_bps = "10"
            freefall_pct = "0.5"
-           freefall_candles = 2"#,
+           freefall_candles = 2
+           order_type = "market""#,
     )
     .unwrap();
     let mut s = strategy::build("ratio_hop", &params).unwrap();
