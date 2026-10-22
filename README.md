@@ -28,6 +28,7 @@ that would be a bug.
 - [Project layout](#project-layout)
 - [Known limitations](#known-limitations)
 - [Development](#development)
+- [License](#license)
 
 More depth: [doc/architecture.md](doc/architecture.md).
 
@@ -242,4 +243,6 @@ Backtest P&L paths have regression tests with hand-worked expected values.
 Commits are one logical change each, with Conventional Commit subjects.
 `CLAUDE.md` holds the full project rules.
 
-No license file has been added yet.
+## License
+
+MIT. See [LICENSE](LICENSE).
