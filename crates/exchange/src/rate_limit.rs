@@ -142,13 +142,15 @@ impl RateLimiter {
     }
 
     /// Waits until a request costing `weight` and placing `orders` orders
-    /// fits every limit, records it, and returns how long it waited.
+    /// fits every limit, records it, and returns how long it waited: exactly
+    /// zero if it didn't have to.
     pub async fn acquire(&self, weight: u64, orders: u64) -> Result<Duration, TooLarge> {
         let cost = |kind: Kind| match kind {
             Kind::Weight => weight,
             Kind::Orders => orders,
         };
         let started = Instant::now();
+        let mut slept = false;
         loop {
             let wake = {
                 let mut s = self.lock();
@@ -175,11 +177,16 @@ impl RateLimiter {
                             w.total += c;
                         }
                     }
-                    return Ok(now.duration_since(started));
+                    return Ok(if slept {
+                        now.duration_since(started)
+                    } else {
+                        Duration::ZERO
+                    });
                 }
                 wake
             };
             tokio::time::sleep_until(wake).await;
+            slept = true;
         }
     }
 
@@ -243,6 +250,16 @@ mod tests {
         let l = Limit::with_headroom(Kind::Weight, MIN, 6000, 0.8);
         assert_eq!(l.budget, 4800);
         assert_eq!(Limit::with_headroom(Kind::Orders, MIN, 7, 0.5).budget, 3);
+    }
+
+    /// On a real clock too: taking the lock is not a wait. (Seen live:
+    /// every request was reported as held for 0 ms.)
+    #[tokio::test]
+    async fn no_wait_is_exactly_zero_on_a_real_clock() {
+        let l = RateLimiter::new([weight(10)]);
+        for _ in 0..5 {
+            assert_eq!(l.acquire(1, 0).await, Ok(Duration::ZERO));
+        }
     }
 
     #[tokio::test(start_paused = true)]
