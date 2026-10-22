@@ -275,6 +275,10 @@ data/          downloaded klines (gitignored)
 ```
 
 ## Commands
+`make` lists targets (`check` = fmt-check + lint + doc + test, run before commit;
+`migrate-*`, `fetch-data`, `backtest`, `run-paper`; vars `DATABASE_URL`,
+`SYMBOL`, `FROM`, …). No live target on purpose: `--i-understand` must be
+typed per run (invariant 7). Raw equivalents:
 ```
 cargo run -p cli -- fetch-data --symbol BTCUSDT --interval 1h --from 2024-01-01   # cache history
 cargo run -p cli -- backtest --strategy ratio_hop --from 2024-01-01 --to 2024-06-01
