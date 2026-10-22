@@ -10,11 +10,12 @@
 //! cancelling is the only safe choice.
 
 use super::broker::{CLIENT_ID_PREFIX, executed_qty, is_terminal, trade_id, trade_to_fill};
+use super::fees::FeeValuer;
 use super::signed::{Method, SignedClient};
 use crate::{Books, ExchangeError};
 use bot_core::{Instrument, InstrumentId, OrderId, Qty};
 use rust_decimal::Decimal;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::Duration;
 use storage::JournalOrder;
@@ -69,11 +70,13 @@ pub(crate) async fn reconcile_with(
     let by_id: HashMap<&InstrumentId, &Instrument> =
         instruments.iter().map(|i| (&i.id, i)).collect();
     let mut done = Reconciled::default();
+    let mut fees = FeeValuer::default();
     for order in books.unfinished_orders().await? {
         let inst = by_id
             .get(&order.instrument)
             .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?;
-        done.fills_recovered += close_out(client, inst, books, &order, retry_delay).await?;
+        done.fills_recovered +=
+            close_out(client, inst, books, &mut fees, &order, retry_delay).await?;
         done.orders_closed += 1;
     }
     if phase == Phase::Startup {
@@ -88,6 +91,7 @@ async fn close_out(
     client: &SignedClient,
     inst: &Instrument,
     books: &dyn Books,
+    fees: &mut FeeValuer,
     order: &JournalOrder,
     retry_delay: Duration,
 ) -> Result<usize, ExchangeError> {
@@ -139,6 +143,8 @@ async fn close_out(
     let order_id = OrderId::new(order.client_order_id.as_str())
         .map_err(|e| ExchangeError::Decode(format!("journaled client id: {e}")))?;
     let mut recovered = 0;
+    // Trades already handled by an earlier attempt: counted, not re-valued.
+    let mut handled = HashSet::new();
     for attempt in 0..ATTEMPTS {
         if attempt > 0 {
             tokio::time::sleep(retry_delay).await;
@@ -156,8 +162,13 @@ async fn close_out(
         {
             let fill = trade_to_fill(inst, &order_id, order.side, t)?;
             seen += fill.qty;
+            let id = trade_id(t)?;
+            if !handled.insert(id) {
+                continue;
+            }
+            let fill = fees.complete(client, inst, fill).await?;
             if books
-                .record_venue_fill(&fill, inst, &trade_id(t)?.to_string())
+                .record_venue_fill(&fill, inst, &id.to_string())
                 .await?
                 .is_some()
             {
@@ -271,6 +282,7 @@ async fn check_balances(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binance::fees::tests::{BNBUSDT_INFO, bnb_kline};
     use crate::binance::signed::Credentials;
     use crate::binance::signed::fake::{FakeTransport, FixedClock, param};
     use crate::test_db::TempDb;
@@ -453,6 +465,24 @@ mod tests {
         let r = run(&t, &db, Phase::Exit).await.unwrap();
         assert_eq!(r.fills_recovered, 0);
         assert_eq!(held(&db).await, Some(Qty::new(dec!(1))));
+    }
+
+    /// The demo-account case: an order filled with BNB fees before the
+    /// bot could value them. Reconcile now values and records them.
+    #[tokio::test]
+    async fn bnb_fee_trades_are_valued_on_recovery() {
+        let (t, db) = (FakeTransport::default(), TempDb::new().await);
+        journal(&db, Some(28)).await;
+        t.reply(200, r#"{"orderId":28,"status":"FILLED","executedQty":"1"}"#);
+        t.reply(
+            200,
+            r#"[{"id":7,"orderId":28,"price":"100","qty":"1","commission":"0.0001","commissionAsset":"BNB","time":5,"isBuyer":true,"isMaker":true}]"#,
+        );
+        t.reply(200, BNBUSDT_INFO);
+        t.reply(200, &bnb_kline(0, "600.00"));
+        assert_eq!(run(&t, &db, Phase::Exit).await.unwrap().fills_recovered, 1);
+        let pos = db.store.get_holding(&btcusdt().id).await.unwrap().unwrap();
+        assert_eq!(pos.cost_basis(), Notional::new(dec!(100.06)));
     }
 
     #[tokio::test]

@@ -214,8 +214,10 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    positions from broker before `on_start`). Balances outside bot's own fills
    ignored. `run` db: `db.url`, default `sqlite://data/<network>.db`, migrated
    on open, network-stamped.
-   Refusals identical to PaperBroker. Fee in third asset (BNB) → error:
-   disable BNB fee payment.
+   Refusals identical to PaperBroker. Fee in third asset (BNB) → valued
+   (`binance::fees`) at close of 1m `{asset}{quote}` candle containing trade,
+   via that pair's `Instrument::notional`; approximation (myTrades omits
+   Binance's rate). No such pair/candle → error, never guess.
    Reconcile (`binance::reconcile`, Binance = truth, books = which are ours):
    startup (in `provider.broker()`) and every exit incl. Ctrl-C/error
    (`close_out`). Each unfinished journal order: find (venue id, else client

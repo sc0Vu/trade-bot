@@ -1,8 +1,9 @@
+use super::fees::FeeValuer;
 use super::signed::{Method, SignedClient};
 use crate::{Books, Broker, ExchangeError};
 use async_trait::async_trait;
 use bot_core::{
-    Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent, Notional, Order,
+    Asset, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent, Notional, Order,
     OrderId, OrderKind, Position, Price, Qty, Side, Size, TimeInForce, Timestamp,
 };
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -73,8 +74,8 @@ struct LiveOrder {
 /// holds outside this bot's fills are ignored. Pre-submit checks match
 /// `PaperBroker` (unknown instrument, reused id, sell beyond holding minus
 /// pending sells), so a strategy sees the same refusals in paper and live
-/// (invariant 3). A fee charged in a third asset (BNB) is an error: v1
-/// can't value it, so trading stops instead of mis-accounting it.
+/// (invariant 3). A fee charged in a third asset (BNB) is valued in the
+/// quote asset at the trade's minute (see the `fees` module).
 pub struct BinanceBroker {
     client: SignedClient,
     instruments: HashMap<InstrumentId, Instrument>,
@@ -82,6 +83,7 @@ pub struct BinanceBroker {
     open: Vec<LiveOrder>,
     run_tag: String,
     books: Arc<dyn Books>,
+    fees: FeeValuer,
 }
 
 impl BinanceBroker {
@@ -108,6 +110,7 @@ impl BinanceBroker {
             positions,
             open: Vec::new(),
             books,
+            fees: FeeValuer::default(),
         })
     }
 
@@ -161,6 +164,7 @@ impl BinanceBroker {
                 .get(&order.instrument)
                 .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?;
             let fill = trade_to_fill(inst, &order.id, order.side, t)?;
+            let fill = self.fees.complete(&self.client, inst, fill).await?;
             // Storage folds the fill into the stored holding; that holding
             // is the position. `None`: already recorded (by a reconcile),
             // so it was reported then and must not be reported twice.
@@ -229,10 +233,13 @@ pub(super) fn trade_to_fill(
     } else if asset == inst.quote.as_str() {
         Fee::Quote(Notional::new(commission))
     } else {
-        return Err(ExchangeError::Decode(format!(
-            "fee charged in {asset}; v1 values fees only in base or quote. \
-                 Turn off paying fees with BNB on the account."
-        )));
+        // Valued later by `FeeValuer`, which needs the network.
+        Fee::Other {
+            asset: Asset::new(asset)
+                .map_err(|e| ExchangeError::Decode(format!("commissionAsset: {e}")))?,
+            amount: Qty::new(commission),
+            value: None,
+        }
     };
     let side = if t["isBuyer"].as_bool() == Some(true) {
         Side::Buy
@@ -446,6 +453,7 @@ impl Broker for BinanceBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binance::fees::tests::{BNBUSDT_INFO, bnb_kline};
     use crate::binance::signed::fake::{FakeTransport, FixedClock, param};
     use crate::binance::signed::{Credentials, sign};
     use crate::test_db::TempDb;
@@ -715,25 +723,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bnb_fee_stops_rather_than_misaccounts() {
-        let (mut b, t, _db) = broker().await;
+    async fn bnb_fee_is_valued_and_counted() {
+        let (mut b, t, db) = broker().await;
         t.reply(200, r#"{"orderId":28}"#);
-        b.submit(order(
-            "o-1",
-            Side::Buy,
-            Size::Base(Qty::new(dec!(1))),
-            OrderKind::Market,
-        ))
-        .await
-        .unwrap();
+        b.submit(market_buy("o-1")).await.unwrap();
         t.reply(200, r#"{"orderId":28,"status":"FILLED","executedQty":"1"}"#);
         t.reply(
             200,
             &format!("[{}]", trade(1, "100", "1", "0.0001", "BNB", true)),
         );
-        let err = b.settle(&any_event()).await.unwrap_err();
-        assert!(err.to_string().contains("BNB"));
-        assert!(b.position(&btcusdt().id).is_flat());
+        // The trade is at 3_600_000 ms: BNBUSDT's 1m candle from then.
+        t.reply(200, BNBUSDT_INFO);
+        t.reply(200, &bnb_kline(3_600_000, "600.00"));
+        let fills = b.settle(&any_event()).await.unwrap();
+        assert_eq!(fills.len(), 1);
+        // 0.0001 BNB * 600 = 0.06 USDT: hold the full 1 BTC at cost 100.06.
+        let pos = b.position(&btcusdt().id);
+        assert_eq!(pos.qty(), Qty::new(dec!(1)));
+        assert_eq!(pos.cost_basis(), Notional::new(dec!(100.06)));
+        assert_eq!(
+            db.store.get_holding(&btcusdt().id).await.unwrap(),
+            Some(pos)
+        );
     }
 
     #[tokio::test]
