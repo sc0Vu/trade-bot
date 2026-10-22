@@ -1,0 +1,8 @@
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":0,"close_time":3599999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":3600000,"close_time":7199999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":7200000,"close_time":10799999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":10800000,"close_time":14399999,"open":"105","high":"105","low":"105","close":"105","volume":"1","quote_volume":"105"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":14400000,"close_time":17999999,"open":"108","high":"108","low":"108","close":"108","volume":"1","quote_volume":"108"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":18000000,"close_time":21599999,"open":"104","high":"104","low":"104","close":"104","volume":"1","quote_volume":"104"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":21600000,"close_time":25199999,"open":"99","high":"99","low":"99","close":"99","volume":"1","quote_volume":"99"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":25200000,"close_time":28799999,"open":"98","high":"98","low":"98","close":"98","volume":"1","quote_volume":"98"}

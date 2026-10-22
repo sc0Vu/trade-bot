@@ -335,3 +335,18 @@ async fn dual_ma_cross_never_lets_the_future_change_the_past() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn donchian_breakout_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "donchian_breakout",
+        8,
+        "donchian_breakout",
+        r#"coin = "binance:BTCUSDT"
+           channel_period = 3
+           quote_amount = "972.99"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}
