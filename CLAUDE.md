@@ -377,12 +377,19 @@ proceeds: losing hop overspends (backtest negative `min_cash`; live `-2010`,
 stays cash). Bets winners persist; fails on sharp reversals, choppy
 leadership. Dust = cash.
 
+`rsi_reversion` — one coin; the counterexample to the trend filters. Flat and
+RSI < `oversold` → buy `quote_amount`; long and RSI > `overbought` → sell all.
+RSI = v1 simple-average form (not Wilder) over last `rsi_period` changes
+(needs `rsi_period + 1` closes): 100·G/(G+L); no losses 100, no gains 0, no
+move 50. Bets on ranges; in sustained downtrend catches falling knife, holds
+to the bottom (no stop, by design). Dust = cash; no decision while order open.
+
 ## Layout
 ```
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, momentum_rotation, ratio_hop, sma_trend)
+  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report

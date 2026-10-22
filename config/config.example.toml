@@ -43,7 +43,8 @@ interval = "1m"
 http_timeout_secs = 10
 
 [strategy]
-# A registered strategy: buy_and_hold, momentum_rotation, ratio_hop, sma_trend.
+# A registered strategy: buy_and_hold, momentum_rotation, ratio_hop,
+# rsi_reversion, sma_trend.
 name = "ratio_hop"
 
 # Strategy-specific; checked when the strategy is built.
