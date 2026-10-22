@@ -172,7 +172,13 @@ at t+1. Prevents deciding on close and trading at it.
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
 broker, `created_at` = event ts. Risk v1: whitelist, sizing (quote → base
 at order price, except market buy keeps quote budget), lot/tick rounding
-(never more aggressive), `check_order`. `run_observed(.., &mut dyn Observer)` = same loop + `Snapshot` (positions,
+(never more aggressive), `check_order`. Strategy state: `save_state() -> Option<Value>` (versioned, money as strings)
+in `Snapshot.strategy_state` after each event; `run_observed(.., resume)`
+calls `restore_state(state, &ctx)` after `on_start`, all-or-nothing, must
+refuse state contradicting books; refused → fresh + warning.
+`Broker::take_recovered_fills` (startup reconcile) → engine delivers to
+`on_fill` with first non-Backfill event (history warm).
+`run_observed(.., &mut dyn Observer)` = same loop + `Snapshot` (positions,
 open orders, last candles, counts) after each event; `run` = no observer, no
 snapshot cost. Observer can't change run, must return fast. Rejected signal (risk, or venue refusing that one order:
 `ExchangeError::is_order_rejection`) → `RunReport`, not fatal; other broker

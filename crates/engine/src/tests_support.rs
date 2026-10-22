@@ -58,6 +58,8 @@ pub struct TestProvider {
     /// When set, the broker reports this position at start, as a live
     /// broker does with holdings from an earlier run.
     pub prior: Option<Position>,
+    /// Fills the broker reports as recovered at startup.
+    pub recovered: Vec<Fill>,
 }
 
 impl TestProvider {
@@ -69,12 +71,38 @@ impl TestProvider {
             fee_rate,
             submit_error: None,
             prior: None,
+            recovered: Vec::new(),
         }
     }
 }
 
 /// Paper broker whose submits all fail with one venue error code.
 struct FailingSubmit(PaperBroker, i64);
+
+/// Paper broker that hands out recovered fills once.
+struct Recovering(PaperBroker, Vec<Fill>);
+
+#[async_trait]
+impl Broker for Recovering {
+    async fn submit(&mut self, o: Order) -> Result<OrderId, ExchangeError> {
+        self.0.submit(o).await
+    }
+    async fn cancel(&mut self, id: OrderId) -> Result<(), ExchangeError> {
+        self.0.cancel(id).await
+    }
+    async fn settle(&mut self, e: &MarketEvent) -> Result<Vec<Fill>, ExchangeError> {
+        self.0.settle(e).await
+    }
+    fn position(&self, i: &InstrumentId) -> Position {
+        self.0.position(i)
+    }
+    fn open_orders(&self) -> Vec<Order> {
+        self.0.open_orders()
+    }
+    fn take_recovered_fills(&mut self) -> Vec<Fill> {
+        std::mem::take(&mut self.1)
+    }
+}
 
 /// Paper broker that reports a fixed position for its instrument.
 struct Holding(PaperBroker, Position);
@@ -157,6 +185,9 @@ impl Provider for TestProvider {
         Ok(match (self.submit_error, &self.prior) {
             (Some(code), _) => Box::new(FailingSubmit(paper, code)),
             (None, Some(p)) => Box::new(Holding(paper, p.clone())),
+            (None, None) if !self.recovered.is_empty() => {
+                Box::new(Recovering(paper, self.recovered.clone()))
+            }
             (None, None) => Box::new(paper),
         })
     }

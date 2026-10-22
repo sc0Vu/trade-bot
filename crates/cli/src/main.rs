@@ -142,7 +142,7 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
     };
     tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");
     let outcome = tokio::select! {
-        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer) => r.map(Some),
+        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, None) => r.map(Some),
         s = shutdown::signal() => {
             eprintln!("{}: stopping; cancelling open orders (signal again to skip)", s?);
             Ok(None)

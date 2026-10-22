@@ -36,6 +36,30 @@ pub trait Strategy: Send {
     /// [`Context::submit`].
     fn on_start(&mut self, _ctx: &mut Context) {}
 
+    /// The strategy's own state (phase, baselines, flags) as a value a live
+    /// run saves after every event, so a restart can carry on where it
+    /// stopped. Include a format version so a later build can refuse what
+    /// it doesn't understand. Money stays in decimal strings (invariant 1).
+    /// `None` (the default): nothing to save.
+    fn save_state(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Takes back what [`save_state`](Self::save_state) returned, after
+    /// [`on_start`](Self::on_start) and before the first event. `ctx` shows
+    /// the books as they are now (positions, open orders): state that
+    /// contradicts them (a run that crashed between a fill and the next
+    /// save) must be refused, as must another format version. All or
+    /// nothing: on `Err` the strategy must be as `on_start` left it, and it
+    /// runs fresh.
+    fn restore_state(
+        &mut self,
+        _state: serde_json::Value,
+        _ctx: &Context,
+    ) -> Result<(), StrategyError> {
+        Ok(())
+    }
+
     /// Called for every event, after fills caused by it have been delivered
     /// and after the event has been added to the rolling history. The default
     /// sends candles to [`on_candle`](Self::on_candle) and ignores the rest.

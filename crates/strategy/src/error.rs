@@ -12,4 +12,8 @@ pub enum StrategyError {
     /// `strategy.params` doesn't deserialize into the strategy's params type.
     #[error("invalid params for {strategy:?}: {reason}")]
     Params { strategy: String, reason: String },
+    /// Saved state that can't be restored: another format version, or
+    /// state that contradicts the books (positions, open orders).
+    #[error("can't restore {strategy:?} state: {reason}")]
+    State { strategy: String, reason: String },
 }

@@ -51,6 +51,8 @@ pub struct Snapshot {
     pub open_orders: Vec<Order>,
     /// Latest closed candle per whitelisted instrument that has one.
     pub last_candles: Vec<Candle>,
+    /// The strategy's [`Strategy::save_state`] after this event.
+    pub strategy_state: Option<serde_json::Value>,
 }
 
 /// Watches a run from outside. Called after every event has been fully
@@ -86,19 +88,23 @@ pub async fn run<P: Provider + ?Sized>(
     params: Params,
     config: &EngineConfig,
 ) -> Result<RunReport, EngineError> {
-    run_inner(provider, strategy, params, config, None).await
+    run_inner(provider, strategy, params, config, None, None).await
 }
 
-/// [`run`], handing `observer` a [`Snapshot`] after every event. The loop is
-/// otherwise identical, so what is observed is exactly what [`run`] does.
+/// [`run`], handing `observer` a [`Snapshot`] after every event, and
+/// restoring the strategy from `resume` (a previous run's
+/// [`Snapshot::strategy_state`]) after `on_start`. A state the strategy
+/// refuses is logged and the strategy runs fresh. The loop is otherwise
+/// identical, so what is observed is exactly what [`run`] does.
 pub async fn run_observed<P: Provider + ?Sized>(
     provider: &P,
     strategy: &mut dyn Strategy,
     params: Params,
     config: &EngineConfig,
     observer: &mut dyn Observer,
+    resume: Option<serde_json::Value>,
 ) -> Result<RunReport, EngineError> {
-    run_inner(provider, strategy, params, config, Some(observer)).await
+    run_inner(provider, strategy, params, config, Some(observer), resume).await
 }
 
 async fn run_inner<P: Provider + ?Sized>(
@@ -107,6 +113,7 @@ async fn run_inner<P: Provider + ?Sized>(
     params: Params,
     config: &EngineConfig,
     mut observer: Option<&mut dyn Observer>,
+    resume: Option<serde_json::Value>,
 ) -> Result<RunReport, EngineError> {
     let instruments = provider
         .resolve(&InstrumentQuery::Ids(config.whitelist.clone()))
@@ -132,8 +139,18 @@ async fn run_inner<P: Provider + ?Sized>(
     };
 
     strategy.on_start(&mut ctx);
+    if let Some(state) = resume {
+        match strategy.restore_state(state, &ctx) {
+            Ok(()) => tracing::info!("strategy state restored"),
+            Err(e) => tracing::warn!(error = %e, "saved strategy state discarded; starting fresh"),
+        }
+    }
     let signals = driver::take_signals(&mut ctx);
     run.route(&ctx, signals).await?;
+    // Fills made while the bot was down reach `on_fill` with the first
+    // event the strategy decides on, once its history has warmed up (a
+    // follow-up order may need a last close).
+    let mut recovered = run.broker.take_recovered_fills();
 
     let mut last: Option<Timestamp> = None;
     while let Some(event) = feed.next().await? {
@@ -153,7 +170,12 @@ async fn run_inner<P: Provider + ?Sized>(
                 .set(c.close_time.as_millis() as f64 / 1000.0);
         }
 
-        let fills = run.broker.settle(&event).await?;
+        let mut fills = run.broker.settle(&event).await?;
+        if !recovered.is_empty() && !matches!(event, MarketEvent::Backfill(_)) {
+            let mut late = std::mem::take(&mut recovered);
+            late.append(&mut fills);
+            fills = late;
+        }
         driver::set_open_orders(&mut ctx, run.broker.open_orders());
         for fill in fills {
             metrics::counter!(
@@ -200,6 +222,7 @@ async fn run_inner<P: Provider + ?Sized>(
                     .iter()
                     .filter_map(|id| ctx.last_candle(id).cloned())
                     .collect(),
+                strategy_state: strategy.save_state(),
             });
         }
     }
@@ -584,7 +607,7 @@ mod tests {
         let provider = TestProvider::new(three_candles(), dec!(0), dec!(0.001));
         let (mut s, params) = buy_and_hold("1000");
         let mut keep = Keep(Vec::new());
-        let r = run_observed(&provider, s.as_mut(), params, &config(), &mut keep)
+        let r = run_observed(&provider, s.as_mut(), params, &config(), &mut keep, None)
             .await
             .unwrap();
         assert_eq!(keep.0.len(), 3);
@@ -637,6 +660,131 @@ mod tests {
         assert_eq!(r.events, 3);
         assert_eq!(s.1, 1, "one decision");
         assert_eq!(s.0, vec![3], "made with all three bars in history");
+    }
+
+    /// Counts candles it decides on; saves and restores that count.
+    struct Counter {
+        seen: u64,
+        fills: Vec<(u64, bot_core::OrderId)>,
+        refuse: bool,
+    }
+
+    impl Strategy for Counter {
+        fn name(&self) -> &str {
+            "counter"
+        }
+        fn on_candle(&mut self, _: &mut Context, _: &bot_core::Candle) -> Vec<Signal> {
+            self.seen += 1;
+            Vec::new()
+        }
+        fn on_fill(&mut self, _: &mut Context, f: &Fill) {
+            self.fills.push((self.seen, f.order_id.clone()));
+        }
+        fn save_state(&self) -> Option<serde_json::Value> {
+            Some(serde_json::json!({ "v": 1, "seen": self.seen }))
+        }
+        fn restore_state(
+            &mut self,
+            state: serde_json::Value,
+            _: &Context,
+        ) -> Result<(), strategy::StrategyError> {
+            if self.refuse {
+                return Err(strategy::StrategyError::State {
+                    strategy: "counter".into(),
+                    reason: "test".into(),
+                });
+            }
+            self.seen = state["seen"].as_u64().unwrap();
+            Ok(())
+        }
+    }
+
+    struct Keep(Vec<Snapshot>);
+    impl Observer for Keep {
+        fn on_snapshot(&mut self, s: &Snapshot) {
+            self.0.push(s.clone());
+        }
+    }
+
+    fn counting(refuse: bool) -> Counter {
+        Counter {
+            seen: 0,
+            fills: Vec::new(),
+            refuse,
+        }
+    }
+
+    /// Resumed at 10, three candles later the saved state says 13; a
+    /// refused state starts from 0 instead.
+    #[tokio::test]
+    async fn state_is_restored_and_saved_each_event() {
+        let provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        let resume = Some(serde_json::json!({ "v": 1, "seen": 10 }));
+        let mut s = counting(false);
+        let mut keep = Keep(Vec::new());
+        run_observed(
+            &provider,
+            &mut s,
+            Params::default(),
+            &config(),
+            &mut keep,
+            resume.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            keep.0.last().unwrap().strategy_state,
+            Some(serde_json::json!({ "v": 1, "seen": 13 }))
+        );
+
+        let mut s = counting(true);
+        let mut keep = Keep(Vec::new());
+        run_observed(
+            &provider,
+            &mut s,
+            Params::default(),
+            &config(),
+            &mut keep,
+            resume,
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.seen, 3, "refused state: fresh run");
+    }
+
+    /// A fill recovered at startup reaches on_fill with the first decision
+    /// event (c2), not during the warm-up backfill (c0, c1).
+    #[tokio::test]
+    async fn recovered_fills_arrive_with_the_first_decision_event() {
+        let mut events = three_candles();
+        for e in events.iter_mut().take(2) {
+            if let MarketEvent::Candle(c) = e {
+                *e = MarketEvent::Backfill(c.clone());
+            }
+        }
+        let mut provider = TestProvider::new(events, dec!(0), dec!(0));
+        let recovered = bot_core::Fill::new(bot_core::FillSpec {
+            order_id: bot_core::OrderId::new("tbold-o-7").unwrap(),
+            instrument: btcusdt().id.clone(),
+            side: bot_core::Side::Buy,
+            qty: Qty::new(dec!(1)),
+            price: Price::new(dec!(100)),
+            fee: Fee::Quote(Notional::ZERO),
+            liquidity: Liquidity::Taker,
+            ts: Timestamp::from_millis(1),
+        })
+        .unwrap();
+        provider.recovered = vec![recovered];
+        let mut s = counting(false);
+        let r = run(&provider, &mut s, Params::default(), &config())
+            .await
+            .unwrap();
+        // Delivered before c2's decision (seen still 0), exactly once.
+        assert_eq!(
+            s.fills,
+            vec![(0, bot_core::OrderId::new("tbold-o-7").unwrap())]
+        );
+        assert_eq!(r.fills.len(), 1);
     }
 
     #[tokio::test]

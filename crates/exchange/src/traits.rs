@@ -70,4 +70,13 @@ pub trait Broker: Send {
     /// submission order. The engine copies this into the strategy's
     /// `Context` so a strategy can cancel by id without a broker handle.
     fn open_orders(&self) -> Vec<Order>;
+
+    /// Fills that happened while the bot was down, recovered by the
+    /// broker's startup reconcile, each returned once. Already in the
+    /// positions; the engine hands them to the strategy's `on_fill` so it
+    /// learns what became of its orders. Default: none (a paper broker
+    /// never misses a fill).
+    fn take_recovered_fills(&mut self) -> Vec<Fill> {
+        Vec::new()
+    }
 }
