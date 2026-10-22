@@ -24,6 +24,9 @@ pub struct Model {
     pub liquidity: String,
     /// Fill time, ms since the Unix epoch.
     pub ts: i64,
+    /// The venue's trade id; unique per instrument. `None` for paper
+    /// fills.
+    pub venue_trade_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

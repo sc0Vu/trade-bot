@@ -11,6 +11,7 @@
 pub use sea_orm_migration::prelude::*;
 
 mod m20261022_000001_create_trades_and_holdings;
+mod m20261022_000002_create_orders_and_venue_trade_ids;
 
 /// Ordered list of every migration. Append only; never edit or reorder one
 /// that has shipped.
@@ -19,9 +20,10 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(
-            m20261022_000001_create_trades_and_holdings::Migration,
-        )]
+        vec![
+            Box::new(m20261022_000001_create_trades_and_holdings::Migration),
+            Box::new(m20261022_000002_create_orders_and_venue_trade_ids::Migration),
+        ]
     }
 }
 
@@ -38,12 +40,23 @@ mod tests {
         Migrator::up(&db, None).await.unwrap();
         assert!(schema.has_table("trades").await.unwrap());
         assert!(schema.has_table("holdings").await.unwrap());
-        assert!(
-            schema
-                .has_index("trades", "idx_trades_instrument_ts")
-                .await
-                .unwrap()
-        );
+        assert!(schema.has_table("orders").await.unwrap());
+        assert!(schema.has_table("bot_meta").await.unwrap());
+        assert!(schema.has_column("trades", "venue_trade_id").await.unwrap());
+        for (table, index) in [
+            ("trades", "idx_trades_instrument_ts"),
+            ("trades", "idx_trades_venue_trade_id"),
+            ("orders", "idx_orders_status"),
+        ] {
+            assert!(schema.has_index(table, index).await.unwrap(), "{index}");
+        }
+
+        // Rolling back only the second migration restores the first's schema.
+        Migrator::down(&db, Some(1)).await.unwrap();
+        assert!(!schema.has_table("orders").await.unwrap());
+        assert!(!schema.has_column("trades", "venue_trade_id").await.unwrap());
+        assert!(schema.has_table("trades").await.unwrap());
+        Migrator::up(&db, None).await.unwrap();
 
         Migrator::down(&db, None).await.unwrap();
         assert!(!schema.has_table("trades").await.unwrap());

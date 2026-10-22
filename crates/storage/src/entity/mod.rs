@@ -2,4 +2,6 @@
 //! Column layout must match `migration/`.
 
 pub(crate) mod holding;
+pub(crate) mod meta;
+pub(crate) mod order;
 pub(crate) mod trade;

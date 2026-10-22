@@ -1,11 +1,15 @@
 use crate::decimal::DbDecimal;
-use crate::entity::{holding, trade};
-use crate::{HoldingRepository, Ledger, StorageError, TradeId, TradeRepository};
+use crate::entity::{holding, meta, order, trade};
+use crate::{
+    HoldingRepository, JournalOrder, Ledger, OrderJournal, OrderStatus, StorageError, TradeId,
+    TradeRepository,
+};
 use async_trait::async_trait;
 use bot_core::{
     Asset, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, Notional, OrderId, Position,
     Price, Qty, Side, Timestamp,
 };
+use migration::{Migrator, MigratorTrait};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveValue::{NotSet, Set},
@@ -28,10 +32,52 @@ impl SqlStore {
             .map_err(StorageError::backend)?;
         Ok(Self { db })
     }
+
+    /// Connects to `url` and applies any pending migrations, so a fresh
+    /// per-network database is usable at once. Migrations are versioned
+    /// code (`migration/`), so this is the same schema `sea-orm-cli
+    /// migrate up` would build.
+    pub async fn open(url: &str) -> Result<Self, StorageError> {
+        let store = Self::connect(url).await?;
+        Migrator::up(&store.db, None)
+            .await
+            .map_err(StorageError::backend)?;
+        Ok(store)
+    }
+
+    /// Ties this database to `network` (`testnet`, `demo`, `live`): the
+    /// first call stamps it, later calls must name the same network or get
+    /// [`StorageError::WrongNetwork`]. Holdings from fake-money fills must
+    /// never be read as real ones.
+    pub async fn bind_network(&self, network: &str) -> Result<(), StorageError> {
+        let found = meta::Entity::find_by_id(NETWORK_KEY)
+            .one(&self.db)
+            .await
+            .map_err(StorageError::backend)?;
+        match found {
+            Some(row) if row.value == network => Ok(()),
+            Some(row) => Err(StorageError::WrongNetwork {
+                wanted: network.to_owned(),
+                found: row.value,
+            }),
+            None => {
+                meta::Entity::insert(meta::ActiveModel {
+                    key: Set(NETWORK_KEY.to_owned()),
+                    value: Set(network.to_owned()),
+                })
+                .exec_without_returning(&self.db)
+                .await
+                .map_err(StorageError::backend)?;
+                Ok(())
+            }
+        }
+    }
 }
 
 const TRADES: &str = "trades";
 const HOLDINGS: &str = "holdings";
+const ORDERS: &str = "orders";
+const NETWORK_KEY: &str = "network";
 
 fn side_text(s: Side) -> &'static str {
     match s {
@@ -47,7 +93,7 @@ fn liquidity_text(l: Liquidity) -> &'static str {
     }
 }
 
-fn to_trade_row(f: &Fill) -> trade::ActiveModel {
+fn to_trade_row(f: &Fill, venue_trade_id: Option<&str>) -> trade::ActiveModel {
     let (kind, amount, asset) = match &f.fee {
         Fee::Base(q) => ("base", q.get(), None),
         Fee::Quote(n) => ("quote", n.get(), None),
@@ -65,6 +111,7 @@ fn to_trade_row(f: &Fill) -> trade::ActiveModel {
         fee_asset: Set(asset),
         liquidity: Set(liquidity_text(f.liquidity).to_owned()),
         ts: Set(f.ts.as_millis()),
+        venue_trade_id: Set(venue_trade_id.map(str::to_owned)),
     }
 }
 
@@ -120,8 +167,9 @@ fn from_holding_row(m: holding::Model) -> Result<Position, StorageError> {
 async fn insert_trade_on<C: ConnectionTrait>(
     conn: &C,
     fill: &Fill,
+    venue_trade_id: Option<&str>,
 ) -> Result<TradeId, StorageError> {
-    let res = trade::Entity::insert(to_trade_row(fill))
+    let res = trade::Entity::insert(to_trade_row(fill, venue_trade_id))
         .exec(conn)
         .await
         .map_err(StorageError::backend)?;
@@ -159,7 +207,7 @@ async fn upsert_holding_on<C: ConnectionTrait>(
 #[async_trait]
 impl TradeRepository for SqlStore {
     async fn insert_trade(&self, fill: &Fill) -> Result<TradeId, StorageError> {
-        insert_trade_on(&self.db, fill).await
+        insert_trade_on(&self.db, fill, None).await
     }
 
     async fn get_trade(&self, id: TradeId) -> Result<Option<Fill>, StorageError> {
@@ -229,6 +277,30 @@ impl Ledger for SqlStore {
         fill: &Fill,
         instrument: &Instrument,
     ) -> Result<(TradeId, Position), StorageError> {
+        self.record(fill, instrument, None)
+            .await
+            .map(|r| r.unwrap_or_else(|| unreachable!("only venue fills can be duplicates")))
+    }
+
+    async fn record_venue_fill(
+        &self,
+        fill: &Fill,
+        instrument: &Instrument,
+        venue_trade_id: &str,
+    ) -> Result<Option<(TradeId, Position)>, StorageError> {
+        self.record(fill, instrument, Some(venue_trade_id)).await
+    }
+}
+
+impl SqlStore {
+    /// One transaction: skip if `venue_trade_id` is already recorded, else
+    /// append the trade and fold it into the holding.
+    async fn record(
+        &self,
+        fill: &Fill,
+        instrument: &Instrument,
+        venue_trade_id: Option<&str>,
+    ) -> Result<Option<(TradeId, Position)>, StorageError> {
         if fill.instrument != instrument.id {
             return Err(StorageError::Rejected(bot_core::Error::PositionUpdate(
                 "fill is for a different instrument",
@@ -236,6 +308,17 @@ impl Ledger for SqlStore {
         }
         // Every early return drops `txn`, which rolls it back.
         let txn = self.db.begin().await.map_err(StorageError::backend)?;
+        if let Some(vid) = venue_trade_id {
+            let seen = trade::Entity::find()
+                .filter(trade::Column::Instrument.eq(fill.instrument.to_string()))
+                .filter(trade::Column::VenueTradeId.eq(vid))
+                .one(&txn)
+                .await
+                .map_err(StorageError::backend)?;
+            if seen.is_some() {
+                return Ok(None);
+            }
+        }
         // FOR UPDATE on MySQL so a concurrent writer can't fold into the same
         // stale holding. SQLite omits the clause; it allows one writer at a
         // time per database, so the race can't happen there.
@@ -256,10 +339,130 @@ impl Ledger for SqlStore {
         position
             .apply(fill, instrument)
             .map_err(StorageError::Rejected)?;
-        let id = insert_trade_on(&txn, fill).await?;
+        // The unique (instrument, venue_trade_id) index backs the check
+        // above: a concurrent duplicate fails here and rolls back.
+        let id = insert_trade_on(&txn, fill, venue_trade_id).await?;
         upsert_holding_on(&txn, &position).await?;
         txn.commit().await.map_err(StorageError::backend)?;
-        Ok((id, position))
+        Ok(Some((id, position)))
+    }
+
+    async fn set_order(
+        &self,
+        client_order_id: &str,
+        row: order::ActiveModel,
+    ) -> Result<(), StorageError> {
+        let res = order::Entity::update_many()
+            .set(row)
+            .filter(order::Column::ClientOrderId.eq(client_order_id))
+            .exec(&self.db)
+            .await
+            .map_err(StorageError::backend)?;
+        if res.rows_affected == 0 {
+            return Err(StorageError::UnknownOrder(client_order_id.to_owned()));
+        }
+        Ok(())
+    }
+}
+
+fn status_text(s: OrderStatus) -> &'static str {
+    match s {
+        OrderStatus::Pending => "pending",
+        OrderStatus::Open => "open",
+        OrderStatus::Closed => "closed",
+    }
+}
+
+fn from_order_row(m: order::Model) -> Result<JournalOrder, StorageError> {
+    let bad = |reason: &str| StorageError::corrupt(ORDERS, reason);
+    let side = match m.side.as_str() {
+        "buy" => Side::Buy,
+        "sell" => Side::Sell,
+        _ => return Err(bad("unknown side")),
+    };
+    let status = match m.status.as_str() {
+        "pending" => OrderStatus::Pending,
+        "open" => OrderStatus::Open,
+        "closed" => OrderStatus::Closed,
+        _ => return Err(bad("unknown status")),
+    };
+    if status == OrderStatus::Open && m.venue_order_id.is_none() {
+        return Err(bad("open order without venue_order_id"));
+    }
+    Ok(JournalOrder {
+        client_order_id: m.client_order_id,
+        instrument: m
+            .instrument
+            .parse()
+            .map_err(|e: bot_core::Error| StorageError::corrupt(ORDERS, e))?,
+        side,
+        status,
+        venue_order_id: m.venue_order_id,
+        created_at: Timestamp::from_millis(m.created_at),
+    })
+}
+
+#[async_trait]
+impl OrderJournal for SqlStore {
+    async fn insert_pending(
+        &self,
+        client_order_id: &str,
+        instrument: &InstrumentId,
+        side: Side,
+        created_at: Timestamp,
+    ) -> Result<(), StorageError> {
+        order::Entity::insert(order::ActiveModel {
+            client_order_id: Set(client_order_id.to_owned()),
+            instrument: Set(instrument.to_string()),
+            side: Set(side_text(side).to_owned()),
+            status: Set(status_text(OrderStatus::Pending).to_owned()),
+            venue_order_id: Set(None),
+            created_at: Set(created_at.as_millis()),
+        })
+        .exec_without_returning(&self.db)
+        .await
+        .map_err(StorageError::backend)?;
+        Ok(())
+    }
+
+    async fn mark_open(
+        &self,
+        client_order_id: &str,
+        venue_order_id: i64,
+    ) -> Result<(), StorageError> {
+        self.set_order(
+            client_order_id,
+            order::ActiveModel {
+                status: Set(status_text(OrderStatus::Open).to_owned()),
+                venue_order_id: Set(Some(venue_order_id)),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn mark_closed(&self, client_order_id: &str) -> Result<(), StorageError> {
+        self.set_order(
+            client_order_id,
+            order::ActiveModel {
+                status: Set(status_text(OrderStatus::Closed).to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn unfinished_orders(&self) -> Result<Vec<JournalOrder>, StorageError> {
+        order::Entity::find()
+            .filter(order::Column::Status.ne(status_text(OrderStatus::Closed)))
+            .order_by_asc(order::Column::CreatedAt)
+            .order_by_asc(order::Column::ClientOrderId)
+            .all(&self.db)
+            .await
+            .map_err(StorageError::backend)?
+            .into_iter()
+            .map(from_order_row)
+            .collect()
     }
 }
 
@@ -695,6 +898,173 @@ mod tests {
             }
         ));
         assert_eq!(trade_count(&s).await, 0);
+    }
+
+    #[tokio::test]
+    async fn venue_fill_is_recorded_once() {
+        let s = store().await;
+        let i = btcusdt();
+        let buy = fill(
+            Side::Buy,
+            Qty::new(dec!(1)),
+            Price::new(dec!(100)),
+            quote_fee(dec!(0.1)),
+            1,
+        );
+        let (_, pos) = s
+            .record_venue_fill(&buy, &i, "12345")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pos.cost_basis(), Notional::new(dec!(100.1)));
+        // A restart replaying the venue's history sees the same trade again.
+        assert_eq!(s.record_venue_fill(&buy, &i, "12345").await.unwrap(), None);
+        assert_eq!(trade_count(&s).await, 1);
+        assert_eq!(s.get_holding(&btc()).await.unwrap(), Some(pos));
+        // Another trade id is another fill.
+        assert!(
+            s.record_venue_fill(&buy, &i, "12346")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(trade_count(&s).await, 2);
+    }
+
+    #[tokio::test]
+    async fn venue_trade_ids_are_unique_per_instrument_only() {
+        // Binance numbers trades per symbol, so BTCUSDT and ETHUSDT can
+        // both have trade 7.
+        let s = store().await;
+        let eth_inst = Instrument::new(bot_core::InstrumentSpec {
+            id: "binance:ETHUSDT".parse().unwrap(),
+            base: Asset::new("ETH").unwrap(),
+            ..btcusdt().into()
+        })
+        .unwrap();
+        let btc_buy = fill(
+            Side::Buy,
+            Qty::new(dec!(1)),
+            Price::new(dec!(100)),
+            quote_fee(dec!(0)),
+            1,
+        );
+        let eth_buy = Fill::new(FillSpec {
+            instrument: eth_inst.id.clone(),
+            ..btc_buy.clone().into()
+        })
+        .unwrap();
+        assert!(
+            s.record_venue_fill(&btc_buy, &btcusdt(), "7")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            s.record_venue_fill(&eth_buy, &eth_inst, "7")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn order_journal_lifecycle() {
+        let s = store().await;
+        let t = Timestamp::from_millis;
+        s.insert_pending("tbx-o-2", &btc(), Side::Sell, t(20))
+            .await
+            .unwrap();
+        s.insert_pending("tbx-o-1", &btc(), Side::Buy, t(10))
+            .await
+            .unwrap();
+        let pending = s.unfinished_orders().await.unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|o| (o.client_order_id.as_str(), o.status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("tbx-o-1", OrderStatus::Pending),
+                ("tbx-o-2", OrderStatus::Pending)
+            ],
+            "oldest first"
+        );
+        assert_eq!(pending[0].side, Side::Buy);
+        assert_eq!(pending[0].venue_order_id, None);
+
+        s.mark_open("tbx-o-1", 28).await.unwrap();
+        let open = &s.unfinished_orders().await.unwrap()[0];
+        assert_eq!(
+            (open.status, open.venue_order_id),
+            (OrderStatus::Open, Some(28))
+        );
+
+        s.mark_closed("tbx-o-1").await.unwrap();
+        s.mark_closed("tbx-o-2").await.unwrap();
+        assert!(s.unfinished_orders().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn order_journal_refuses_reuse_and_unknown_ids() {
+        let s = store().await;
+        let t = Timestamp::from_millis(0);
+        s.insert_pending("tbx-o-1", &btc(), Side::Buy, t)
+            .await
+            .unwrap();
+        assert!(matches!(
+            s.insert_pending("tbx-o-1", &btc(), Side::Buy, t).await,
+            Err(StorageError::Backend(_))
+        ));
+        assert!(matches!(
+            s.mark_open("nope", 1).await,
+            Err(StorageError::UnknownOrder(_))
+        ));
+        assert!(matches!(
+            s.mark_closed("nope").await,
+            Err(StorageError::UnknownOrder(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn corrupt_order_row_is_an_error() {
+        let s = store().await;
+        s.db.execute_unprepared(
+            "INSERT INTO orders VALUES ('tbx-o-1', 'binance:BTCUSDT', 'buy', 'open', NULL, 0)",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            s.unfinished_orders().await.unwrap_err(),
+            StorageError::Corrupt {
+                table: "orders",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn database_is_bound_to_one_network() {
+        let s = store().await;
+        s.bind_network("demo").await.unwrap();
+        s.bind_network("demo").await.unwrap();
+        assert!(matches!(
+            s.bind_network("live").await,
+            Err(StorageError::WrongNetwork { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_migrates_a_fresh_file() {
+        let path = std::env::temp_dir().join(format!("trade-bot-open-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let s = SqlStore::open(&url).await.unwrap();
+        assert!(s.unfinished_orders().await.unwrap().is_empty());
+        drop(s);
+        // Opening again finds nothing pending to apply.
+        SqlStore::open(&url).await.unwrap();
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

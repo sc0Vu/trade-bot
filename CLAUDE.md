@@ -232,6 +232,13 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    transaction appends trade + folds into holding via `Position::apply`
    (storage folds, caller can't pass drifted position); `FOR UPDATE` on MySQL.
    Reads re-validate through core constructors: corrupt row → error.
+   Venue fills via `Ledger::record_venue_fill(fill, instrument, venue_trade_id)`:
+   idempotent (unique `(instrument, venue_trade_id)`), so restart can replay
+   venue trade history safely. `OrderJournal` (`orders` table): row written
+   `pending` *before* submit, `open` + venue id on ack, `closed` after last
+   fill recorded → crash leaves row to check. `SqlStore::open` applies pending
+   migrations; `bind_network` stamps db with network (testnet/demo/live),
+   mismatch = `WrongNetwork` error: one db per network.
 4. **Backtest** — `backtest` crate: load cached klines, replay as `MarketEvent`
    stream through engine, emit report (realized P&L, max drawdown, trade
    count, win rate, Sharpe). Fill model stated below, not hidden.

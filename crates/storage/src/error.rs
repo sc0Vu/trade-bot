@@ -16,6 +16,14 @@ pub enum StorageError {
     /// inexact decimal, or state the core constructors reject.
     #[error("corrupt row in {table}: {reason}")]
     Corrupt { table: &'static str, reason: String },
+    /// An order-journal update named an order that was never journaled.
+    #[error("no journaled order {0}")]
+    UnknownOrder(String),
+    /// The database belongs to another network (say, a demo database
+    /// opened for a live run). Mixing them would count fake fills as real
+    /// holdings.
+    #[error("database tracks network {found}, not {wanted}; use a separate db.url per network")]
+    WrongNetwork { wanted: String, found: String },
 }
 
 impl StorageError {

@@ -1,7 +1,8 @@
 //! Persistence: repository traits and their SeaORM implementation.
 //!
-//! Call sites depend only on [`TradeRepository`], [`HoldingRepository`] and
-//! [`Ledger`] (atomic fill recording), which speak core types (`Fill`, `Position`). SeaORM entities are private
+//! Call sites depend only on [`TradeRepository`], [`HoldingRepository`],
+//! [`Ledger`] (atomic fill recording) and [`OrderJournal`] (orders sent to
+//! a venue), which speak core types (`Fill`, `Position`). SeaORM entities are private
 //! to this crate, so no caller can couple to a table layout or backend, and
 //! switching `db.url` from `sqlite://` to `mysql://` needs no model changes.
 //!
@@ -18,5 +19,7 @@ mod repo;
 mod sql;
 
 pub use error::StorageError;
-pub use repo::{HoldingRepository, Ledger, TradeId, TradeRepository};
+pub use repo::{
+    HoldingRepository, JournalOrder, Ledger, OrderJournal, OrderStatus, TradeId, TradeRepository,
+};
 pub use sql::SqlStore;
