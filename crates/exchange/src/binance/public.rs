@@ -4,13 +4,16 @@
 //! into the money newtypes (invariant 1); a number where a string is
 //! expected is a decode error, never a float.
 
+use super::signed::{HttpResponse, Method, admit, observe};
 use crate::ExchangeError;
+use crate::rate_limit::RateLimiter;
 use bot_core::{
     Asset, AssetClass, Candle, CandleSpec, Instrument, InstrumentId, InstrumentSpec, Interval,
     Notional, Price, Qty, Symbol, Timestamp, VenueId,
 };
 use serde_json::Value;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Binance's maximum klines per request.
@@ -21,6 +24,7 @@ pub struct PublicClient {
     http: reqwest::Client,
     base: String,
     venue: VenueId,
+    limiter: Arc<RateLimiter>,
 }
 
 impl PublicClient {
@@ -42,10 +46,20 @@ impl PublicClient {
             http,
             base: base.into().trim_end_matches('/').to_owned(),
             venue: VenueId::new("binance").unwrap_or_else(|_| unreachable!("valid venue id")),
+            limiter: Arc::new(RateLimiter::new(super::limits::default_limits())),
         }
     }
 
+    /// Paces requests through `limiter` instead of a private one (share it
+    /// with every client of the same host).
+    pub fn with_limiter(mut self, limiter: Arc<RateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
+    }
+
     async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value, ExchangeError> {
+        let keys: Vec<String> = query.iter().map(|(k, _)| format!("{k}=")).collect();
+        admit(&self.limiter, Method::Get, path, &keys.join("&")).await?;
         let res = self
             .http
             .get(format!("{}{path}", self.base))
@@ -54,6 +68,17 @@ impl PublicClient {
             .await
             .map_err(|e| ExchangeError::Http(e.to_string()))?;
         let status = res.status();
+        let header = |name: &str| -> Option<u64> {
+            res.headers().get(name)?.to_str().ok()?.trim().parse().ok()
+        };
+        let seen = HttpResponse {
+            status: status.as_u16(),
+            used_weight_1m: header("x-mbx-used-weight-1m"),
+            order_count_10s: None,
+            retry_after: header("retry-after"),
+            body: String::new(),
+        };
+        observe(&self.limiter, &seen);
         let body = res
             .text()
             .await

@@ -32,6 +32,10 @@ pub enum ExchangeError {
     /// loudly: a silently misparsed price is worse than no data.
     #[error("unexpected venue response: {0}")]
     Decode(String),
+    /// A request can't be sent within the venue's rate limits (it alone
+    /// exceeds a budget). A bug or misconfiguration, never waited out.
+    #[error("rate limit: {0}")]
+    RateLimited(String),
     /// The broker's books (database) failed. Trading on without a record
     /// of fills would lose them, so the run stops.
     #[error(transparent)]
@@ -62,6 +66,7 @@ impl ExchangeError {
             | Self::Http(_)
             | Self::Credentials(_)
             | Self::Decode(_)
+            | Self::RateLimited(_)
             | Self::Storage(_) => false,
         }
     }

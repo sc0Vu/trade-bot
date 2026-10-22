@@ -254,6 +254,8 @@ deploy/       Prometheus, Alertmanager, Grafana (compose) and alert rules
 - BNB fees are valued at the BNB price in the trade's minute, an
   approximation, because Binance doesn't report its conversion rate.
 - MySQL is supported by the storage layer but untested.
+- Rate limits use Binance's published values with 20% headroom; another
+  program on the same IP is only noticed through Binance's usage header.
 
 ## Development
 

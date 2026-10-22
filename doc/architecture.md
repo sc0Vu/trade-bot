@@ -250,6 +250,21 @@ tests never touch the network. The signer reproduces the example signature
 in Binance's documentation. Every request is bounded by
 `exchange.http_timeout_secs`.
 
+**Rate limits.** Binance allows 6000 request weight per IP per minute and
+100 orders per 10 seconds (200,000 per day) per account, and bans an IP that
+keeps exceeding them. Every REST call first waits in
+`exchange::rate_limit::RateLimiter` until it fits 80% of each limit, so other
+programs on the IP keep some room. It is a sliding-window log, not a leaky or
+token bucket: Binance's windows are fixed, and a bucket holding the whole
+budget can spend it just before a window resets and again just after, nearly
+twice the limit in one Binance minute; the log keeps every span of the
+window within budget. Weights per endpoint (`binance::limits`) were measured
+from the `X-MBX-USED-WEIGHT-1M` header; that header, reported on every
+response, also corrects the count when it is higher (something else using
+the IP). A 429 or 418 holds every request, the exit close-out's included,
+for `Retry-After`; the error itself still stops the run. One limiter is
+shared by all of a provider's clients, since the weight is counted per IP.
+
 **Startup checks.** A read-only signed `GET /api/v3/account` must succeed
 and report `canTrade` before any order is placed.
 

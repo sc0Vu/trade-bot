@@ -239,6 +239,14 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `exchange.network = "live"` + `--i-understand` (`cli::gate`, all combos
    tested); fake-money run refuses `*.binance.com` URL overrides except the
    two demo hosts.
+   Rate limits (`exchange::rate_limit`, `binance::limits`): sliding-window
+   log, not bucket (Binance windows fixed; full bucket = ~2× limit across a
+   reset). Budget 80% of weight 6000/min, orders 100/10s, 200k/day; one
+   limiter per provider shared by all its clients (weight per IP). Weights
+   measured 2026-10-23 via `X-MBX-USED-WEIGHT-1M`; unknown endpoint = 20.
+   Venue's higher usage header wins; 429/418 → hold all requests for
+   `Retry-After` (default 60s), error still stops run. Request too big for
+   budget → `RateLimited` (fatal).
    Every REST request bounded by `exchange.http_timeout_secs` (default 10,
    ≥ 1; `DEFAULT_HTTP_TIMEOUT` for clients built without config): stalled
    Binance → `Http` error → run stops, reconcile finds what a timed-out

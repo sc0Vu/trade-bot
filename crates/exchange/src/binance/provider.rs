@@ -1,9 +1,11 @@
+use super::limits;
 use super::reconcile::{Phase, Reconciled, reconcile};
 use super::{
     BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_URL, KlineStream, LIVE_REST_URL,
     LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL,
     TESTNET_WS_URL, run_tag,
 };
+use crate::rate_limit::RateLimiter;
 use crate::{Books, Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
 use async_trait::async_trait;
 use bot_core::{AssetClass, Instrument, InstrumentId, Interval};
@@ -80,6 +82,10 @@ pub struct BinanceSpotProvider {
     creds: Credentials,
     universe: Vec<InstrumentId>,
     books: Arc<dyn Books>,
+    /// One budget for every client of this host: Binance counts weight per
+    /// IP, whether the call comes from the broker, a lookup or the exit
+    /// close-out.
+    limiter: Arc<RateLimiter>,
 }
 
 impl BinanceSpotProvider {
@@ -97,6 +103,7 @@ impl BinanceSpotProvider {
             creds,
             universe,
             books,
+            limiter: Arc::new(RateLimiter::new(limits::default_limits())),
         }
     }
 
@@ -119,7 +126,8 @@ impl BinanceSpotProvider {
             Box::new(ReqwestTransport::new(self.config.http_timeout)?),
             self.creds.clone(),
             Box::new(SystemClock),
-        );
+        )
+        .with_limiter(self.limiter.clone());
         client.sync_time().await?;
         Ok(client)
     }
@@ -182,7 +190,8 @@ impl Provider for BinanceSpotProvider {
 
     async fn resolve(&self, query: &InstrumentQuery) -> Result<Vec<Instrument>, ExchangeError> {
         let InstrumentQuery::Ids(ids) = query;
-        let public = PublicClient::with_timeout(self.config.rest_url(), self.config.http_timeout);
+        let public = PublicClient::with_timeout(self.config.rest_url(), self.config.http_timeout)
+            .with_limiter(self.limiter.clone());
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             if id.venue().as_str() != "binance" {

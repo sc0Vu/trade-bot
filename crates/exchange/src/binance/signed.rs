@@ -6,11 +6,13 @@
 //! `Debug` output, logs or errors.
 
 use crate::ExchangeError;
+use crate::rate_limit::{Kind, RateLimiter};
 use async_trait::async_trait;
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::Value;
 use sha2::Sha256;
 use std::fmt;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Env var holding the API key.
@@ -88,10 +90,77 @@ pub struct HttpRequest {
     pub api_key: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    /// `X-MBX-USED-WEIGHT-1M`: request weight Binance has counted this
+    /// minute for the IP.
+    pub used_weight_1m: Option<u64>,
+    /// `X-MBX-ORDER-COUNT-10S`: orders Binance has counted in the last 10 s
+    /// for the account.
+    pub order_count_10s: Option<u64>,
+    /// `Retry-After`, seconds, sent with 429 and 418.
+    pub retry_after: Option<u64>,
+}
+
+/// After a 429 or 418 without `Retry-After`, hold requests this long.
+const DEFAULT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Feeds one response's rate-limit information back into `limiter`: the
+/// venue's usage counts, and for 429 (limited) or 418 (IP banned) a hold on
+/// every request until `Retry-After` passes.
+pub(crate) fn observe(limiter: &RateLimiter, res: &HttpResponse) {
+    if let Some(u) = res.used_weight_1m {
+        limiter.observe_used(Kind::Weight, super::limits::WEIGHT_WINDOW, u);
+    }
+    if let Some(o) = res.order_count_10s {
+        limiter.observe_used(Kind::Orders, super::limits::ORDER_WINDOW, o);
+    }
+    if matches!(res.status, 418 | 429) {
+        let hold = res
+            .retry_after
+            .map_or(DEFAULT_BACKOFF, std::time::Duration::from_secs);
+        limiter.block_for(hold);
+        metrics::counter!(crate::metrics::RATE_LIMITED).increment(1);
+        tracing::warn!(
+            status = res.status,
+            hold_secs = hold.as_secs(),
+            "Binance rate limit hit; holding every request"
+        );
+    }
+    if let Some(u) = limiter.used(Kind::Weight, super::limits::WEIGHT_WINDOW) {
+        metrics::gauge!(crate::metrics::BINANCE_WEIGHT_USED).set(u as f64);
+    }
+}
+
+/// Waits for room under `limiter` for one request; records the wait.
+pub(crate) async fn admit(
+    limiter: &RateLimiter,
+    method: Method,
+    path: &str,
+    query: &str,
+) -> Result<(), ExchangeError> {
+    let waited = limiter
+        .acquire(
+            super::limits::weight(method, path, query),
+            super::limits::orders(method, path),
+        )
+        .await
+        .map_err(|e| ExchangeError::RateLimited(e.to_string()))?;
+    if !waited.is_zero() {
+        metrics::counter!(crate::metrics::RATE_LIMIT_WAITS).increment(1);
+        tracing::info!(
+            path,
+            wait_ms = waited.as_millis() as u64,
+            "rate limiter held a request"
+        );
+    }
+    Ok(())
+}
+
+fn header_u64(res: &reqwest::Response, name: &str) -> Option<u64> {
+    res.headers().get(name)?.to_str().ok()?.trim().parse().ok()
 }
 
 /// Sends HTTP requests. Real code uses [`ReqwestTransport`]; tests use a
@@ -149,11 +218,20 @@ impl Transport for ReqwestTransport {
             .await
             .map_err(|e| ExchangeError::Http(e.without_url().to_string()))?;
         let status = res.status().as_u16();
+        let used_weight_1m = header_u64(&res, "x-mbx-used-weight-1m");
+        let order_count_10s = header_u64(&res, "x-mbx-order-count-10s");
+        let retry_after = header_u64(&res, "retry-after");
         let body = res
             .text()
             .await
             .map_err(|e| ExchangeError::Http(e.without_url().to_string()))?;
-        Ok(HttpResponse { status, body })
+        Ok(HttpResponse {
+            status,
+            body,
+            used_weight_1m,
+            order_count_10s,
+            retry_after,
+        })
     }
 }
 
@@ -209,6 +287,7 @@ pub struct SignedClient {
     clock: Box<dyn Clock>,
     offset_ms: i64,
     recv_window_ms: u64,
+    limiter: Arc<RateLimiter>,
 }
 
 impl SignedClient {
@@ -225,7 +304,16 @@ impl SignedClient {
             clock,
             offset_ms: 0,
             recv_window_ms: 5000,
+            limiter: Arc::new(RateLimiter::new(super::limits::default_limits())),
         }
+    }
+
+    /// Paces requests through `limiter` instead of a private one. Every
+    /// client talking to one host should share one: Binance counts weight
+    /// per IP.
+    pub fn with_limiter(mut self, limiter: Arc<RateLimiter>) -> Self {
+        self.limiter = limiter;
+        self
     }
 
     /// Measures server time minus local time, so a skewed local clock
@@ -341,8 +429,12 @@ impl SignedClient {
             Method::Post => "POST",
             Method::Delete => "DELETE",
         };
+        admit(&self.limiter, req.method, &req.path, &req.query).await?;
         let started = std::time::Instant::now();
         let sent = self.transport.send(&self.base, req).await;
+        if let Ok(res) = &sent {
+            observe(&self.limiter, res);
+        }
         metrics::histogram!(
             crate::metrics::BINANCE_REQUEST,
             "method" => method,
@@ -383,7 +475,12 @@ pub(crate) mod fake {
             self.replies.lock().unwrap().push_back(HttpResponse {
                 status,
                 body: body.into(),
+                ..HttpResponse::default()
             });
+        }
+        /// Queues a full response, rate-limit headers included.
+        pub fn reply_with(&self, res: HttpResponse) {
+            self.replies.lock().unwrap().push_back(res);
         }
         pub fn sent(&self) -> Vec<HttpRequest> {
             self.sent.lock().unwrap().clone()
@@ -619,6 +716,86 @@ mod tests {
         assert!(matches!(err, ExchangeError::Http(_)), "{err:?}");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         hold.join().unwrap();
+    }
+
+    fn limited(t: &FakeTransport, weight_budget: u64) -> SignedClient {
+        use crate::rate_limit::Limit;
+        client(t).with_limiter(Arc::new(RateLimiter::new([Limit {
+            kind: Kind::Weight,
+            window: std::time::Duration::from_secs(60),
+            budget: weight_budget,
+        }])))
+    }
+
+    /// Two `account` calls (weight 20 each) against a 30-per-minute budget:
+    /// the second waits the full minute.
+    #[tokio::test(start_paused = true)]
+    async fn requests_wait_for_rate_limit_room() {
+        let t = FakeTransport::default();
+        t.reply(200, "{}");
+        t.reply(200, "{}");
+        let c = limited(&t, 30);
+        let start = tokio::time::Instant::now();
+        c.signed(Method::Get, "/api/v3/account", &[]).await.unwrap();
+        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+        c.signed(Method::Get, "/api/v3/account", &[]).await.unwrap();
+        assert_eq!(start.elapsed(), std::time::Duration::from_secs(60));
+    }
+
+    /// Binance says 4790 of the minute's weight is used (someone else on the
+    /// IP): with the default 4800 budget the next 20-weight call waits.
+    #[tokio::test(start_paused = true)]
+    async fn binance_usage_header_is_respected() {
+        let t = FakeTransport::default();
+        t.reply_with(HttpResponse {
+            status: 200,
+            body: "{}".into(),
+            used_weight_1m: Some(4790),
+            ..HttpResponse::default()
+        });
+        t.reply(200, "{}");
+        let c = client(&t);
+        let start = tokio::time::Instant::now();
+        c.signed(Method::Get, "/api/v3/time", &[]).await.unwrap();
+        c.signed(Method::Get, "/api/v3/account", &[]).await.unwrap();
+        assert!(start.elapsed() > std::time::Duration::ZERO);
+    }
+
+    /// A 429 with Retry-After 30: the call fails (the run stops), and every
+    /// later request, the exit close-out's included, waits the 30 s out
+    /// instead of hammering Binance into an IP ban.
+    #[tokio::test(start_paused = true)]
+    async fn too_many_requests_holds_everything_for_retry_after() {
+        let t = FakeTransport::default();
+        t.reply_with(HttpResponse {
+            status: 429,
+            body: r#"{"code":-1003,"msg":"Too many requests"}"#.into(),
+            retry_after: Some(30),
+            ..HttpResponse::default()
+        });
+        t.reply(200, "{}");
+        let c = client(&t);
+        let err = c
+            .signed(Method::Get, "/api/v3/account", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::Venue { code: -1003, .. }));
+        assert!(!err.is_order_rejection(), "rate limiting stops the run");
+        let start = tokio::time::Instant::now();
+        c.signed(Method::Get, "/api/v3/time", &[]).await.unwrap();
+        assert_eq!(start.elapsed(), std::time::Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_that_can_never_fit_is_refused() {
+        let t = FakeTransport::default();
+        let c = limited(&t, 10);
+        let err = c
+            .signed(Method::Get, "/api/v3/account", &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeError::RateLimited(_)));
+        assert!(t.sent().is_empty(), "never sent");
     }
 
     #[test]
