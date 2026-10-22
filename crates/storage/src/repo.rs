@@ -94,6 +94,27 @@ pub trait Ledger: Send + Sync {
     ) -> Result<Option<(TradeId, Position)>, StorageError>;
 }
 
+/// A strategy's saved state, as stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedState {
+    /// Hash of the params it was saved under: state saved for other params
+    /// (another coin list) doesn't apply.
+    pub params_hash: String,
+    /// JSON from the strategy's `save_state`.
+    pub state: String,
+    pub updated_at: Timestamp,
+}
+
+/// The last state each strategy saved, one row per strategy name.
+#[async_trait]
+pub trait StrategyStateRepository: Send + Sync {
+    /// The state `strategy` last saved, if any.
+    async fn load_state(&self, strategy: &str) -> Result<Option<SavedState>, StorageError>;
+
+    /// Replaces `strategy`'s saved state.
+    async fn save_state(&self, strategy: &str, saved: &SavedState) -> Result<(), StorageError>;
+}
+
 /// Where an order stands in the journal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderStatus {

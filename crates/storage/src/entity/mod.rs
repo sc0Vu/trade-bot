@@ -4,4 +4,5 @@
 pub(crate) mod holding;
 pub(crate) mod meta;
 pub(crate) mod order;
+pub(crate) mod strategy_state;
 pub(crate) mod trade;

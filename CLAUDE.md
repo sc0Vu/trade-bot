@@ -292,6 +292,8 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    fill recorded → crash leaves row to check. `SqlStore::open` applies pending
    migrations; `bind_network` stamps db with network (testnet/demo/live),
    mismatch = `WrongNetwork` error: one db per network.
+   `StrategyStateRepository` (`strategy_state`, migration 4): one row per
+   strategy name = last `save_state` JSON + params hash + time.
 4. **Backtest** — `backtest` crate: load cached klines, replay as `MarketEvent`
    stream through engine, emit report (realized P&L, max drawdown, trade
    count, win rate, Sharpe). Fill model stated below, not hidden.

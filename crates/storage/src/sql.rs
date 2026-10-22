@@ -1,8 +1,8 @@
 use crate::decimal::DbDecimal;
-use crate::entity::{holding, meta, order, trade};
+use crate::entity::{holding, meta, order, strategy_state, trade};
 use crate::{
-    HoldingRepository, JournalOrder, Ledger, OrderJournal, OrderStatus, StorageError, TradeId,
-    TradeRepository,
+    HoldingRepository, JournalOrder, Ledger, OrderJournal, OrderStatus, SavedState, StorageError,
+    StrategyStateRepository, TradeId, TradeRepository,
 };
 use async_trait::async_trait;
 use bot_core::{
@@ -424,6 +424,44 @@ fn from_order_row(m: order::Model) -> Result<JournalOrder, StorageError> {
         venue_order_id: m.venue_order_id,
         created_at: Timestamp::from_millis(m.created_at),
     })
+}
+
+#[async_trait]
+impl StrategyStateRepository for SqlStore {
+    async fn load_state(&self, strategy: &str) -> Result<Option<SavedState>, StorageError> {
+        Ok(strategy_state::Entity::find_by_id(strategy.to_owned())
+            .one(&self.db)
+            .await
+            .map_err(StorageError::backend)?
+            .map(|m| SavedState {
+                params_hash: m.params_hash,
+                state: m.state,
+                updated_at: Timestamp::from_millis(m.updated_at),
+            }))
+    }
+
+    async fn save_state(&self, strategy: &str, saved: &SavedState) -> Result<(), StorageError> {
+        let row = strategy_state::ActiveModel {
+            strategy: Set(strategy.to_owned()),
+            params_hash: Set(saved.params_hash.clone()),
+            state: Set(saved.state.clone()),
+            updated_at: Set(saved.updated_at.as_millis()),
+        };
+        strategy_state::Entity::insert(row)
+            .on_conflict(
+                OnConflict::column(strategy_state::Column::Strategy)
+                    .update_columns([
+                        strategy_state::Column::ParamsHash,
+                        strategy_state::Column::State,
+                        strategy_state::Column::UpdatedAt,
+                    ])
+                    .to_owned(),
+            )
+            .exec_without_returning(&self.db)
+            .await
+            .map_err(StorageError::backend)?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1182,6 +1220,27 @@ mod tests {
             ]
         );
         assert_eq!(s.recent_orders(1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn strategy_state_round_trips_and_is_replaced() {
+        let s = store().await;
+        assert_eq!(s.load_state("ratio_hop").await.unwrap(), None);
+        let first = SavedState {
+            params_hash: "abc".into(),
+            state: r#"{"v":1,"phase":"start"}"#.into(),
+            updated_at: Timestamp::from_millis(5),
+        };
+        s.save_state("ratio_hop", &first).await.unwrap();
+        assert_eq!(s.load_state("ratio_hop").await.unwrap(), Some(first));
+        let second = SavedState {
+            params_hash: "def".into(),
+            state: r#"{"v":1,"phase":"holding"}"#.into(),
+            updated_at: Timestamp::from_millis(9),
+        };
+        s.save_state("ratio_hop", &second).await.unwrap();
+        assert_eq!(s.load_state("ratio_hop").await.unwrap(), Some(second));
+        assert_eq!(s.load_state("sma_trend").await.unwrap(), None);
     }
 
     #[tokio::test]
