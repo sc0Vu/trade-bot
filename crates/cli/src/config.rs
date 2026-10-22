@@ -41,6 +41,45 @@ pub struct Config {
     pub engine: EngineSection,
     #[serde(default)]
     pub db: DbSection,
+    #[serde(default)]
+    pub metrics: MetricsSection,
+}
+
+/// Prometheus metrics for `run` (see `telemetry`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsSection {
+    /// Serve `/metrics`. Off by default.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Address to serve on. Default `127.0.0.1:9184`. The endpoint has no
+    /// authentication, so a non-loopback address also needs
+    /// `allow_public`.
+    #[serde(default = "metrics_listen")]
+    pub listen: std::net::SocketAddr,
+    /// Also export positions, cost basis and realized P&L. Off by default:
+    /// it puts the account's books on an unauthenticated endpoint.
+    #[serde(default)]
+    pub include_money: bool,
+    /// Permit a non-loopback `listen`. Put a firewall or an authenticating
+    /// proxy in front if you set it.
+    #[serde(default)]
+    pub allow_public: bool,
+}
+
+impl Default for MetricsSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: metrics_listen(),
+            include_money: false,
+            allow_public: false,
+        }
+    }
+}
+
+fn metrics_listen() -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([127, 0, 0, 1], 9184))
 }
 
 /// Where a live run keeps its books (orders, fills, holdings).
@@ -160,6 +199,13 @@ impl Config {
         if self.exchange.http_timeout_secs == 0 {
             bail!("exchange.http_timeout_secs must be >= 1");
         }
+        if !self.metrics.listen.ip().is_loopback() && !self.metrics.allow_public {
+            bail!(
+                "metrics.listen {} is not loopback; the endpoint has no authentication, \
+                 so set metrics.allow_public = true to expose it deliberately",
+                self.metrics.listen
+            );
+        }
         Ok(())
     }
 }
@@ -193,6 +239,27 @@ mod tests {
             assert_eq!(c.engine.history_len, 500);
             assert_eq!(c.exchange.http_timeout_secs, 10);
             assert_eq!(c.strategy.params["quote_amount"].as_str(), Some("100"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn metrics_are_off_and_loopback_by_default() {
+        Jail::expect_with(|_| {
+            let c = parse(MIN).unwrap();
+            assert!(!c.metrics.enabled && !c.metrics.include_money);
+            assert_eq!(c.metrics.listen.to_string(), "127.0.0.1:9184");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn public_metrics_need_explicit_consent() {
+        Jail::expect_with(|_| {
+            let public = format!("{MIN}\n[metrics]\nenabled = true\nlisten = \"0.0.0.0:9184\"\n");
+            assert!(parse(&public).is_err());
+            let consented = format!("{public}allow_public = true\n");
+            assert!(parse(&consented).is_ok());
             Ok(())
         });
     }

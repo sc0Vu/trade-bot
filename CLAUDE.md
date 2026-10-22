@@ -500,6 +500,10 @@ Not finished until all hold — per task, not at end:
   consts; no recorder = no-op, backtest clean). Bounded labels only (no ids,
   amounts). Metric `f64` = display/alerting only, never read back into a
   decision or books. No money values from the facade.
+  `run` exports via `[metrics]` (`cli::telemetry`): off by default, loopback
+  unless `allow_public`, money gauges (position qty, cost basis, realized
+  P&L) only with `include_money`; exporter failure = warning, never stops
+  trading.
 - Every strategy and fill model get unit tests. Backtester gets
   known-input regression test so refactor can't silently change P&L.
 - Honest claims: number not measured (backtest return, latency) →

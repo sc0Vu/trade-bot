@@ -70,3 +70,16 @@ history_len = 500
 # database is stamped with its network on first use; opening it for another
 # network is refused, so fake fills never count as real holdings.
 # url = "sqlite://data/demo.db?mode=rwc"
+
+[metrics]
+# Prometheus metrics at http://<listen>/metrics during `run` (orders, fills,
+# rejections, feed age, Binance latency and errors, reconcile, process
+# memory/CPU). Off by default. If the endpoint can't start, trading goes on.
+enabled = false
+# The endpoint has no authentication: loopback only unless allow_public.
+listen = "127.0.0.1:9184"
+# Also export positions, cost basis and realized P&L (the account's books).
+include_money = false
+# Permit a non-loopback listen address. Put a firewall or an authenticating
+# proxy in front if you set this.
+allow_public = false

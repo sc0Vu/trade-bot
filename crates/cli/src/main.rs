@@ -7,6 +7,7 @@ mod config;
 mod date;
 mod gate;
 mod shutdown;
+mod telemetry;
 
 use anyhow::Context;
 use backtest::{BacktestProvider, DataDir, fetch, run_backtest};
@@ -108,9 +109,13 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
     if network == Network::Live {
         eprintln!("LIVE: sending real orders to Binance mainnet");
     }
+    telemetry::start(&cfg.metrics);
+    let mut observer = telemetry::RunObserver {
+        include_money: cfg.metrics.include_money,
+    };
     tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");
     let outcome = tokio::select! {
-        r = engine::run(&provider, strategy.as_mut(), params, &engine_cfg) => r.map(Some),
+        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer) => r.map(Some),
         s = shutdown::signal() => {
             eprintln!("{}: stopping; cancelling open orders (signal again to skip)", s?);
             Ok(None)

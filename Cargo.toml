@@ -36,6 +36,8 @@ hex = "0.4.3"
 hmac = "0.13.0"
 inventory = "0.3.25"
 metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
+metrics-process = "2.4.3"
 metrics-util = { version = "0.20.4", default-features = false, features = ["debugging"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "http2", "query"] }
 rust_decimal = "1.43.0"

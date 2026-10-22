@@ -12,6 +12,7 @@ clap.workspace = true
 figment.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rust_decimal.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 toml.workspace = true
 tracing.workspace = true
@@ -19,10 +20,14 @@ tracing-subscriber.workspace = true
 bot-core.workspace = true
 strategy.workspace = true
 exchange.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+metrics-process.workspace = true
 engine.workspace = true
 backtest.workspace = true
 storage.workspace = true
 migration.workspace = true
 
 [dev-dependencies]
+rust_decimal_macros.workspace = true
 figment = { workspace = true, features = ["test"] }

@@ -108,6 +108,7 @@ are errors, so a typo fails loudly instead of falling back to a default.
 | `[strategy]` | `name`, `params` | A registered strategy and its own parameter table |
 | `[engine]` | `history_len` | Candles of history kept per instrument (default 500) |
 | `[db]` | `url` | Where a run keeps its books; default `data/<network>.db` |
+| `[metrics]` | `enabled`, `listen`, `include_money`, `allow_public` | Prometheus `/metrics` during `run`; off, loopback-only and money-free by default |
 
 ## Strategies
 

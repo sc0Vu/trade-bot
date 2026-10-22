@@ -367,6 +367,15 @@ Live state beyond counters reaches the outside through
 every event. The observer can't change the run and must return quickly;
 plain `run` builds no snapshot at all.
 
+`run` exports all of this when `metrics.enabled` is set: a Prometheus
+endpoint at `metrics.listen` (default `127.0.0.1:9184`), process metrics
+(memory, CPU, open files) sampled every 15 s, and gauges from the observer:
+open orders and the last close per instrument always, and position quantity,
+cost basis and realized P&L only with `metrics.include_money`. The endpoint
+has no authentication, so a non-loopback address needs
+`metrics.allow_public`. If the exporter can't start, the run logs a warning
+and trades on.
+
 Metric values are `f64`, converted at the moment of recording. They are for
 display and alerting only and are never read back into a decision or the
 books, so invariant 1 still holds where money is decided.
