@@ -1,11 +1,55 @@
 # Example configuration. Copy to config/config.toml or config/*.local.toml
-# (gitignored) and edit. Every field will be documented here as it is added.
+# (both gitignored) and edit. Every field is listed here.
 #
-# Secrets never go in this file: API keys are read only from the
-# BINANCE_API_KEY / BINANCE_API_SECRET environment variables.
+# Load order: this file (--config, else BOT_CONFIG, else config/config.toml),
+# then BOT_* environment variables, nested with "__":
+#   BOT_EXCHANGE__TESTNET=true  BOT_STRATEGY__NAME=ratio_hop
+# Unknown fields are errors, so a typo never silently becomes a default.
+#
+# Secrets never go in this file, and there is no field for them: API keys
+# are read only from the BINANCE_API_KEY / BINANCE_API_SECRET environment
+# variables. Testnet needs testnet keys (testnet.binance.vision).
 #
 # Money values (prices, quantities, fees, notionals) are strings, e.g.
 # fee = "0.001". A bare number is rejected: TOML parses it as a binary float,
 # which loses precision before it can become a Decimal.
 #
 # Instruments are written venue:SYMBOL, e.g. "binance:BTCUSDT".
+
+# "paper" (default) or "live". Live trading needs ALL of: mode = "live",
+# exchange.testnet = false, and `run --live --i-understand`.
+mode = "paper"
+
+# The only instruments the bot may trade. Must not be empty.
+whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
+
+[exchange]
+# true (default): Binance spot testnet, fake balances. false: mainnet.
+testnet = true
+# Optional host overrides; defaults follow `testnet`. A testnet run refuses
+# any *.binance.com host here.
+# rest_url = "https://testnet.binance.vision"
+# ws_url = "wss://stream.testnet.binance.vision"
+# Kline interval the strategy trades on: 1m, 5m, 15m, 1h, 4h, 1d.
+interval = "1m"
+
+[strategy]
+# A registered strategy: buy_and_hold, ratio_hop.
+name = "ratio_hop"
+
+# Strategy-specific; checked when the strategy is built.
+[strategy.params]
+coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+scout_margin = "0.002"
+freefall_pct = "0.2"
+freefall_candles = 60
+order_type = "limit"
+limit_timeout = 3
+
+[engine]
+# Candles of history kept per instrument for the strategy. Must exceed
+# ratio_hop's freefall_candles.
+history_len = 500

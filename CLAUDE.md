@@ -194,6 +194,19 @@ ABI — compiler mismatch UB).
    One client; base URL, keys from config (`testnet: bool`). Testnet host
    `testnet.binance.vision`. Same signing, same code path. More venues =
    new `Provider` impls, nothing else changes.
+   Built: `BinanceSpotProvider` = `KlineStream` (combined ws streams; only
+   `"x": true` closed bars emitted; dropped socket = error, no reconnect yet)
+   + `BinanceBroker` (signed REST via `SignedClient`; `Transport`/`Clock`
+   traits for no-network tests). Orders carry our `OrderId` as
+   `newClientOrderId`; quote budget → `quoteOrderQty` (rounded toward zero,
+   8 dp). `settle` polls each open/cancelling order's status + `myTrades`;
+   order dropped only when terminal AND trades sum to `executedQty`.
+   Positions from bot's own fills only (start flat; prior balances ignored).
+   Refusals identical to PaperBroker. Fee in third asset (BNB) → error:
+   disable BNB fee payment. Ctrl-C does NOT cancel venue orders.
+   `run --paper` = testnet only; `run --live` needs `mode = "live"` +
+   `exchange.testnet = false` + `--i-understand` (`cli::gate`, all combos
+   tested); testnet run refuses `*.binance.com` URL overrides.
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety
@@ -349,8 +362,10 @@ Layered; each source overrides one above:
 - Validate on load, fail fast: whitelist non-empty, fee/slippage ≥ 0, live mode
   requires non-testnet provider + `--i-understand` gate. Bad config
   never reaches trading loop.
-- Real config = `config/*.local.toml` (gitignored) or env; only
-  `config.example.toml` committed.
+- Real config = `config/config.toml` or `config/*.local.toml` (both
+  gitignored) or env; only `config.example.toml` committed (and loaded by a
+  test, so it can't rot). `exchange.testnet` defaults true. No field exists
+  for a secret: `api_key` in a file = unknown-field error.
 
 ## Definition of done (every change)
 Not finished until all hold — per task, not at end:

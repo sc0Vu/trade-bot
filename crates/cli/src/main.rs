@@ -3,14 +3,19 @@
 //! Safe by default: paper against testnet. Live trading requires
 //! `mode = "live"`, a non-testnet provider, and `--i-understand`.
 
+mod config;
 mod date;
+mod gate;
 
 use anyhow::Context;
 use backtest::{BacktestProvider, DataDir, fetch, run_backtest};
 use bot_core::{Decimal, InstrumentId, Interval, Notional, Symbol, Timestamp, VenueId};
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use engine::EngineConfig;
-use exchange::binance::{PUBLIC_DATA_URL, PublicClient};
+use exchange::Provider;
+use exchange::binance::{
+    BinanceConfig, BinanceSpotProvider, Credentials, PUBLIC_DATA_URL, PublicClient,
+};
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +34,75 @@ enum Command {
     FetchData(FetchArgs),
     /// Replay cached klines through the engine with a paper broker.
     Backtest(BacktestArgs),
+    /// Trade on Binance: testnet by default (`--paper`), mainnet only behind
+    /// the live gate.
+    Run(RunArgs),
+}
+
+#[derive(Args)]
+#[command(group(ArgGroup::new("network").args(["paper", "live"])))]
+struct RunArgs {
+    /// Trade on Binance spot testnet (fake balances). The default.
+    #[arg(long)]
+    paper: bool,
+    /// Trade real money on mainnet. Also needs `mode = "live"` and
+    /// `exchange.testnet = false` in config, and `--i-understand`.
+    #[arg(long)]
+    live: bool,
+    /// Acknowledge that `--live` sends real orders.
+    #[arg(long, requires = "live")]
+    i_understand: bool,
+    /// Config file (default `BOT_CONFIG`, else config/config.toml).
+    #[arg(long)]
+    config: Option<PathBuf>,
+}
+
+async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
+    let cfg = config::Config::load(a.config.as_deref())?;
+    let network = gate::decide(cfg.mode, cfg.exchange.testnet, a.live, a.i_understand)?;
+    gate::check_overrides(
+        network,
+        &[
+            cfg.exchange.rest_url.as_deref(),
+            cfg.exchange.ws_url.as_deref(),
+        ],
+    )?;
+    // Hard error in both modes: testnet orders need testnet keys too.
+    let creds = Credentials::from_env()?;
+    let provider = BinanceSpotProvider::new(
+        BinanceConfig {
+            testnet: network == gate::Network::Testnet,
+            rest_url: cfg.exchange.rest_url.clone(),
+            ws_url: cfg.exchange.ws_url.clone(),
+            interval: cfg.exchange.interval,
+        },
+        creds,
+        cfg.whitelist.clone(),
+    );
+    let params = Params::new(cfg.strategy.params);
+    let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
+    let engine_cfg = EngineConfig {
+        whitelist: cfg.whitelist,
+        history_len: cfg.engine.history_len,
+    };
+    if network == gate::Network::Mainnet {
+        eprintln!("LIVE: sending real orders to Binance mainnet");
+    }
+    tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");
+    tokio::select! {
+        r = engine::run(&provider, strategy.as_mut(), params, &engine_cfg) => {
+            let r = r?;
+            println!("events {}  fills {}  rejected signals {}", r.events, r.fills.len(), r.rejections.len());
+            for p in &r.positions {
+                println!("{}  qty {}  realized {}", p.instrument(), p.qty(), p.realized_pnl());
+            }
+            Ok(())
+        }
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("interrupted: open orders on the venue were NOT cancelled; check the account");
+            Ok(())
+        }
+    }
 }
 
 #[derive(Args)]
@@ -182,5 +256,6 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::FetchData(a) => fetch_data(a).await,
         Command::Backtest(a) => backtest(a).await,
+        Command::Run(a) => run_bot(a).await,
     }
 }
