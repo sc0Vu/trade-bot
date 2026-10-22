@@ -294,7 +294,8 @@ async fn main() -> anyhow::Result<()> {
     // A live run must show its orders and fills without RUST_LOG set; a
     // backtest logging every simulated order would bury its report.
     let default = match cli.command {
-        Command::Run(_) => "info",
+        // sqlx logs every SQL statement at info.
+        Command::Run(_) => "info,sqlx=warn",
         _ => "warn",
     };
     tracing_subscriber::fmt()
