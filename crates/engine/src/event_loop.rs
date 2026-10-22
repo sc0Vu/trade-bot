@@ -227,7 +227,8 @@ mod tests {
 
     fn buy_and_hold(quote: &str) -> (Box<dyn Strategy>, Params) {
         let params = Params::from_toml(&format!(
-            "instrument = \"binance:BTCUSDT\"\nquote_amount = \"{quote}\""
+            "coin = \"binance:BTCUSDT\"\nquote_amount = \"{quote}\"\n\
+             fee = \"0.001\"\nslippage_bps = \"0\""
         ))
         .unwrap();
         (strategy::build("buy_and_hold", &params).unwrap(), params)

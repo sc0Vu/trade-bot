@@ -354,6 +354,11 @@ start (every backtest) unchanged. Restart between legs holds nothing → buys
 afresh with `quote_amount`; earlier proceeds stay in bridge.
 
 ## Other built-ins
+`buy_and_hold` — the benchmark every strategy is measured against: can't beat
+it on same coin after costs → no edge. Params `coin`, `quote_amount`, `fee`,
+`slippage_bps` (costs required, range-checked, unused). Decides once on coin's
+first candle: flat → quote-budget market buy; already held (restart) → hold.
+Never sells; rejected buy not retried. Keep minimal.
 `sma_trend` — one coin, long or flat (cash = defensive; v1 spot no short).
 Long while close > SMA(`sma_period` closes, current bar included) ×
 (1 + `band_pct`); cash below SMA × (1 − `band_pct`). Buy = quote-budget market

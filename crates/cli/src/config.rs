@@ -176,7 +176,7 @@ mod tests {
         [exchange]
         [strategy]
         name = "buy_and_hold"
-        params = { instrument = "binance:BTCUSDT", quote_amount = "100" }
+        params = { coin = "binance:BTCUSDT", quote_amount = "100", fee = "0.001", slippage_bps = "5" }
     "#;
 
     fn parse(toml: &str) -> anyhow::Result<Config> {

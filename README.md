@@ -71,8 +71,10 @@ make backtest STRATEGY=buy_and_hold SYMBOL=BTCUSDT \
 `my-params.toml` holds the strategy's parameters, for example:
 
 ```toml
-instrument = "binance:BTCUSDT"
+coin = "binance:BTCUSDT"
 quote_amount = "1000"
+fee = "0.001"        # match the backtest's fee
+slippage_bps = "5"   # match SLIPPAGE_BPS
 ```
 
 To paper trade, see [Paper and live trading](#paper-and-live-trading).
@@ -115,7 +117,7 @@ is deserialized into that strategy's own typed struct.
 
 | Name | What it does |
 |---|---|
-| `buy_and_hold` | Buys once with a fixed quote amount and holds. A baseline: a strategy that can't beat it after costs has no edge. |
+| `buy_and_hold` | The benchmark. Buys one coin once with a fixed quote amount on its first candle, then holds forever. A strategy that can't beat it on the same coin after costs has no edge. |
 | `ratio_hop` | Holds one coin of a set and rotates `A → USDT → B` only when the post-fee estimate of B's units beats the units of B last held, so unit counts only ratchet up. Includes a freefall guard against rotating into a collapsing coin. Maximizes units, not value. |
 | `sma_trend` | One coin, long or flat. Holds while the close is above its simple moving average (with an optional dead zone), and sits in cash otherwise. v1 spot can't short, so cash is the defensive position. |
 

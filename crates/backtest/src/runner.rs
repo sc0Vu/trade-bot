@@ -56,8 +56,10 @@ mod tests {
             RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
             BpsSlippage::zero(),
         );
-        let params =
-            Params::from_toml("instrument = \"binance:BTCUSDT\"\nquote_amount = \"1000\"").unwrap();
+        let params = Params::from_toml(
+            "coin = \"binance:BTCUSDT\"\nquote_amount = \"1000\"\nfee = \"0.001\"\nslippage_bps = \"0\"",
+        )
+        .unwrap();
         let mut s = strategy::build("buy_and_hold", &params).unwrap();
         let config = EngineConfig {
             whitelist: vec![id],
