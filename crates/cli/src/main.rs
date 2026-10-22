@@ -7,6 +7,7 @@ mod config;
 mod date;
 mod gate;
 mod shutdown;
+mod state;
 mod telemetry;
 
 use anyhow::Context;
@@ -103,6 +104,18 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
         cfg.whitelist.clone(),
         books.clone(),
     );
+    let state_hash = state::params_hash(&cfg.strategy.name, &cfg.strategy.params);
+    let resume = state::load(&*books, &cfg.strategy.name, &state_hash).await?;
+    if resume.is_some() {
+        tracing::info!("resuming saved strategy state");
+    }
+    let saver = state::Saver::start(
+        books.clone(),
+        cfg.strategy.name.clone(),
+        state_hash,
+        resume.clone(),
+        now,
+    );
     let params = Params::new(cfg.strategy.params);
     let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
     let engine_cfg = EngineConfig {
@@ -139,10 +152,11 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
     let mut observer = telemetry::RunObserver {
         include_money: cfg.metrics.include_money,
         live,
+        state: Some(saver),
     };
     tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");
     let outcome = tokio::select! {
-        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, None) => r.map(Some),
+        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, resume) => r.map(Some),
         s = shutdown::signal() => {
             eprintln!("{}: stopping; cancelling open orders (signal again to skip)", s?);
             Ok(None)
@@ -180,6 +194,9 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
                 p.realized_pnl()
             );
         }
+    }
+    if let Some(saver) = observer.state.take() {
+        saver.finish().await;
     }
     closed?;
     Ok(())

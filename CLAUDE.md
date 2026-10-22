@@ -295,7 +295,10 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    migrations; `bind_network` stamps db with network (testnet/demo/live),
    mismatch = `WrongNetwork` error: one db per network.
    `StrategyStateRepository` (`strategy_state`, migration 4): one row per
-   strategy name = last `save_state` JSON + params hash + time.
+   strategy name = last `save_state` JSON + params hash + time. `cli::state`:
+   params hash = SHA-256(name, params table); mismatch → fresh. Observer
+   publishes changed state on `watch`, background task writes (engine never
+   waits), flushed on exit; write failure = warning.
 4. **Backtest** — `backtest` crate: load cached klines, replay as `MarketEvent`
    stream through engine, emit report (realized P&L, max drawdown, trade
    count, win rate, Sharpe). Fill model stated below, not hidden.

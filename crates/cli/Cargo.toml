@@ -14,6 +14,8 @@ figment.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rust_decimal.workspace = true
+hex.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 toml.workspace = true
 tracing.workspace = true

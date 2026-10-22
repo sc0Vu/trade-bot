@@ -16,6 +16,7 @@ that pins it is named.
 - [Backtest report](#backtest-report)
 - [Binance](#binance)
 - [Books: journal, ledger, holdings](#books-journal-ledger-holdings)
+- [Restarts](#restarts)
 - [Reconcile](#reconcile)
 - [Shutdown](#shutdown)
 - [Observability](#observability)
@@ -325,6 +326,20 @@ Each network has its own database (default `data/<network>.db`), opened with
 pending migrations applied and stamped with its network on first use.
 Opening it for another network fails, so fake fills never count as real
 holdings.
+
+## Restarts
+
+A restart should carry on, not start over. Three things make that work:
+the books (positions and the order journal) survive in the database; the
+feed warms the strategy's history up with the last `history_len` bars as
+`Backfill`; and each strategy's own state is saved after every event
+(`Strategy::save_state`, written by a background task to `strategy_state`)
+and restored at the next start (`restore_state`), checked against the books.
+Saved state applies only under the same params (a SHA-256 of the strategy's
+name and params). Fills that happened while the bot was down are recovered by
+the startup reconcile and delivered to `on_fill` with the first decision
+event, so, for example, `ratio_hop` restarted between the legs of a rotation
+buys with the proceeds of the sell that filled meanwhile.
 
 ## Reconcile
 

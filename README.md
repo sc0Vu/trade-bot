@@ -247,9 +247,8 @@ deploy/       Prometheus, Alertmanager, Grafana (compose) and alert rules
 - A market-data outage longer than `exchange.max_outage_secs` (default 10
   min) stops the run. Bars missed during a shorter one are backfilled as
   history; only the newest is traded on.
-- Strategy state isn't persisted. `ratio_hop` resumes on a coin it holds,
-  but its rotation history restarts. A restart between the two legs of a
-  rotation buys afresh.
+- Strategy state is saved per strategy and restored only under the same
+  params; changing a strategy's params (say, its coin list) starts it fresh.
 - No cash balance in the brokers: buys aren't refused for lack of quote
   (the backtest report shows overspending as negative `min_cash`).
 - BNB fees are valued at the BNB price in the trade's minute, an

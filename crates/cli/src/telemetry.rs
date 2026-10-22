@@ -57,6 +57,8 @@ pub struct RunObserver {
     /// The API's live view, when the API is on. `send_replace` never waits
     /// for a reader.
     pub live: Option<tokio::sync::watch::Sender<Option<Snapshot>>>,
+    /// Saves the strategy's state when it changes.
+    pub state: Option<crate::state::Saver>,
 }
 
 /// Exporter-only conversion: a gauge is display and alerting, never read
@@ -70,6 +72,9 @@ impl Observer for RunObserver {
     fn on_snapshot(&mut self, s: &Snapshot) {
         if let Some(tx) = &self.live {
             tx.send_replace(Some(s.clone()));
+        }
+        if let Some(saver) = &self.state {
+            saver.publish(&s.strategy_state);
         }
         metrics::gauge!(OPEN_ORDERS).set(s.open_orders.len() as f64);
         for c in &s.last_candles {
@@ -118,6 +123,7 @@ mod tests {
             RunObserver {
                 include_money,
                 live: None,
+                state: None,
             }
             .on_snapshot(&snapshot());
         });
@@ -130,6 +136,7 @@ mod tests {
         let mut o = RunObserver {
             include_money: false,
             live: Some(tx),
+            state: None,
         };
         o.on_snapshot(&snapshot());
         assert_eq!(*rx.borrow(), Some(snapshot()));
