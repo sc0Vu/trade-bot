@@ -1,6 +1,7 @@
 //! Strategies shipped with the bot. Each file registers itself.
 
 pub mod buy_and_hold;
+pub mod dual_ma_cross;
 pub mod momentum_rotation;
 pub mod ratio_hop;
 pub mod rsi_reversion;

@@ -377,6 +377,12 @@ proceeds: losing hop overspends (backtest negative `min_cash`; live `-2010`,
 stays cash). Bets winners persist; fails on sharp reversals, choppy
 leadership. Dust = cash.
 
+`dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
+SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
+cross event: first bar with `slow_period` closes buys at once if fast on top.
+`1 ≤ fast_period < slow_period` checked at build. Fails in ranges (whipsaw,
+lag).
+
 `rsi_reversion` — one coin; the counterexample to the trend filters. Flat and
 RSI < `oversold` → buy `quote_amount`; long and RSI > `overbought` → sell all.
 RSI = v1 simple-average form (not Wilder) over last `rsi_period` changes
@@ -389,7 +395,8 @@ to the bottom (no stop, by design). Dust = cash; no decision while order open.
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
+  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, dual_ma_cross, momentum_rotation, ratio_hop,
+               rsi_reversion, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report
