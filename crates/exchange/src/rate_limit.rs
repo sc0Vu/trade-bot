@@ -209,6 +209,39 @@ impl RateLimiter {
         }
     }
 
+    /// Replaces the limits (say, with the venue's published ones). A limit
+    /// with the same kind and window as an old one keeps its log, so what
+    /// was spent still counts; others start empty.
+    pub fn set_limits(&self, limits: impl IntoIterator<Item = Limit>) {
+        let mut s = self.lock();
+        let mut old = std::mem::take(&mut s.windows);
+        s.windows = limits
+            .into_iter()
+            .map(|limit| {
+                match old
+                    .iter()
+                    .position(|w| w.limit.kind == limit.kind && w.limit.window == limit.window)
+                {
+                    Some(i) => {
+                        let mut w = old.swap_remove(i);
+                        w.limit = limit;
+                        w
+                    }
+                    None => Window {
+                        limit,
+                        log: VecDeque::new(),
+                        total: 0,
+                    },
+                }
+            })
+            .collect();
+    }
+
+    /// The limits in force.
+    pub fn limits(&self) -> Vec<Limit> {
+        self.lock().windows.iter().map(|w| w.limit).collect()
+    }
+
     /// Holds every request for `d` (the venue's `Retry-After`).
     pub fn block_for(&self, d: Duration) {
         let mut s = self.lock();
@@ -368,6 +401,26 @@ mod tests {
         l.acquire(5, 0).await.unwrap();
         l.observe_used(Kind::Weight, MIN, 1);
         assert_eq!(l.used(Kind::Weight, MIN), Some(5));
+    }
+
+    /// New limits keep what was already spent in matching windows.
+    #[tokio::test(start_paused = true)]
+    async fn new_limits_keep_the_spending_history() {
+        let l = RateLimiter::new([weight(10)]);
+        l.acquire(8, 0).await.unwrap();
+        l.set_limits([
+            weight(20),
+            Limit {
+                kind: Kind::Orders,
+                window: Duration::from_secs(10),
+                budget: 5,
+            },
+        ]);
+        assert_eq!(l.used(Kind::Weight, MIN), Some(8));
+        assert_eq!(l.used(Kind::Orders, Duration::from_secs(10)), Some(0));
+        // 8 + 12 = 20 fits the new budget at once.
+        assert_eq!(l.acquire(12, 0).await, Ok(Duration::ZERO));
+        assert_eq!(l.limits().len(), 2);
     }
 
     #[tokio::test(start_paused = true)]

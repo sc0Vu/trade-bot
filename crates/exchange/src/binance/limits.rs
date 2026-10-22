@@ -93,6 +93,21 @@ pub fn parse_limits(info: &Value) -> Option<Vec<Limit>> {
     (!limits.is_empty()).then_some(limits)
 }
 
+/// Applies an `exchangeInfo` reply's `rateLimits` to `limiter`, if it has
+/// any and they differ from those in force; returns whether it changed
+/// anything. The reply comes with every instrument lookup, so this costs
+/// no extra weight.
+pub fn apply_published(limiter: &crate::rate_limit::RateLimiter, info: &Value) -> bool {
+    match parse_limits(info) {
+        Some(limits) if limits != limiter.limits() => {
+            tracing::info!(?limits, "using Binance's published rate limits");
+            limiter.set_limits(limits);
+            true
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +147,24 @@ mod tests {
         assert_eq!(d[0].budget, 4800);
         assert_eq!(d[1].budget, 80);
         assert_eq!(d[2].budget, 160_000);
+    }
+
+    #[test]
+    fn published_limits_replace_the_defaults() {
+        use crate::rate_limit::RateLimiter;
+        let l = RateLimiter::new(default_limits());
+        let lower = serde_json::json!({"rateLimits": [
+            {"rateLimitType": "REQUEST_WEIGHT", "interval": "MINUTE", "intervalNum": 1, "limit": 1200}
+        ]});
+        assert!(apply_published(&l, &lower));
+        assert_eq!(
+            l.limits(),
+            vec![Limit::with_headroom(Kind::Weight, MINUTE, 1200, HEADROOM)]
+        );
+        // The same limits again, or none at all: nothing changes.
+        assert!(!apply_published(&l, &lower));
+        assert!(!apply_published(&l, &serde_json::json!({"symbols": []})));
+        assert_eq!(l.limits()[0].budget, 960);
     }
 
     /// The `rateLimits` demo trading returned on 2026-10-23.

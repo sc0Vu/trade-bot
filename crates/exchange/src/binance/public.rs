@@ -145,6 +145,7 @@ impl PublicClient {
         let info = self
             .get("/api/v3/exchangeInfo", &[("symbol", symbol.to_string())])
             .await?;
+        super::limits::apply_published(&self.limiter, &info);
         parse_exchange_info(&info, &self.venue)
     }
 }

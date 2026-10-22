@@ -244,6 +244,8 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    reset). Budget 80% of weight 6000/min, orders 100/10s, 200k/day; one
    limiter per provider shared by all its clients (weight per IP). Weights
    measured 2026-10-23 via `X-MBX-USED-WEIGHT-1M`; unknown endpoint = 20.
+   Limits replaced by `exchangeInfo` `rateLimits` on every instrument lookup
+   (`limits::apply_published`, no extra weight); defaults = fallback.
    Venue's higher usage header wins; 429/418 → hold all requests for
    `Retry-After` (default 60s), error still stops run. Request too big for
    budget → `RateLimited` (fatal).
