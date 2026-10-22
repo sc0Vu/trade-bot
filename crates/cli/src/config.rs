@@ -311,6 +311,16 @@ mod tests {
         });
     }
 
+    /// The reported error: `interval = "1s"` must load.
+    #[test]
+    fn one_second_interval_loads() {
+        Jail::expect_with(|_| {
+            let c = parse(&MIN.replace("[exchange]", "[exchange]\ninterval = \"1s\"")).unwrap();
+            assert_eq!(c.exchange.interval, Interval::S1);
+            Ok(())
+        });
+    }
+
     #[test]
     fn metrics_are_off_and_loopback_by_default() {
         Jail::expect_with(|_| {

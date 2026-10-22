@@ -192,6 +192,7 @@ mod tests {
     fn stall_limit_is_two_bars_plus_a_minute() {
         assert_eq!(stale_after(Interval::M1), Duration::from_secs(180));
         assert_eq!(stale_after(Interval::H1), Duration::from_secs(7_260));
+        assert_eq!(stale_after(Interval::S1), Duration::from_secs(62));
     }
 
     /// A local server that accepts the WebSocket and then only sends

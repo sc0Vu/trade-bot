@@ -7,6 +7,10 @@ use std::ops::Deref;
 /// Binance (`"1m"`, `"1h"`, ...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Interval {
+    /// One second. Binance serves it on spot (REST and WebSocket, demo and
+    /// testnet included); many bars have no trades (open = close, volume 0).
+    #[serde(rename = "1s")]
+    S1,
     #[serde(rename = "1m")]
     M1,
     #[serde(rename = "5m")]
@@ -25,6 +29,7 @@ impl Interval {
     /// Binance's code for the interval, also its serde name (`"1h"`).
     pub const fn code(self) -> &'static str {
         match self {
+            Self::S1 => "1s",
             Self::M1 => "1m",
             Self::M5 => "5m",
             Self::M15 => "15m",
@@ -38,6 +43,7 @@ impl Interval {
     pub const fn as_millis(self) -> i64 {
         const MIN: i64 = 60_000;
         match self {
+            Self::S1 => 1_000,
             Self::M1 => MIN,
             Self::M5 => 5 * MIN,
             Self::M15 => 15 * MIN,
@@ -350,5 +356,14 @@ mod tests {
         let json = serde_json::to_string(&Candle::new(spec()).unwrap()).unwrap();
         let bad = json.replace(r#""high":"110""#, r#""high":"1""#);
         assert!(serde_json::from_str::<Candle>(&bad).is_err());
+    }
+
+    #[test]
+    fn one_second_interval() {
+        let s1: Interval = serde_json::from_str("\"1s\"").unwrap();
+        assert_eq!(s1, Interval::S1);
+        assert_eq!(s1.code(), "1s");
+        assert_eq!(s1.as_millis(), 1_000);
+        assert_eq!(serde_json::to_string(&s1).unwrap(), "\"1s\"");
     }
 }

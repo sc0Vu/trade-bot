@@ -102,7 +102,7 @@ are errors, so a typo fails loudly instead of falling back to a default.
 | top level | `mode` | `"paper"` (default) or `"live"` |
 | top level | `whitelist` | The only instruments the bot may trade, e.g. `["binance:BTCUSDT"]` |
 | `[exchange]` | `network` | `"testnet"` (default), `"demo"` or `"live"` |
-| `[exchange]` | `interval` | Candle width: `1m`, `5m`, `15m`, `1h`, `4h`, `1d` |
+| `[exchange]` | `interval` | Candle width: `1s`, `1m`, `5m`, `15m`, `1h`, `4h`, `1d` |
 | `[exchange]` | `http_timeout_secs` | Longest one REST request may take (default 10) |
 | `[exchange]` | `rest_url`, `ws_url` | Host overrides; a paper run refuses real-money hosts |
 | `[strategy]` | `name`, `params` | A registered strategy and its own parameter table |

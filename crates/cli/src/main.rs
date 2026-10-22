@@ -295,7 +295,8 @@ struct FetchArgs {
     /// Spot symbols, comma-separated (`BTCUSDT,ETHUSDT`).
     #[arg(long, value_delimiter = ',', required = true)]
     symbol: Vec<Symbol>,
-    /// Bar width (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`).
+    /// Bar width (`1s`, `1m`, `5m`, `15m`, `1h`, `4h`, `1d`). `1s` is 86,400
+    /// bars per day per symbol: fetch short ranges.
     #[arg(long, default_value = "1h", value_parser = parse_interval)]
     interval: Interval,
     /// First day to fetch, `YYYY-MM-DD` (UTC).
@@ -314,7 +315,7 @@ struct FetchArgs {
 
 fn parse_interval(s: &str) -> anyhow::Result<Interval> {
     serde_json::from_value(serde_json::Value::String(s.to_owned()))
-        .with_context(|| format!("interval {s:?}: want 1m, 5m, 15m, 1h, 4h or 1d"))
+        .with_context(|| format!("interval {s:?}: want 1s, 1m, 5m, 15m, 1h, 4h or 1d"))
 }
 
 fn now() -> Timestamp {
