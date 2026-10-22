@@ -47,9 +47,13 @@ pub trait FillModel: Send + Sync {
 /// Default fill model: the rules in CLAUDE.md "Backtest fill model".
 ///
 /// - Market: fills at the candle's open, taker.
-/// - Limit buy: if the open is at or below the limit it is marketable and
-///   fills at the open, taker; else fills at the limit if `low <= limit`,
-///   maker. Sell mirrors with `high`. IOC/FOK fill only at the open of
+/// - Limit buy: on its first candle, if the open is strictly below the
+///   limit the order was marketable and fills at the open, taker. Otherwise
+///   it rests and fills at the limit, maker, only when price trades
+///   through it (`low < limit`). Price merely touching the limit
+///   (`low == limit`) is no fill: queue position is unknown, and an order
+///   at the last trade price usually just joins the book. Sell mirrors with
+///   `open > limit` and `high > limit`. IOC/FOK fill only at the open of
 ///   their first candle, else expire; GTC rests.
 /// - Stop-market buy: fills at the open if the open is at or above the stop
 ///   (gapped through), else at the stop if `high >= stop`, taker. Sell
@@ -65,9 +69,10 @@ pub struct NextOpenFillModel;
 
 impl NextOpenFillModel {
     fn limit(side: Side, limit: Price, tif: TimeInForce, first_look: bool, c: &Candle) -> Decision {
+        // Strict: an order at exactly the open price would rest, not cross.
         let marketable_at_open = match side {
-            Side::Buy => c.open <= limit,
-            Side::Sell => c.open >= limit,
+            Side::Buy => c.open < limit,
+            Side::Sell => c.open > limit,
         };
         if first_look && marketable_at_open {
             return Decision::Fill(Execution {
@@ -79,13 +84,13 @@ impl NextOpenFillModel {
         if tif != TimeInForce::Gtc {
             return Decision::Expire;
         }
-        // A resting order: crossed at the open (later candles) or touched
-        // inside the bar. Either way it fills at its own price.
-        let touched = match side {
-            Side::Buy => c.low <= limit,
-            Side::Sell => c.high >= limit,
+        // A resting order fills at its own price only if the market traded
+        // through it, crossing at the open (later candles) or inside the bar.
+        let traded_through = match side {
+            Side::Buy => c.low < limit,
+            Side::Sell => c.high > limit,
         };
-        if touched {
+        if traded_through {
             Decision::Fill(Execution {
                 price: limit,
                 liquidity: Liquidity::Maker,
@@ -225,6 +230,17 @@ mod tests {
             eval(Side::Buy, lim("101", TimeInForce::Gtc), LATER, BAR),
             fill("101", Liquidity::Maker, false)
         );
+        // Limit equal to the open isn't marketable; it rests and fills at
+        // the limit, maker, because the low (95) trades through it.
+        assert_eq!(
+            eval(Side::Buy, lim("100", TimeInForce::Gtc), FIRST, BAR),
+            fill("100", Liquidity::Maker, false)
+        );
+        // Low exactly at the limit: touched, not traded through. No fill.
+        assert_eq!(
+            eval(Side::Buy, lim("95", TimeInForce::Gtc), FIRST, BAR),
+            Decision::Rest
+        );
     }
 
     #[test]
@@ -242,6 +258,13 @@ mod tests {
             fill("104", Liquidity::Maker, false)
         );
         assert_eq!(eval(Side::Sell, lim("106"), FIRST, BAR), Decision::Rest);
+        // Equal to the open: rests, then the high (105) trades through it.
+        assert_eq!(
+            eval(Side::Sell, lim("100"), FIRST, BAR),
+            fill("100", Liquidity::Maker, false)
+        );
+        // High exactly at the limit: no fill.
+        assert_eq!(eval(Side::Sell, lim("105"), FIRST, BAR), Decision::Rest);
     }
 
     #[test]
@@ -261,6 +284,12 @@ mod tests {
                 tif,
             };
             assert_eq!(eval(Side::Buy, inside, FIRST, BAR), Decision::Expire);
+            // At exactly the open: not marketable, so an immediate order expires.
+            let at_par = OrderKind::Limit {
+                price: p("100"),
+                tif,
+            };
+            assert_eq!(eval(Side::Buy, at_par, FIRST, BAR), Decision::Expire);
         }
     }
 

@@ -245,11 +245,13 @@ Architecture).
 Candle = four prices, can't tell whether high or low first. So:
 - order only evaluated on candles opening after its `created_at`.
 - market order → fills at **next** candle's open, taker.
-- limit buy → first candle: open ≤ limit → open, taker (marketable at
-  submit); else `candle.low <= limit` → at limit, maker. Later candles:
-  resting order fills at limit only (someone trading through hits it at
-  limit first), never better open. Sell symmetric. IOC/FOK: first open or
-  expire. No partial fills.
+- limit buy → first candle: open **<** limit (strict) → open, taker
+  (marketable at submit). Else rests; fills at limit, maker, only if price
+  trades **through** it (`candle.low < limit`). Touch at exactly limit = no
+  fill (queue position unknown; order at last price just joins book).
+  Later candles: never better than limit. Sell symmetric (`open > limit`,
+  `high > limit`). IOC/FOK: first open or expire. No partial fills.
+  Slippage on taker limit fill capped at limit — limit never fills worse.
 - stop → triggers if `candle.high >= stop` (buy) / `candle.low <= stop` (sell);
   stop-market fills at stop, or open if gapped through, taker. Stop-limit
   never fills on trigger candle (path unknowable → worse case); limit from next.

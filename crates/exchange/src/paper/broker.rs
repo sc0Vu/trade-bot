@@ -3,7 +3,7 @@ use crate::{Broker, ExchangeError};
 use async_trait::async_trait;
 use bot_core::{
     Candle, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent, Notional, Order,
-    OrderId, Position, Price, Qty, Side, Size,
+    OrderId, OrderKind, Position, Price, Qty, Side, Size,
 };
 use std::collections::HashMap;
 
@@ -104,7 +104,9 @@ impl PaperBroker {
 
     fn execute(&mut self, order: &Order, candle: &Candle, exec: super::Execution) -> Option<Fill> {
         let instrument = self.instruments.get(&order.instrument)?;
-        let price = self.slippage.apply(instrument, order.side, exec);
+        // A limit never fills worse than its limit: slippage on a taker
+        // limit fill (marketable at the open) stops at the limit price.
+        let price = cap_at_limit(order, self.slippage.apply(instrument, order.side, exec));
         let qty = match order.size {
             Size::Base(q) => q,
             Size::Quote(budget) => match self.budget_qty(instrument, budget, price, exec.liquidity)
@@ -149,6 +151,18 @@ impl PaperBroker {
             return None;
         }
         Some(fill)
+    }
+}
+
+fn cap_at_limit(order: &Order, price: Price) -> Price {
+    let limit = match order.kind {
+        OrderKind::Limit { price, .. } => price,
+        OrderKind::StopLimit { limit, .. } => limit,
+        OrderKind::Market | OrderKind::StopMarket { .. } => return price,
+    };
+    match order.side {
+        Side::Buy => price.min(limit),
+        Side::Sell => price.max(limit),
     }
 }
 
@@ -468,5 +482,28 @@ mod tests {
         assert_eq!(fills[0].price, Price::new(dec!(95)));
         assert_eq!(fills[0].liquidity, Liquidity::Maker);
         assert_eq!(fills[0].ts, Timestamp::from_millis(3 * HOUR - 1));
+    }
+
+    /// Buy limit 101, marketable at open 100.95 (taker). 10 bps slippage
+    /// would make it 100.95 * 1.001 = 101.05095 -> 101.06, above the
+    /// limit; the fill is capped at 101.
+    #[tokio::test]
+    async fn slippage_never_pushes_a_limit_past_its_price() {
+        let mut b = broker(dec!(10));
+        let limit = Order::new(OrderSpec {
+            kind: OrderKind::Limit {
+                price: Price::new(dec!(101)),
+                tif: bot_core::TimeInForce::Gtc,
+            },
+            ..market("o-1", Side::Buy, dec!(1), 0).into()
+        })
+        .unwrap();
+        b.submit(limit).await.unwrap();
+        let fills = b
+            .settle(&ev(1, ["100.95", "101", "100.90", "101"]))
+            .await
+            .unwrap();
+        assert_eq!(fills[0].liquidity, Liquidity::Taker);
+        assert_eq!(fills[0].price, Price::new(dec!(101)));
     }
 }
