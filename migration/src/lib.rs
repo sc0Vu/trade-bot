@@ -12,6 +12,7 @@ pub use sea_orm_migration::prelude::*;
 
 mod m20261022_000001_create_trades_and_holdings;
 mod m20261022_000002_create_orders_and_venue_trade_ids;
+mod m20261022_000003_add_trade_fee_value;
 
 /// Ordered list of every migration. Append only; never edit or reorder one
 /// that has shipped.
@@ -23,6 +24,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20261022_000001_create_trades_and_holdings::Migration),
             Box::new(m20261022_000002_create_orders_and_venue_trade_ids::Migration),
+            Box::new(m20261022_000003_add_trade_fee_value::Migration),
         ]
     }
 }
@@ -43,6 +45,7 @@ mod tests {
         assert!(schema.has_table("orders").await.unwrap());
         assert!(schema.has_table("bot_meta").await.unwrap());
         assert!(schema.has_column("trades", "venue_trade_id").await.unwrap());
+        assert!(schema.has_column("trades", "fee_value").await.unwrap());
         for (table, index) in [
             ("trades", "idx_trades_instrument_ts"),
             ("trades", "idx_trades_venue_trade_id"),
@@ -51,7 +54,9 @@ mod tests {
             assert!(schema.has_index(table, index).await.unwrap(), "{index}");
         }
 
-        // Rolling back only the second migration restores the first's schema.
+        Migrator::down(&db, Some(1)).await.unwrap();
+        assert!(!schema.has_column("trades", "fee_value").await.unwrap());
+        // Rolling back the second migration too restores the first's schema.
         Migrator::down(&db, Some(1)).await.unwrap();
         assert!(!schema.has_table("orders").await.unwrap());
         assert!(!schema.has_column("trades", "venue_trade_id").await.unwrap());

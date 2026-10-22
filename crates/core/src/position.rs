@@ -129,8 +129,11 @@ impl Position {
     /// Rejected, leaving the position unchanged: a fill for another
     /// instrument, a position that is already negative (short accounting is
     /// v2), a sell larger than the holding (no v1 class allows shorts), a
-    /// base fee that consumes the whole buy, and `Fee::Other` (v1 can't
-    /// value it, and ignoring it would overstate P&L).
+    /// base fee that consumes the whole buy, and a `Fee::Other` without a
+    /// quote `value` (ignoring it would overstate P&L). A valued
+    /// `Fee::Other` counts exactly like a quote fee of `value`: the buy
+    /// receives the full quantity, since the fee came out of another
+    /// asset.
     pub fn apply(&mut self, fill: &Fill, instrument: &Instrument) -> Result<(), Error> {
         if fill.instrument != self.instrument || instrument.id != self.instrument {
             return Err(Error::PositionUpdate("fill is for a different instrument"));
@@ -144,13 +147,13 @@ impl Position {
         match fill.side {
             Side::Buy => {
                 let (received, cost) = match &fill.fee {
-                    Fee::Quote(f) => (fill.qty, gross + *f),
+                    Fee::Quote(f) | Fee::Other { value: Some(f), .. } => (fill.qty, gross + *f),
                     Fee::Base(b) if *b < fill.qty => (fill.qty - *b, gross),
                     Fee::Base(_) => {
                         return Err(Error::PositionUpdate("base fee consumes the whole buy"));
                     }
-                    Fee::Other { .. } => {
-                        return Err(Error::PositionUpdate("fee asset not supported"));
+                    Fee::Other { value: None, .. } => {
+                        return Err(Error::PositionUpdate("fee in another asset has no value"));
                     }
                 };
                 self.qty += received;
@@ -158,10 +161,10 @@ impl Position {
             }
             Side::Sell => {
                 let (removed, proceeds) = match &fill.fee {
-                    Fee::Quote(f) => (fill.qty, gross - *f),
+                    Fee::Quote(f) | Fee::Other { value: Some(f), .. } => (fill.qty, gross - *f),
                     Fee::Base(b) => (fill.qty + *b, gross),
-                    Fee::Other { .. } => {
-                        return Err(Error::PositionUpdate("fee asset not supported"));
+                    Fee::Other { value: None, .. } => {
+                        return Err(Error::PositionUpdate("fee in another asset has no value"));
                     }
                 };
                 if removed > self.qty {
@@ -443,6 +446,7 @@ mod tests {
         let bnb = Fee::Other {
             asset: Asset::new("BNB").unwrap(),
             amount: q(dec!(0.01)),
+            value: None,
         };
         assert!(
             pos.apply(&fill(Side::Buy, q(dec!(1)), p(dec!(100)), bnb), &i)
@@ -536,5 +540,64 @@ mod tests {
         assert!(serde_json::from_str::<Position>(&mismatched).is_err());
         let short = mismatched.replace(r#""cost_basis":"100""#, r#""cost_basis":"-100""#);
         assert!(serde_json::from_str::<Position>(&short).is_ok());
+    }
+
+    fn bnb(amount: rust_decimal::Decimal, value: rust_decimal::Decimal) -> Fee {
+        Fee::Other {
+            asset: Asset::new("BNB").unwrap(),
+            amount: q(amount),
+            value: Some(n(value)),
+        }
+    }
+
+    /// Hand-worked: buy 2 @ 100 with a BNB fee worth 0.12 USDT -> qty 2
+    /// (nothing withheld in BTC), cost 200.12. Sell 0.5 @ 110 with a BNB
+    /// fee worth 0.033 -> proceeds 54.967, cost removed 200.12 * 0.25 =
+    /// 50.03, realized 4.937; left 1.5 at cost 150.09.
+    #[test]
+    fn valued_third_asset_fee_counts_like_a_quote_fee() {
+        let i = btcusdt();
+        let mut pos = Position::flat(i.id.clone());
+        pos.apply(
+            &fill(
+                Side::Buy,
+                q(dec!(2)),
+                p(dec!(100)),
+                bnb(dec!(0.0002), dec!(0.12)),
+            ),
+            &i,
+        )
+        .unwrap();
+        assert_eq!((pos.qty(), pos.cost_basis()), (q(dec!(2)), n(dec!(200.12))));
+        pos.apply(
+            &fill(
+                Side::Sell,
+                q(dec!(0.5)),
+                p(dec!(110)),
+                bnb(dec!(0.000055), dec!(0.033)),
+            ),
+            &i,
+        )
+        .unwrap();
+        assert_eq!(pos.realized_pnl(), n(dec!(4.937)));
+        assert_eq!(
+            (pos.qty(), pos.cost_basis()),
+            (q(dec!(1.5)), n(dec!(150.09)))
+        );
+    }
+
+    #[test]
+    fn negative_fee_value_is_rejected() {
+        let spec = FillSpec {
+            fee: bnb(dec!(0.0001), dec!(-0.06)),
+            ..fill(
+                Side::Buy,
+                q(dec!(1)),
+                p(dec!(100)),
+                Fee::Quote(Notional::ZERO),
+            )
+            .into()
+        };
+        assert!(Fill::new(spec).is_err());
     }
 }

@@ -24,16 +24,28 @@ pub enum Fee {
     Base(Qty),
     /// In the instrument's quote asset.
     Quote(Notional),
-    /// In a third asset (e.g. BNB). v1 has no way to value it, so position
-    /// accounting rejects it rather than silently ignoring the cost.
-    Other { asset: Asset, amount: Qty },
+    /// In a third asset (e.g. BNB). `amount` is what the venue charged, in
+    /// `asset`. `value` is that amount in the instrument's quote asset at
+    /// fill time, set by whoever knows the rate (the venue broker, via the
+    /// `asset`/quote instrument's `notional`). Position accounting counts
+    /// `value` like a quote fee; without it the fill is rejected rather
+    /// than the cost silently ignored.
+    Other {
+        asset: Asset,
+        amount: Qty,
+        #[serde(default)]
+        value: Option<Notional>,
+    },
 }
 
 impl Fee {
     fn is_negative(&self) -> bool {
         match self {
-            Self::Base(q) | Self::Other { amount: q, .. } => q.is_negative(),
+            Self::Base(q) => q.is_negative(),
             Self::Quote(n) => n.is_negative(),
+            Self::Other { amount, value, .. } => {
+                amount.is_negative() || value.is_some_and(|v| v.is_negative())
+            }
         }
     }
 }

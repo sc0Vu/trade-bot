@@ -97,7 +97,9 @@ Validated core types (`Instrument`, `Candle`, `Quote`, `Order`, `Fill`) built
 only from `*Spec` via checking `new`/`try_from`; fields via `Deref`. Existing
 value passed validation. `Fill.fee` is `Fee::{Base, Quote,
 Other}` — Binance charges buy fee in base, sell in quote, or BNB; v1 position
-accounting rejects `Other`. Positions average cost, fees included;
+accounting counts `Other { value: Some(v) }` like quote fee `v` (third-asset
+fee valued in quote at fill time by venue broker), rejects `value: None`.
+Positions average cost, fees included;
 store total `cost_basis`, derive average (no accumulated rounding).
 v1 positions non-negative owned inventory (spot). Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position

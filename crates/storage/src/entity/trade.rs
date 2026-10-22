@@ -20,6 +20,9 @@ pub struct Model {
     pub fee_amount: DbDecimal,
     /// Set only when `fee_kind = other`.
     pub fee_asset: Option<String>,
+    /// `fee_kind = other` only: the fee's value in the quote asset, if
+    /// known.
+    pub fee_value: Option<DbDecimal>,
     /// `maker` | `taker`.
     pub liquidity: String,
     /// Fill time, ms since the Unix epoch.

@@ -94,10 +94,19 @@ fn liquidity_text(l: Liquidity) -> &'static str {
 }
 
 fn to_trade_row(f: &Fill, venue_trade_id: Option<&str>) -> trade::ActiveModel {
-    let (kind, amount, asset) = match &f.fee {
-        Fee::Base(q) => ("base", q.get(), None),
-        Fee::Quote(n) => ("quote", n.get(), None),
-        Fee::Other { asset, amount } => ("other", amount.get(), Some(asset.to_string())),
+    let (kind, amount, asset, value) = match &f.fee {
+        Fee::Base(q) => ("base", q.get(), None, None),
+        Fee::Quote(n) => ("quote", n.get(), None, None),
+        Fee::Other {
+            asset,
+            amount,
+            value,
+        } => (
+            "other",
+            amount.get(),
+            Some(asset.to_string()),
+            value.map(|v| DbDecimal(v.get())),
+        ),
     };
     trade::ActiveModel {
         id: NotSet,
@@ -109,6 +118,7 @@ fn to_trade_row(f: &Fill, venue_trade_id: Option<&str>) -> trade::ActiveModel {
         fee_kind: Set(kind.to_owned()),
         fee_amount: Set(DbDecimal(amount)),
         fee_asset: Set(asset),
+        fee_value: Set(value),
         liquidity: Set(liquidity_text(f.liquidity).to_owned()),
         ts: Set(f.ts.as_millis()),
         venue_trade_id: Set(venue_trade_id.map(str::to_owned)),
@@ -128,14 +138,15 @@ fn from_trade_row(m: trade::Model) -> Result<(TradeId, Fill), StorageError> {
         _ => return Err(bad("unknown liquidity")),
     };
     let amount = m.fee_amount.0;
-    let fee = match (m.fee_kind.as_str(), m.fee_asset) {
-        ("base", None) => Fee::Base(Qty::new(amount)),
-        ("quote", None) => Fee::Quote(Notional::new(amount)),
-        ("other", Some(a)) => Fee::Other {
+    let fee = match (m.fee_kind.as_str(), m.fee_asset, m.fee_value) {
+        ("base", None, None) => Fee::Base(Qty::new(amount)),
+        ("quote", None, None) => Fee::Quote(Notional::new(amount)),
+        ("other", Some(a), value) => Fee::Other {
             asset: Asset::new(a).map_err(|e| StorageError::corrupt(TRADES, e))?,
             amount: Qty::new(amount),
+            value: value.map(|v| Notional::new(v.0)),
         },
-        _ => return Err(bad("fee_kind and fee_asset disagree")),
+        _ => return Err(bad("fee_kind disagrees with fee_asset or fee_value")),
     };
     let corrupt = |e: bot_core::Error| StorageError::corrupt(TRADES, e);
     let fill = Fill::new(FillSpec {
@@ -539,10 +550,22 @@ mod tests {
                 Qty::new(dec!(1)),
                 Price::new(dec!(100)),
                 Fee::Other {
-                    asset: bnb,
+                    asset: bnb.clone(),
                     amount: Qty::new(dec!(0.0002)),
+                    value: None,
                 },
                 3,
+            ),
+            fill(
+                Side::Buy,
+                Qty::new(dec!(1)),
+                Price::new(dec!(100)),
+                Fee::Other {
+                    asset: bnb,
+                    amount: Qty::new(dec!(0.0001)),
+                    value: Some(Notional::new(dec!(0.06))),
+                },
+                4,
             ),
         ];
         for f in &fills {
@@ -898,6 +921,46 @@ mod tests {
             }
         ));
         assert_eq!(trade_count(&s).await, 0);
+    }
+
+    /// Buy 1 @ 100 with a BNB fee worth 0.06 USDT: hold 1 at cost 100.06.
+    #[tokio::test]
+    async fn valued_bnb_fee_folds_into_the_holding() {
+        let s = store().await;
+        let buy = fill(
+            Side::Buy,
+            Qty::new(dec!(1)),
+            Price::new(dec!(100)),
+            Fee::Other {
+                asset: Asset::new("BNB").unwrap(),
+                amount: Qty::new(dec!(0.0001)),
+                value: Some(Notional::new(dec!(0.06))),
+            },
+            1,
+        );
+        let (id, pos) = s.record_fill(&buy, &btcusdt()).await.unwrap();
+        assert_eq!(pos.qty(), Qty::new(dec!(1)));
+        assert_eq!(pos.cost_basis(), Notional::new(dec!(100.06)));
+        assert_eq!(s.get_trade(id).await.unwrap(), Some(buy));
+    }
+
+    #[tokio::test]
+    async fn fee_value_on_a_quote_fee_is_corrupt() {
+        let s = store().await;
+        s.db.execute_unprepared(
+            "INSERT INTO trades (order_id, instrument, side, qty, price, fee_kind, fee_amount, \
+             fee_asset, liquidity, ts, fee_value) VALUES ('x', 'binance:BTCUSDT', 'buy', '1', '1', \
+             'quote', '0', NULL, 'taker', 0, '1')",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            s.get_trade(TradeId(1)).await.unwrap_err(),
+            StorageError::Corrupt {
+                table: "trades",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
