@@ -2,10 +2,12 @@
 //! [`signed`] holds credentials, request signing and the HTTP transport
 //! used for account endpoints; [`ws`] streams closed klines.
 
+mod broker;
 pub mod public;
 pub mod signed;
 pub mod ws;
 
+pub use broker::BinanceBroker;
 pub use public::PublicClient;
 pub use signed::{
     Clock, Credentials, HttpRequest, HttpResponse, Method, ReqwestTransport, SignedClient,
