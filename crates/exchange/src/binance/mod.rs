@@ -3,11 +3,13 @@
 //! used for account endpoints; [`ws`] streams closed klines.
 
 mod broker;
+mod provider;
 pub mod public;
 pub mod signed;
 pub mod ws;
 
 pub use broker::BinanceBroker;
+pub use provider::{BinanceConfig, BinanceSpotProvider};
 pub use public::PublicClient;
 pub use signed::{
     Clock, Credentials, HttpRequest, HttpResponse, Method, ReqwestTransport, SignedClient,
