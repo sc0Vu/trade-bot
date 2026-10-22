@@ -6,6 +6,7 @@
 mod config;
 mod date;
 mod gate;
+mod shutdown;
 
 use anyhow::Context;
 use backtest::{BacktestProvider, DataDir, fetch, run_backtest};
@@ -110,14 +111,20 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
     tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");
     let outcome = tokio::select! {
         r = engine::run(&provider, strategy.as_mut(), params, &engine_cfg) => r.map(Some),
-        _ = tokio::signal::ctrl_c() => {
-            eprintln!("interrupted");
+        s = shutdown::signal() => {
+            eprintln!("{}: stopping; cancelling open orders (signal again to skip)", s?);
             Ok(None)
         }
     };
     // However the run ended, no order may be left working on the venue
     // with no strategy watching it.
-    let closed = provider.close_out().await;
+    let closed = match shutdown::close_out_unless(provider.close_out(), shutdown::signal()).await {
+        shutdown::CloseOut::Done(r) => r.map_err(anyhow::Error::from),
+        shutdown::CloseOut::Abandoned(s) => Err(anyhow::anyhow!(
+            "{s} during close-out: abandoned; orders may still be open on Binance \
+             until the next start reconciles them"
+        )),
+    };
     match &closed {
         Ok(c) => tracing::info!(
             orders_closed = c.orders_closed,

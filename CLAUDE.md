@@ -219,8 +219,11 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    via that pair's `Instrument::notional`; approximation (myTrades omits
    Binance's rate). No such pair/candle → error, never guess.
    Reconcile (`binance::reconcile`, Binance = truth, books = which are ours):
-   startup (in `provider.broker()`) and every exit incl. Ctrl-C/error
-   (`close_out`). Each unfinished journal order: find (venue id, else client
+   startup (in `provider.broker()`) and every exit incl. error and signal
+   (`close_out`). SIGINT/SIGTERM/SIGHUP all = stop + close out (`cli::shutdown`);
+   second signal abandons close-out (process never held hostage), next start
+   reconciles. kill -9/crash: only next start; run under supervisor
+   (`Restart=always`) so orders aren't unwatched long. Each unfinished journal order: find (venue id, else client
    id; `-2013` on pending = never placed), cancel if working (strategy state
    not persisted → leftover order has no owner), wait until terminal + trades
    = `executedQty`, record trades idempotently, close. Startup also refuses
