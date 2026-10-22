@@ -828,7 +828,13 @@ dependencies = [
 name = "exchange"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bot-core",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

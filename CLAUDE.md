@@ -66,9 +66,9 @@ rejects equity strategy on crypto-only venue before trading:
 #[async_trait] trait Provider {
     fn id(&self) -> &str;
     fn asset_classes(&self) -> &[AssetClass];           // Spot now; UsEquity later
-    async fn market_data(&self) -> Box<dyn MarketData>;
-    async fn broker(&self) -> Box<dyn Broker>;
-    async fn resolve(&self, q: &InstrumentQuery) -> Result<Vec<Instrument>>; // reference data
+    async fn market_data(&self) -> Result<Box<dyn MarketData>>;  // live connect can fail
+    async fn broker(&self) -> Result<Box<dyn Broker>>;
+    async fn resolve(&self, q: &InstrumentQuery) -> Result<Vec<Instrument>>; // reference data; unknown id = error
 }
 ```
 
@@ -132,10 +132,11 @@ trait Strategy: Send {
 // params, submit. Engine mutates via `strategy::driver` (strategy calling it
 // only corrupts own view; broker = source of truth).
 
-#[async_trait] trait MarketData { async fn next(&mut self) -> Option<MarketEvent>; }
+#[async_trait] trait MarketData { async fn next(&mut self) -> Result<Option<MarketEvent>>; } // feed error stops run
 #[async_trait] trait Broker {
     async fn submit(&mut self, o: Order) -> Result<OrderId>;
     async fn cancel(&mut self, id: OrderId) -> Result<()>;
+    async fn settle(&mut self, e: &MarketEvent) -> Result<Vec<Fill>>; // pending vs NEW event; live: drain venue fills
     fn position(&self, i: &InstrumentId) -> Position;
 }
 ```
@@ -218,11 +219,24 @@ ABI — compiler mismatch UB).
 Rules = `NextOpenFillModel` default (swap via `FillModel` trait in
 Architecture).
 Candle = four prices, can't tell whether high or low first. So:
-- market order → fills at **next** candle's open.
-- limit buy → fills if `candle.low <= limit`, at limit (or open if gapped
-  through); sell symmetric.
-- stop → triggers if `candle.high >= stop` (buy) / `candle.low <= stop` (sell).
-- fee (taker/maker) + configurable slippage every fill.
+- order only evaluated on candles opening after its `created_at`.
+- market order → fills at **next** candle's open, taker.
+- limit buy → first candle: open ≤ limit → open, taker (marketable at
+  submit); else `candle.low <= limit` → at limit, maker. Later candles:
+  resting order fills at limit only (someone trading through hits it at
+  limit first), never better open. Sell symmetric. IOC/FOK: first open or
+  expire. No partial fills.
+- stop → triggers if `candle.high >= stop` (buy) / `candle.low <= stop` (sell);
+  stop-market fills at stop, or open if gapped through, taker. Stop-limit
+  never fills on trigger candle (path unknowable → worse case); limit from next.
+- quote-budget market buy (`Size::Quote`, = Binance `quoteOrderQty`):
+  broker sizes at slipped fill price — largest lot multiple with notional +
+  quote fee ≤ budget. Spend never exceeds budget; too small → dropped.
+- fee (taker/maker rate, received asset like Binance or quote) every fill;
+  slippage (bps) taker fills only, rounded to tick against trader. Maker
+  fills never slipped: limit can't fill worse than itself.
+- PaperBroker refuses sells > holding − pending sells. No cash balance
+  yet: buys not refused for lack of quote.
 - **intra-bar ambiguity**: stop and target both in one candle →
   model can't know which first, assumes worse. Finer-timeframe
   replay = future. Backtest P&L = model output, never promise.
