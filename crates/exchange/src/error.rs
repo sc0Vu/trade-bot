@@ -18,4 +18,11 @@ pub enum ExchangeError {
     /// gap.
     #[error("market data feed failed: {0}")]
     Feed(String),
+    /// HTTP or transport failure talking to a venue.
+    #[error("venue request failed: {0}")]
+    Http(String),
+    /// The venue answered with something this client can't use. Fails
+    /// loudly: a silently misparsed price is worse than no data.
+    #[error("unexpected venue response: {0}")]
+    Decode(String),
 }

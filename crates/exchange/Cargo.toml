@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 async-trait.workspace = true
 bot-core.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

@@ -1,12 +1,14 @@
 //! Venue boundary: the [`Provider`], [`MarketData`], and [`Broker`] traits,
 //! and [`paper::PaperBroker`], the simulated broker used by backtest and
-//! paper trading. The Binance provider will live here too.
+//! paper trading, and [`binance`], the Binance spot client (public
+//! market data so far; the live provider will follow).
 //!
 //! A broker submits orders and reports fills; it never values an instrument
 //! (invariant 4). How a simulated order fills is a pluggable
 //! [`paper::FillModel`], so backtest and live differ only by which fill
 //! model is plugged in; live's "model" is the real exchange.
 
+pub mod binance;
 mod error;
 pub mod paper;
 mod traits;

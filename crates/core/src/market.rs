@@ -22,6 +22,18 @@ pub enum Interval {
 }
 
 impl Interval {
+    /// Binance's code for the interval, also its serde name (`"1h"`).
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::M1 => "1m",
+            Self::M5 => "5m",
+            Self::M15 => "15m",
+            Self::H1 => "1h",
+            Self::H4 => "4h",
+            Self::D1 => "1d",
+        }
+    }
+
     /// Bar width in milliseconds.
     pub const fn as_millis(self) -> i64 {
         const MIN: i64 = 60_000;
@@ -279,6 +291,23 @@ mod tests {
             ts: Timestamp::from_millis(42),
         };
         assert_eq!(e.ts(), Timestamp::from_millis(42));
+    }
+
+    #[test]
+    fn interval_code_matches_serde_name() {
+        for i in [
+            Interval::M1,
+            Interval::M5,
+            Interval::M15,
+            Interval::H1,
+            Interval::H4,
+            Interval::D1,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&i).unwrap(),
+                format!("\"{}\"", i.code())
+            );
+        }
     }
 
     #[test]

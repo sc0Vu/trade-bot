@@ -26,8 +26,11 @@ backtest = { path = "crates/backtest" }
 storage = { path = "crates/storage" }
 migration = { path = "migration" }
 
+anyhow = "1.0.104"
 async-trait = "0.1.92"
+clap = { version = "4.6.7", features = ["derive"] }
 inventory = "0.3.25"
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "http2", "query"] }
 rust_decimal = "1.43.0"
 rust_decimal_macros = "1.40.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -38,3 +41,4 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.0", features = ["macros", "rt-multi-thread"] }
 toml = "1.1.8"
 tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

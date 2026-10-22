@@ -212,6 +212,13 @@ ABI — compiler mismatch UB).
 4. **Backtest** — `backtest` crate: load cached klines, replay as `MarketEvent`
    stream through engine, emit report (realized P&L, max drawdown, trade
    count, win rate, Sharpe). Fill model stated below, not hidden.
+   `fetch-data` pulls closed klines + instrument filters from keyless
+   `data-api.binance.vision` (`exchange::binance::PublicClient`, native-tls)
+   into `data/klines/<venue>/<SYMBOL>-<interval>.jsonl` and
+   `data/instruments/<venue>/<SYMBOL>.json`; only missing head/tail ranges
+   downloaded, then offline. Reads re-validate (corrupt cache → error).
+   Filters are today's, not historical — approximation. `KlineFeed` merges
+   instruments ordered by (close_time, id).
 5. **User strategies** — implement `Strategy`, self-register via `inventory`.
    Config selects `strategy.name` + `strategy.params`. Trait
    provider-agnostic, so every user strategy runs in backtest free. Growth: import ladder above.
