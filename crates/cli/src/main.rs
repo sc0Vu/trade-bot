@@ -1,7 +1,7 @@
 //! Bot binary: `run | backtest | fetch-data | migrate`.
 //!
 //! Safe by default: paper against testnet. Live trading requires
-//! `mode = "live"`, a non-testnet provider, and `--i-understand`.
+//! `mode = "live"`, `exchange.network = "live"`, and `--i-understand`.
 
 mod config;
 mod date;
@@ -14,7 +14,7 @@ use clap::{ArgGroup, Args, Parser, Subcommand};
 use engine::EngineConfig;
 use exchange::Provider;
 use exchange::binance::{
-    BinanceConfig, BinanceSpotProvider, Credentials, PUBLIC_DATA_URL, PublicClient,
+    BinanceConfig, BinanceSpotProvider, Credentials, Network, PUBLIC_DATA_URL, PublicClient,
 };
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ enum Command {
     FetchData(FetchArgs),
     /// Replay cached klines through the engine with a paper broker.
     Backtest(BacktestArgs),
-    /// Trade on Binance: testnet by default (`--paper`), mainnet only behind
+    /// Trade on Binance: testnet or demo (`--paper`), mainnet only behind
     /// the live gate.
     Run(RunArgs),
 }
@@ -42,11 +42,12 @@ enum Command {
 #[derive(Args)]
 #[command(group(ArgGroup::new("network").args(["paper", "live"])))]
 struct RunArgs {
-    /// Trade on Binance spot testnet (fake balances). The default.
+    /// Trade fake balances on the configured network (testnet or demo).
+    /// The default.
     #[arg(long)]
     paper: bool,
     /// Trade real money on mainnet. Also needs `mode = "live"` and
-    /// `exchange.testnet = false` in config, and `--i-understand`.
+    /// `exchange.network = "live"` in config, and `--i-understand`.
     #[arg(long)]
     live: bool,
     /// Acknowledge that `--live` sends real orders.
@@ -59,7 +60,7 @@ struct RunArgs {
 
 async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
     let cfg = config::Config::load(a.config.as_deref())?;
-    let network = gate::decide(cfg.mode, cfg.exchange.testnet, a.live, a.i_understand)?;
+    let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
     gate::check_overrides(
         network,
         &[
@@ -67,11 +68,11 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
             cfg.exchange.ws_url.as_deref(),
         ],
     )?;
-    // Hard error in both modes: testnet orders need testnet keys too.
+    // Hard error in every mode: fake-money networks need their own keys too.
     let creds = Credentials::from_env()?;
     let provider = BinanceSpotProvider::new(
         BinanceConfig {
-            testnet: network == gate::Network::Testnet,
+            network,
             rest_url: cfg.exchange.rest_url.clone(),
             ws_url: cfg.exchange.ws_url.clone(),
             interval: cfg.exchange.interval,
@@ -85,7 +86,7 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
         whitelist: cfg.whitelist,
         history_len: cfg.engine.history_len,
     };
-    if network == gate::Network::Mainnet {
+    if network == Network::Live {
         eprintln!("LIVE: sending real orders to Binance mainnet");
     }
     tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");

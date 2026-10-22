@@ -1,5 +1,5 @@
 //! Run configuration: `config/config.toml` (or `--config` / `BOT_CONFIG`),
-//! then `BOT_*` environment variables (`BOT_EXCHANGE__TESTNET=false`),
+//! then `BOT_*` environment variables (`BOT_EXCHANGE__NETWORK=demo`),
 //! into one typed struct.
 //!
 //! `deny_unknown_fields` everywhere: a typo is an error, never a silent
@@ -9,6 +9,7 @@
 
 use anyhow::{Context, bail};
 use bot_core::{InstrumentId, Interval};
+use exchange::binance::Network;
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
 use serde::Deserialize;
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 /// Default config path, relative to the working directory.
 pub const DEFAULT_PATH: &str = "config/config.toml";
 
-/// What the config intends. Live also needs `exchange.testnet = false` and
+/// What the config intends. Live also needs `exchange.network = "live"` and
 /// the `--live --i-understand` flags; see [`crate::gate`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -43,9 +44,9 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExchangeSection {
-    /// Testnet unless explicitly false.
-    #[serde(default = "yes")]
-    pub testnet: bool,
+    /// `testnet` (default), `demo` or `live`. Keys must belong to it.
+    #[serde(default)]
+    pub network: Network,
     pub rest_url: Option<String>,
     pub ws_url: Option<String>,
     #[serde(default = "one_minute")]
@@ -76,9 +77,6 @@ impl Default for EngineSection {
     }
 }
 
-fn yes() -> bool {
-    true
-}
 fn one_minute() -> Interval {
     Interval::M1
 }
@@ -150,7 +148,7 @@ mod tests {
         Jail::expect_with(|_| {
             let c = parse(MIN).unwrap();
             assert_eq!(c.mode, Mode::Paper);
-            assert!(c.exchange.testnet);
+            assert_eq!(c.exchange.network, Network::Testnet);
             assert_eq!(c.exchange.interval, Interval::M1);
             assert_eq!(c.engine.history_len, 500);
             assert_eq!(c.strategy.params["quote_amount"].as_str(), Some("100"));
@@ -170,7 +168,12 @@ mod tests {
     #[test]
     fn typos_and_empty_whitelist_fail() {
         Jail::expect_with(|_| {
-            assert!(parse(&MIN.replace("[exchange]", "[exchange]\ntestnte = false")).is_err());
+            assert!(parse(&MIN.replace("[exchange]", "[exchange]\nnetwrok = \"demo\"")).is_err());
+            // The old boolean is gone; a stale config must not load.
+            assert!(parse(&MIN.replace("[exchange]", "[exchange]\ntestnet = true")).is_err());
+            assert!(
+                parse(&MIN.replace("[exchange]", "[exchange]\nnetwork = \"mainnet\"")).is_err()
+            );
             assert!(parse(&MIN.replace(r#"["binance:BTCUSDT"]"#, "[]")).is_err());
             Ok(())
         });
@@ -179,11 +182,11 @@ mod tests {
     #[test]
     fn env_overrides_file() {
         Jail::expect_with(|jail| {
-            jail.set_env("BOT_EXCHANGE__TESTNET", "false");
+            jail.set_env("BOT_EXCHANGE__NETWORK", "live");
             jail.set_env("BOT_MODE", "live");
             jail.set_env("BOT_CONFIG", "ignored.toml");
             let c = parse(MIN).unwrap();
-            assert!(!c.exchange.testnet);
+            assert_eq!(c.exchange.network, Network::Live);
             assert_eq!(c.mode, Mode::Live);
             Ok(())
         });

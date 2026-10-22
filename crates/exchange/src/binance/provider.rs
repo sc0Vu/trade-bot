@@ -1,19 +1,44 @@
 use super::{
-    BinanceBroker, Credentials, KlineStream, LIVE_REST_URL, LIVE_WS_URL, PublicClient,
-    ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL, TESTNET_WS_URL,
+    BinanceBroker, Credentials, DEMO_REST_URL, DEMO_WS_URL, KlineStream, LIVE_REST_URL,
+    LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL,
+    TESTNET_WS_URL,
 };
 use crate::{Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
 use async_trait::async_trait;
 use bot_core::{AssetClass, Instrument, InstrumentId, Interval};
+use serde::Deserialize;
+
+/// Which Binance spot environment to trade on. Each takes its own keys:
+/// a key from one is refused (`-2015`) by the others.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Network {
+    /// testnet.binance.vision: fake balances, thin testnet order book.
+    /// The safe default.
+    #[default]
+    Testnet,
+    /// demo.binance.com ("Demo Trading"): fake balances, prices that
+    /// track mainnet.
+    Demo,
+    /// Mainnet: real money. Reached only through the CLI's live gate.
+    Live,
+}
+
+impl Network {
+    /// False only for [`Network::Live`]: both other networks trade fake
+    /// balances.
+    pub fn is_fake_money(self) -> bool {
+        self != Self::Live
+    }
+}
 
 /// Where and how to reach Binance spot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinanceConfig {
-    /// Testnet (fake balances) when true. The safe default everywhere.
-    pub testnet: bool,
-    /// REST host override; default follows `testnet`.
+    pub network: Network,
+    /// REST host override; default follows `network`.
     pub rest_url: Option<String>,
-    /// WebSocket host override; default follows `testnet`.
+    /// WebSocket host override; default follows `network`.
     pub ws_url: Option<String>,
     /// Kline interval the feed subscribes to.
     pub interval: Interval,
@@ -21,18 +46,18 @@ pub struct BinanceConfig {
 
 impl BinanceConfig {
     pub fn rest_url(&self) -> &str {
-        self.rest_url.as_deref().unwrap_or(if self.testnet {
-            TESTNET_REST_URL
-        } else {
-            LIVE_REST_URL
+        self.rest_url.as_deref().unwrap_or(match self.network {
+            Network::Testnet => TESTNET_REST_URL,
+            Network::Demo => DEMO_REST_URL,
+            Network::Live => LIVE_REST_URL,
         })
     }
 
     pub fn ws_url(&self) -> &str {
-        self.ws_url.as_deref().unwrap_or(if self.testnet {
-            TESTNET_WS_URL
-        } else {
-            LIVE_WS_URL
+        self.ws_url.as_deref().unwrap_or(match self.network {
+            Network::Testnet => TESTNET_WS_URL,
+            Network::Demo => DEMO_WS_URL,
+            Network::Live => LIVE_WS_URL,
         })
     }
 }
@@ -44,7 +69,7 @@ impl BinanceConfig {
 ///
 /// Whether this may run against mainnet is decided before it is built
 /// (the CLI's live gate, invariant 7); the provider itself only reports
-/// [`is_testnet`](Self::is_testnet).
+/// [`network`](Self::network).
 pub struct BinanceSpotProvider {
     config: BinanceConfig,
     creds: Credentials,
@@ -61,18 +86,18 @@ impl BinanceSpotProvider {
         }
     }
 
-    pub fn is_testnet(&self) -> bool {
-        self.config.testnet
+    pub fn network(&self) -> Network {
+        self.config.network
     }
 }
 
 #[async_trait]
 impl Provider for BinanceSpotProvider {
     fn id(&self) -> &str {
-        if self.config.testnet {
-            "binance-testnet"
-        } else {
-            "binance"
+        match self.config.network {
+            Network::Testnet => "binance-testnet",
+            Network::Demo => "binance-demo",
+            Network::Live => "binance",
         }
     }
 
@@ -120,9 +145,9 @@ impl Provider for BinanceSpotProvider {
 mod tests {
     use super::*;
 
-    fn cfg(testnet: bool) -> BinanceConfig {
+    fn cfg(network: Network) -> BinanceConfig {
         BinanceConfig {
-            testnet,
+            network,
             rest_url: None,
             ws_url: None,
             interval: Interval::M1,
@@ -130,18 +155,25 @@ mod tests {
     }
 
     #[test]
-    fn hosts_follow_testnet_flag() {
-        assert_eq!(cfg(true).rest_url(), "https://testnet.binance.vision");
-        assert_eq!(cfg(true).ws_url(), "wss://stream.testnet.binance.vision");
-        assert_eq!(cfg(false).rest_url(), "https://api.binance.com");
-        assert_eq!(cfg(false).ws_url(), "wss://stream.binance.com:9443");
+    fn hosts_follow_network() {
+        let t = cfg(Network::Testnet);
+        assert_eq!(t.rest_url(), "https://testnet.binance.vision");
+        assert_eq!(t.ws_url(), "wss://stream.testnet.binance.vision");
+        let d = cfg(Network::Demo);
+        assert_eq!(d.rest_url(), "https://demo-api.binance.com");
+        assert_eq!(d.ws_url(), "wss://demo-stream.binance.com");
+        let l = cfg(Network::Live);
+        assert_eq!(l.rest_url(), "https://api.binance.com");
+        assert_eq!(l.ws_url(), "wss://stream.binance.com:9443");
+        assert!(Network::Testnet.is_fake_money() && Network::Demo.is_fake_money());
+        assert!(!Network::Live.is_fake_money());
     }
 
     #[test]
     fn overrides_win() {
         let c = BinanceConfig {
             rest_url: Some("http://localhost:1".into()),
-            ..cfg(true)
+            ..cfg(Network::Testnet)
         };
         assert_eq!(c.rest_url(), "http://localhost:1");
         assert_eq!(c.ws_url(), "wss://stream.testnet.binance.vision");
@@ -149,8 +181,8 @@ mod tests {
 
     #[test]
     fn provider_reports_network() {
-        let p = BinanceSpotProvider::new(cfg(true), Credentials::new("k", "s"), vec![]);
-        assert!(p.is_testnet());
-        assert_eq!(p.id(), "binance-testnet");
+        let p = BinanceSpotProvider::new(cfg(Network::Demo), Credentials::new("k", "s"), vec![]);
+        assert_eq!(p.network(), Network::Demo);
+        assert_eq!(p.id(), "binance-demo");
     }
 }

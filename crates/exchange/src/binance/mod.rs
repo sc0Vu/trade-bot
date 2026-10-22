@@ -9,7 +9,7 @@ pub mod signed;
 pub mod ws;
 
 pub use broker::BinanceBroker;
-pub use provider::{BinanceConfig, BinanceSpotProvider};
+pub use provider::{BinanceConfig, BinanceSpotProvider, Network};
 pub use public::PublicClient;
 pub use signed::{
     Clock, Credentials, HttpRequest, HttpResponse, Method, ReqwestTransport, SignedClient,
@@ -30,3 +30,8 @@ pub const TESTNET_REST_URL: &str = "https://testnet.binance.vision";
 pub const LIVE_WS_URL: &str = "wss://stream.binance.com:9443";
 /// Spot testnet market-data WebSocket host.
 pub const TESTNET_WS_URL: &str = "wss://stream.testnet.binance.vision";
+/// Spot demo-trading REST host (keys from demo.binance.com): fake
+/// balances, mainnet-like prices, same API.
+pub const DEMO_REST_URL: &str = "https://demo-api.binance.com";
+/// Spot demo-trading market-data WebSocket host.
+pub const DEMO_WS_URL: &str = "wss://demo-stream.binance.com";

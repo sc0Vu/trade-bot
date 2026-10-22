@@ -44,7 +44,7 @@ Correctness, not style. Task violates one → stop, flag.
 6. **Secrets via env only.** API keys from env vars named in config; never
    hard-code or commit. `.env` and `config/*.local.toml` gitignored.
 7. **Safe by default.** Default mode paper against testnet. Live
-   requires `mode = "live"`, non-testnet provider, AND explicit
+   requires `mode = "live"`, `exchange.network = "live"`, AND explicit
    `--i-understand` run flag. Three locks — mistake spends real money.
 
 ## Architecture
@@ -191,9 +191,11 @@ only if native speed AND binary distribution both needed (Rust no stable
 ABI — compiler mismatch UB).
 
 ## Requirements → where they live
-1. **Binance testnet + live** — `BinanceSpotProvider` in `exchange::binance`.
-   One client; base URL, keys from config (`testnet: bool`). Testnet host
-   `testnet.binance.vision`. Same signing, same code path. More venues =
+1. **Binance testnet + demo + live** — `BinanceSpotProvider` in `exchange::binance`.
+   One client; base URL, keys from config (`exchange.network`:
+   `testnet` default = `testnet.binance.vision`; `demo` = Demo Trading,
+   `demo-api.binance.com` / `demo-stream.binance.com`, fake money, keys from
+   demo.binance.com; `live`). Keys not interchangeable across networks. Same signing, same code path. More venues =
    new `Provider` impls, nothing else changes.
    Built: `BinanceSpotProvider` = `KlineStream` (combined ws streams; only
    `"x": true` closed bars emitted; dropped socket = error, no reconnect yet)
@@ -206,9 +208,10 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    Positions from bot's own fills only (start flat; prior balances ignored).
    Refusals identical to PaperBroker. Fee in third asset (BNB) → error:
    disable BNB fee payment. Ctrl-C does NOT cancel venue orders.
-   `run --paper` = testnet only; `run --live` needs `mode = "live"` +
-   `exchange.testnet = false` + `--i-understand` (`cli::gate`, all combos
-   tested); testnet run refuses `*.binance.com` URL overrides.
+   `run --paper` = testnet or demo only; `run --live` needs `mode = "live"` +
+   `exchange.network = "live"` + `--i-understand` (`cli::gate`, all combos
+   tested); fake-money run refuses `*.binance.com` URL overrides except the
+   two demo hosts.
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety
@@ -317,7 +320,7 @@ Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (ratio_hop)
-  exchange/    Provider + MarketData + Broker traits; binance{testnet,live}; paper broker; binance ws
+  exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report
   storage/     SeaORM entities + repositories
@@ -347,7 +350,7 @@ Layered; each source overrides one above:
 2. config file — `config/config.toml` (path override via `--config` or
    `BOT_CONFIG`); `config/config.example.toml` committed, documents every field
 3. env vars, prefix `BOT_`, nest `__`
-   (`BOT_EXCHANGE__TESTNET=true`, `BOT_STRATEGY__NAME=ratio_hop`,
+   (`BOT_EXCHANGE__NETWORK=demo`, `BOT_STRATEGY__NAME=ratio_hop`,
    `BOT_DB__URL=sqlite://bot.db`) — Docker/Heroku/CI path
 4. CLI flags (`--paper`, `--live`, `--strategy`, …)
 
@@ -362,11 +365,11 @@ Layered; each source overrides one above:
 - Money fields TOML strings (`fee = "0.001"`); bare number errors
   (invariant 1). Env same: `BOT_X='"0.001"'` until loader coerces.
 - Validate on load, fail fast: whitelist non-empty, fee/slippage ≥ 0, live mode
-  requires non-testnet provider + `--i-understand` gate. Bad config
+  requires `exchange.network = "live"` + `--i-understand` gate. Bad config
   never reaches trading loop.
 - Real config = `config/config.toml` or `config/*.local.toml` (both
   gitignored) or env; only `config.example.toml` committed (and loaded by a
-  test, so it can't rot). `exchange.testnet` defaults true. No field exists
+  test, so it can't rot). `exchange.network` defaults `testnet`. No field exists
   for a secret: `api_key` in a file = unknown-field error.
 
 ## Definition of done (every change)

@@ -237,8 +237,9 @@ impl SignedClient {
                 ExchangeError::Venue { code, msg } if [-2014, -2015, -1022].contains(&code) => {
                     ExchangeError::Credentials(format!(
                         "Binance refused the API key ({code}: {msg}); check the key, \
-                         its IP whitelist and spot permission, and that testnet \
-                         keys come from testnet.binance.vision"
+                         its IP whitelist and spot permission, and that it belongs to \
+                         the configured exchange.network (testnet.binance.vision, \
+                         demo.binance.com and binance.com keys are not interchangeable)"
                     ))
                 }
                 other => other,
