@@ -78,3 +78,11 @@ groups:
         annotations:
           summary: "The rate limiter held requests {{ $value }} times in 15 min"
           description: "Requests are queuing for rate-limit room; orders may be placed late."
+
+      - alert: FeedReconnecting
+        # Each reconnect backfills what was missed, but frequent drops mean
+        # a flaky network or Binance trouble, and a longer outage stops the bot.
+        expr: increase(tradebot_feed_reconnects_total[1h]) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "Market-data feed reconnected {{ $value }} times in the last hour"

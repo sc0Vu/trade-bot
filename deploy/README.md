@@ -32,6 +32,7 @@ Alerts reach nobody until you give Alertmanager a receiver: edit
 | `BinanceRateLimited` | Binance answered 429 or 418 in the last 10 min |
 | `BinanceWeightHigh` | Over 4000 of the 4800 weight budget for 5 min |
 | `RateLimiterWaiting` | The limiter held requests more than 5 times in 15 min |
+| `FeedReconnecting` | The market-data feed reconnected more than 3 times in an hour |
 
 Networking: the bot binds `127.0.0.1:9184`. The compose Prometheus reaches
 it as `host.docker.internal`, which Docker Desktop maps to the host's

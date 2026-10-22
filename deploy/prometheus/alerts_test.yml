@@ -87,3 +87,19 @@ tests:
             exp_annotations:
               summary: "Request weight used is 4500 of the 4800 budget"
               description: "Close to the rate limiter's budget; requests will start to wait."
+
+  # Four reconnects within the hour: more than 3, so it fires.
+  - interval: 5m
+    input_series:
+      - series: 'tradebot_feed_reconnects_total'
+        values: '0 1 2 3 4 4 4'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: FeedReconnecting
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: FeedReconnecting
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Market-data feed reconnected 4 times in the last hour"

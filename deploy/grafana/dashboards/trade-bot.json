@@ -491,6 +491,47 @@
           "legendFormat": "429/418"
         }
       ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Feed reconnects and backfilled bars (1h)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "increase(tradebot_feed_reconnects_total[1h])",
+          "legendFormat": "reconnects"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "increase(tradebot_feed_backfilled_total[1h])",
+          "legendFormat": "backfilled bars"
+        }
+      ]
     }
   ],
   "templating": {
