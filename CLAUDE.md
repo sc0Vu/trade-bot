@@ -411,6 +411,8 @@ crates/
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report
   storage/     SeaORM entities + repositories
+  api/         read-only HTTP API (axum): /status /positions /open-orders /orders /trades;
+               no write route ever (orders only from strategy via risk)
   cli/         binary: run | backtest | fetch-data | migrate
 migration/     SeaORM migrations
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.
@@ -513,6 +515,7 @@ Not finished until all hold — per task, not at end:
 
 ## Crates
 `tokio, async-trait, inventory, reqwest, tokio-tungstenite, serde/serde_json,
-rust_decimal, sea-orm, sea-orm-migration, figment, thiserror, anyhow, tracing, clap, toml`.
+rust_decimal, sea-orm, sea-orm-migration, figment, thiserror, anyhow, tracing, clap, toml,
+metrics, metrics-exporter-prometheus, metrics-process, axum`.
 (`barter-rs` option if later prefer ready-made framework over
 hand-rolled traits; `rhai`/`wasmtime` when strategy scripting needed.)

@@ -7,6 +7,7 @@ members = [
     "crates/engine",
     "crates/backtest",
     "crates/storage",
+    "crates/api",
     "crates/cli",
     "migration",
 ]
@@ -25,9 +26,11 @@ exchange = { path = "crates/exchange" }
 engine = { path = "crates/engine" }
 backtest = { path = "crates/backtest" }
 storage = { path = "crates/storage" }
+api = { path = "crates/api" }
 migration = { path = "migration" }
 
 anyhow = "1.0.104"
+axum = "0.8.9"
 async-trait = "0.1.92"
 clap = { version = "4.6.7", features = ["derive"] }
 figment = { version = "0.10.19", features = ["toml", "env"] }

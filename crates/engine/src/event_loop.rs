@@ -38,7 +38,7 @@ pub struct RunReport {
 
 /// What a live run looks like after one event: enough for a status page,
 /// an API or metrics, without a handle on the broker or the strategy.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Snapshot {
     /// Time of the latest event (a candle's close time).
     pub at: Option<Timestamp>,

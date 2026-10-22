@@ -226,6 +226,7 @@ crates/
   engine/     the event loop shared by backtest and live, risk checks
   backtest/   kline cache, BacktestProvider, report
   storage/    SeaORM repositories: trades, holdings, order journal
+  api/        read-only HTTP API: status, positions, orders, trades
   cli/        the `cli` binary: fetch-data, backtest, run
 migration/    SeaORM schema migrations
 config/       config.example.toml (committed); real configs are gitignored

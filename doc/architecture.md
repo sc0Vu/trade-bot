@@ -67,7 +67,8 @@ MarketData ──MarketEvent──> Engine loop ──> Strategy.on_event() ─�
 | `exchange` | `Provider` / `MarketData` / `Broker` traits, the paper broker, the Binance client | core, storage |
 | `engine` | The event loop and risk checks | core, strategy, exchange |
 | `backtest` | Kline cache, `BacktestProvider`, report | core, engine, exchange, strategy |
-| `cli` | The binary: config, the live gate, signals | everything |
+| `api` | Read-only HTTP API over live state and the books | core, engine, storage |
+| `cli` | The binary: config, the live gate, signals, metrics, the API | everything |
 | `migration` | Schema migrations | sea-orm-migration |
 
 ## Core types

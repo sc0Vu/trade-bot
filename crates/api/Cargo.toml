@@ -1,0 +1,22 @@
+[package]
+name = "api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+bot-core.workspace = true
+engine.workspace = true
+serde.workspace = true
+storage.workspace = true
+tokio = { workspace = true, features = ["net", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
+rust_decimal.workspace = true
+rust_decimal_macros.workspace = true
+serde_json.workspace = true
