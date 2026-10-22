@@ -3,8 +3,8 @@
 
 use async_trait::async_trait;
 use bot_core::{
-    Asset, AssetClass, Candle, CandleSpec, Instrument, InstrumentSpec, Interval, MarketEvent,
-    Notional, Price, Qty, Timestamp,
+    Asset, AssetClass, Candle, CandleSpec, Fill, Instrument, InstrumentId, InstrumentSpec,
+    Interval, MarketEvent, Notional, Order, OrderId, Position, Price, Qty, Timestamp,
 };
 use exchange::paper::{BpsSlippage, FeeAsset, NextOpenFillModel, PaperBroker, RateFee};
 use exchange::{Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
@@ -52,6 +52,9 @@ pub struct TestProvider {
     pub slippage_bps: Decimal,
     /// Taker and maker rate, charged in the received asset (Binance spot).
     pub fee_rate: Decimal,
+    /// When set, every submit fails with this Binance error code instead of
+    /// reaching the paper broker.
+    pub submit_error: Option<i64>,
 }
 
 impl TestProvider {
@@ -61,7 +64,33 @@ impl TestProvider {
             classes: vec![AssetClass::Spot],
             slippage_bps,
             fee_rate,
+            submit_error: None,
         }
+    }
+}
+
+/// Paper broker whose submits all fail with one venue error code.
+struct FailingSubmit(PaperBroker, i64);
+
+#[async_trait]
+impl Broker for FailingSubmit {
+    async fn submit(&mut self, _: Order) -> Result<OrderId, ExchangeError> {
+        Err(ExchangeError::Venue {
+            code: self.1,
+            msg: "test".into(),
+        })
+    }
+    async fn cancel(&mut self, id: OrderId) -> Result<(), ExchangeError> {
+        self.0.cancel(id).await
+    }
+    async fn settle(&mut self, e: &MarketEvent) -> Result<Vec<Fill>, ExchangeError> {
+        self.0.settle(e).await
+    }
+    fn position(&self, i: &InstrumentId) -> Position {
+        self.0.position(i)
+    }
+    fn open_orders(&self) -> Vec<Order> {
+        self.0.open_orders()
     }
 }
 
@@ -89,12 +118,16 @@ impl Provider for TestProvider {
     }
 
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
-        Ok(Box::new(PaperBroker::new(
+        let paper = PaperBroker::new(
             vec![btcusdt()],
             Box::new(NextOpenFillModel),
             Box::new(BpsSlippage::new(self.slippage_bps).unwrap()),
             Box::new(RateFee::new(self.fee_rate, self.fee_rate, FeeAsset::Received).unwrap()),
-        )))
+        );
+        Ok(match self.submit_error {
+            Some(code) => Box::new(FailingSubmit(paper, code)),
+            None => Box::new(paper),
+        })
     }
 
     async fn resolve(&self, q: &InstrumentQuery) -> Result<Vec<Instrument>, ExchangeError> {

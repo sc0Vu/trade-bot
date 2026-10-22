@@ -2,8 +2,10 @@ use bot_core::{InstrumentId, Timestamp};
 use exchange::ExchangeError;
 use thiserror::Error;
 
-/// Why a run stopped. Rejected signals are not errors; they are reported in
-/// `RunReport::rejections` and the run continues.
+/// Why a run stopped. Rejected signals are not errors: risk refusals and
+/// venue refusals of one order ([`ExchangeError::is_order_rejection`]) are
+/// reported in `RunReport::rejections` and the run continues. Any other
+/// broker error lands here.
 #[derive(Debug, Error)]
 pub enum EngineError {
     #[error(transparent)]

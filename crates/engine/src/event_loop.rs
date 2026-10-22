@@ -1,7 +1,7 @@
 use crate::EngineError;
 use crate::risk;
 use bot_core::{Fill, InstrumentId, MarketEvent, OrderId, Position, Signal, Timestamp};
-use exchange::{Broker, InstrumentQuery, Provider};
+use exchange::{Broker, ExchangeError, InstrumentQuery, Provider};
 use strategy::{Context, Params, Strategy, driver};
 
 /// Run settings independent of venue and strategy.
@@ -75,7 +75,7 @@ pub async fn run<P: Provider + ?Sized>(
 
     strategy.on_start(&mut ctx);
     let signals = driver::take_signals(&mut ctx);
-    run.route(&ctx, signals).await;
+    run.route(&ctx, signals).await?;
 
     let mut last: Option<Timestamp> = None;
     while let Some(event) = feed.next().await? {
@@ -104,7 +104,7 @@ pub async fn run<P: Provider + ?Sized>(
         let returned = strategy.on_event(&mut ctx, &event);
         let mut signals = driver::take_signals(&mut ctx);
         signals.extend(returned);
-        run.route(&ctx, signals).await;
+        run.route(&ctx, signals).await?;
     }
 
     run.report.positions = config
@@ -131,14 +131,16 @@ impl Run<'_> {
         id.unwrap_or_else(|_| unreachable!("generated order id is valid"))
     }
 
-    async fn route(&mut self, ctx: &Context, signals: Vec<Signal>) {
+    /// Sends each signal through risk to the broker. A refused order is
+    /// recorded and the loop goes on; any other broker error stops the run
+    /// (see [`ExchangeError::is_order_rejection`]).
+    async fn route(&mut self, ctx: &Context, signals: Vec<Signal>) -> Result<(), EngineError> {
         for signal in signals {
             let outcome = match &signal {
-                Signal::Cancel(id) => self
-                    .broker
-                    .cancel(id.clone())
-                    .await
-                    .map_err(|e| e.to_string()),
+                Signal::Cancel(id) => match self.broker.cancel(id.clone()).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(refusal(e)?),
+                },
                 Signal::Submit {
                     instrument,
                     side,
@@ -157,12 +159,10 @@ impl Run<'_> {
                         reference,
                         now,
                     ) {
-                        Ok(order) => self
-                            .broker
-                            .submit(order)
-                            .await
-                            .map(|_| ())
-                            .map_err(|e| e.to_string()),
+                        Ok(order) => match self.broker.submit(order).await {
+                            Ok(_) => Ok(()),
+                            Err(e) => Err(refusal(e)?),
+                        },
                         Err(r) => Err(r.to_string()),
                     }
                 }
@@ -176,6 +176,17 @@ impl Run<'_> {
                 });
             }
         }
+        Ok(())
+    }
+}
+
+/// Turns a broker error into the reason a signal was refused, or into the
+/// error that stops the run when it isn't a refusal of this one order.
+fn refusal(e: ExchangeError) -> Result<String, EngineError> {
+    if e.is_order_rejection() {
+        Ok(e.to_string())
+    } else {
+        Err(e.into())
     }
 }
 
@@ -279,6 +290,34 @@ mod tests {
         assert!(r.fills.is_empty());
         assert_eq!(r.rejections.len(), 1);
         assert_eq!(r.rejections[0].reason, "notional below instrument minimum");
+    }
+
+    #[tokio::test]
+    async fn venue_refusing_one_order_is_not_fatal() {
+        let mut provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        provider.submit_error = Some(-2010);
+        let (mut s, params) = buy_and_hold("1000");
+        let r = run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        assert_eq!(r.events, 3);
+        assert_eq!(r.rejections.len(), 1);
+        assert_eq!(r.rejections[0].reason, "venue error -2010: test");
+    }
+
+    #[tokio::test]
+    async fn bad_credentials_stop_the_run() {
+        // Seen on testnet: -2015 was recorded as a rejection, and the run
+        // went on for minutes looking healthy while no order could ever
+        // be placed.
+        let mut provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        provider.submit_error = Some(-2015);
+        let (mut s, params) = buy_and_hold("1000");
+        let err = run(&provider, s.as_mut(), params, &config())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            EngineError::Exchange(ExchangeError::Venue { code: -2015, .. })
+        ));
     }
 
     #[tokio::test]

@@ -167,8 +167,9 @@ at t+1. Prevents deciding on close and trading at it.
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
 broker, `created_at` = event ts. Risk v1: whitelist, sizing (quote → base
 at order price, except market buy keeps quote budget), lot/tick rounding
-(never more aggressive), `check_order`. Rejected signal → `RunReport`,
-not fatal. Order ids deterministic (`o-1`, `o-2`, …).
+(never more aggressive), `check_order`. Rejected signal (risk, or venue refusing that one order:
+`ExchangeError::is_order_rejection`) → `RunReport`, not fatal; other broker
+errors (auth `-2015`, transport, clock, rate limit) stop run. Order ids deterministic (`o-1`, `o-2`, …).
 
 ## Strategy import — the Rust-specific problem
 Python imports `.py` at runtime; Rust compiled, so "drop in strategy" has
