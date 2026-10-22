@@ -122,6 +122,9 @@ enum MarketEvent { Candle(Candle), Quote(Quote),
                    CorporateAction(CorpAction) /*, Expiry(InstrumentId) deferred */ }
 // CorpAction is empty enum in v1 → variant unconstructible until equities.
 // MarketEvent::ts(): candle → close_time (bar known), never open_time.
+// Backfill(Candle): live-only late bar (warm-up / reconnect gap) → engine adds
+// to history, default on_event ignores (not a decision), paper broker doesn't
+// settle on it. Only deliberate live/backtest difference: backtest has no outages.
 
 trait Strategy: Send {
     fn name(&self) -> &str;

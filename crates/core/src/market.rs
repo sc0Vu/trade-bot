@@ -185,13 +185,21 @@ pub enum CorpAction {}
 /// Everything a strategy reacts to.
 ///
 /// Backtest replays this exact stream, so backtest/live parity holds for
-/// every variant, not only candles (invariant 3). v1 emits `Candle` only.
+/// every variant, not only candles (invariant 3). v1 emits `Candle`, and a
+/// live feed also `Backfill` (history only; see the variant).
 /// Non-exhaustive so strategies in other crates keep a fallback arm and
 /// survive new variants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum MarketEvent {
     Candle(Candle),
+    /// A closed candle delivered late, for history only: the bars a live
+    /// feed fetches to warm up after a start, or to fill the gap after a
+    /// reconnect (except the newest, which comes as `Candle`). The engine
+    /// adds it to the strategy's history; the default `on_event` doesn't
+    /// decide on it, since its next open has long passed. A backtest never
+    /// emits it: it has no outages.
+    Backfill(Candle),
     Quote(Quote),
     /// Venue's trading session opened (equities). Carries its time so it
     /// orders against candles like any other event.
@@ -214,7 +222,7 @@ impl MarketEvent {
     /// goes backwards.
     pub fn ts(&self) -> Timestamp {
         match self {
-            Self::Candle(c) => c.close_time,
+            Self::Candle(c) | Self::Backfill(c) => c.close_time,
             Self::Quote(q) => q.ts,
             Self::SessionOpen { ts, .. } | Self::SessionClose { ts, .. } => *ts,
             Self::CorporateAction(a) => match *a {},

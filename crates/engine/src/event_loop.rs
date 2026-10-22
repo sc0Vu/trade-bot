@@ -147,7 +147,7 @@ async fn run_inner<P: Provider + ?Sized>(
         last = Some(ts);
         run.report.events += 1;
         metrics::counter!(m::EVENTS).increment(1);
-        if let MarketEvent::Candle(c) = &event {
+        if let MarketEvent::Candle(c) | MarketEvent::Backfill(c) = &event {
             // Seconds as f64 for the exporter only; never read back.
             metrics::gauge!(m::LAST_CANDLE, "instrument" => c.instrument.to_string())
                 .set(c.close_time.as_millis() as f64 / 1000.0);
@@ -173,7 +173,9 @@ async fn run_inner<P: Provider + ?Sized>(
         }
 
         driver::set_now(&mut ctx, ts);
-        if let MarketEvent::Candle(c) = &event {
+        // A backfilled candle is history like any other; whether it is a
+        // decision is the strategy's `on_event` (the default says no).
+        if let MarketEvent::Candle(c) | MarketEvent::Backfill(c) = &event {
             driver::push_candle(&mut ctx, c.clone());
         }
         let returned = strategy.on_event(&mut ctx, &event);
@@ -603,6 +605,38 @@ mod tests {
             Some(MarketEvent::Candle(c)) => c,
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Two backfilled bars then a live one: all three reach the history,
+    /// only the live one is a decision (buy_and_hold buys on it, at c2's
+    /// close, and nothing fills since the feed ends there).
+    #[tokio::test]
+    async fn backfilled_candles_are_history_not_decisions() {
+        struct Peek(Vec<usize>, usize);
+        impl Strategy for Peek {
+            fn name(&self) -> &str {
+                "peek"
+            }
+            fn on_candle(&mut self, ctx: &mut Context, _: &bot_core::Candle) -> Vec<Signal> {
+                self.0.push(ctx.history(&btcusdt().id).len());
+                self.1 += 1;
+                Vec::new()
+            }
+        }
+        let mut events = three_candles();
+        for e in events.iter_mut().take(2) {
+            if let MarketEvent::Candle(c) = e {
+                *e = MarketEvent::Backfill(c.clone());
+            }
+        }
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let mut s = Peek(Vec::new(), 0);
+        let r = run(&provider, &mut s, Params::default(), &config())
+            .await
+            .unwrap();
+        assert_eq!(r.events, 3);
+        assert_eq!(s.1, 1, "one decision");
+        assert_eq!(s.0, vec![3], "made with all three bars in history");
     }
 
     #[tokio::test]
