@@ -367,12 +367,22 @@ sellable under venue filters (dust from base fee counts as cash, else never
 rebuys). No decision while an order on coin is open. `fee`/`slippage_bps`
 required, range-checked, unused in decisions. `history_len` ≥ `sma_period`.
 
+`momentum_rotation` — multi-coin, one bridge quote (else stops at `on_start`).
+Once per close time when all coins' candles in (ratio_hop guard), none with
+open order: return over `lookback` bars per coin (needs `lookback + 1`
+closes each, else nothing); best (tie → first listed) is target if return >
+`min_momentum` (default 0), else cash. Sell every held coin ≠ target (sells
+first), buy target if not held. Entry = fixed `quote_amount`, not sale
+proceeds: losing hop overspends (backtest negative `min_cash`; live `-2010`,
+stays cash). Bets winners persist; fails on sharp reversals, choppy
+leadership. Dust = cash.
+
 ## Layout
 ```
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, ratio_hop, sma_trend)
+  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, momentum_rotation, ratio_hop, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report
