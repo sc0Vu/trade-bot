@@ -12,6 +12,7 @@ pub mod binance;
 mod error;
 pub mod metrics;
 pub mod paper;
+pub mod rate_limit;
 #[cfg(test)]
 mod test_db;
 mod traits;
