@@ -12,6 +12,7 @@ bot-core.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 hmac.workspace = true
+metrics.workspace = true
 reqwest.workspace = true
 rust_decimal.workspace = true
 serde.workspace = true
@@ -24,4 +25,5 @@ tokio-tungstenite.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+metrics-util.workspace = true
 rust_decimal_macros.workspace = true

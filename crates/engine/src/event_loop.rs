@@ -1,4 +1,5 @@
 use crate::EngineError;
+use crate::metrics as m;
 use crate::risk;
 use bot_core::{Fill, InstrumentId, MarketEvent, OrderId, Position, Signal, Timestamp};
 use exchange::{Broker, ExchangeError, InstrumentQuery, Provider};
@@ -97,10 +98,26 @@ pub async fn run<P: Provider + ?Sized>(
         }
         last = Some(ts);
         run.report.events += 1;
+        metrics::counter!(m::EVENTS).increment(1);
+        if let MarketEvent::Candle(c) = &event {
+            // Seconds as f64 for the exporter only; never read back.
+            metrics::gauge!(m::LAST_CANDLE, "instrument" => c.instrument.to_string())
+                .set(c.close_time.as_millis() as f64 / 1000.0);
+        }
 
         let fills = run.broker.settle(&event).await?;
         driver::set_open_orders(&mut ctx, run.broker.open_orders());
         for fill in fills {
+            metrics::counter!(
+                m::FILLS,
+                "instrument" => fill.instrument.to_string(),
+                "side" => side_label(fill.side),
+                "liquidity" => match fill.liquidity {
+                    bot_core::Liquidity::Maker => "maker",
+                    bot_core::Liquidity::Taker => "taker",
+                },
+            )
+            .increment(1);
             tracing::info!(order = %fill.order_id, instrument = %fill.instrument, side = ?fill.side, "fill");
             driver::set_position(&mut ctx, run.broker.position(&fill.instrument));
             strategy.on_fill(&mut ctx, &fill);
@@ -149,6 +166,7 @@ impl Run<'_> {
             let outcome = match &signal {
                 Signal::Cancel(id) => match self.broker.cancel(id.clone()).await {
                     Ok(()) => {
+                        metrics::counter!(m::CANCELS).increment(1);
                         tracing::info!(order = %id, "cancel requested");
                         Ok(())
                     }
@@ -177,13 +195,23 @@ impl Run<'_> {
                                 (order.id.clone(), order.instrument.clone(), order.side);
                             match self.broker.submit(order).await {
                                 Ok(_) => {
+                                    metrics::counter!(
+                                        m::ORDERS,
+                                        "instrument" => instrument.to_string(),
+                                        "side" => side_label(side),
+                                    )
+                                    .increment(1);
                                     tracing::info!(order = %id, %instrument, ?side, "order submitted");
                                     Ok(())
                                 }
                                 Err(e) => Err(refusal(e)?),
                             }
                         }
-                        Err(r) => Err(r.to_string()),
+                        Err(r) => {
+                            metrics::counter!(m::REJECTED, "source" => "risk", "code" => "risk")
+                                .increment(1);
+                            Err(r.to_string())
+                        }
                     }
                 }
             };
@@ -204,9 +232,23 @@ impl Run<'_> {
 /// error that stops the run when it isn't a refusal of this one order.
 fn refusal(e: ExchangeError) -> Result<String, EngineError> {
     if e.is_order_rejection() {
+        let code = match &e {
+            ExchangeError::Venue { code, .. } => code.to_string(),
+            ExchangeError::UnknownOrder(_) => "unknown_order".to_owned(),
+            ExchangeError::UnknownInstrument(_) => "unknown_instrument".to_owned(),
+            _ => "refused".to_owned(),
+        };
+        metrics::counter!(m::REJECTED, "source" => "broker", "code" => code).increment(1);
         Ok(e.to_string())
     } else {
         Err(e.into())
+    }
+}
+
+fn side_label(side: bot_core::Side) -> &'static str {
+    match side {
+        bot_core::Side::Buy => "buy",
+        bot_core::Side::Sell => "sell",
     }
 }
 
@@ -366,6 +408,97 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(s.0, Some(held));
+    }
+
+    type Snap = Vec<(
+        metrics_util::CompositeKey,
+        Option<metrics::Unit>,
+        Option<metrics::SharedString>,
+        metrics_util::debugging::DebugValue,
+    )>;
+
+    /// The metric `name` whose labels include all of `labels`. Take `snap`
+    /// once per check: each snapshot resets the recorder's counters.
+    fn find<'a>(
+        snap: &'a Snap,
+        name: &str,
+        labels: &[(&str, &str)],
+    ) -> Option<&'a metrics_util::debugging::DebugValue> {
+        snap.iter()
+            .find(|(k, _, _, _)| {
+                k.key().name() == name
+                    && labels.iter().all(|(lk, lv)| {
+                        k.key().labels().any(|l| l.key() == *lk && l.value() == *lv)
+                    })
+            })
+            .map(|(_, _, _, v)| v)
+    }
+
+    fn counter(snap: &Snap, name: &str, labels: &[(&str, &str)]) -> Option<u64> {
+        match find(snap, name, labels)? {
+            metrics_util::debugging::DebugValue::Counter(c) => Some(*c),
+            _ => None,
+        }
+    }
+
+    fn gauge(snap: &Snap, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
+        match find(snap, name, labels)? {
+            metrics_util::debugging::DebugValue::Gauge(g) => Some(g.into_inner()),
+            _ => None,
+        }
+    }
+
+    /// One buy over three candles: 3 events, 1 accepted order, 1 taker
+    /// fill, and the last-candle gauge at c2's close (10799.999 s).
+    #[tokio::test]
+    async fn records_events_orders_and_fills() {
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        run_with(dec!(0), dec!(0.001)).await;
+        let snap = snapshotter.snapshot().into_vec();
+
+        let btc = btcusdt().id.to_string();
+        assert_eq!(counter(&snap, m::EVENTS, &[]), Some(3));
+        assert_eq!(
+            counter(&snap, m::ORDERS, &[("instrument", &btc), ("side", "buy")]),
+            Some(1)
+        );
+        assert_eq!(counter(&snap, m::FILLS, &[("liquidity", "taker")]), Some(1));
+        assert_eq!(
+            gauge(&snap, m::LAST_CANDLE, &[("instrument", &btc)]),
+            Some(10_799.999)
+        );
+    }
+
+    #[tokio::test]
+    async fn records_rejections_by_source() {
+        let recorder = metrics_util::debugging::DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        // 4 USDT is under the 5 USDT minimum: risk refuses it.
+        let provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("4");
+        run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        let snap = snapshotter.snapshot().into_vec();
+        assert_eq!(counter(&snap, m::REJECTED, &[("source", "risk")]), Some(1));
+
+        // The venue refusing one order is counted under its code.
+        let mut provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        provider.submit_error = Some(-2010);
+        let (mut s, params) = buy_and_hold("1000");
+        run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        let snap = snapshotter.snapshot().into_vec();
+        assert_eq!(
+            counter(
+                &snap,
+                m::REJECTED,
+                &[("source", "broker"), ("code", "-2010")]
+            ),
+            Some(1)
+        );
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@
 
 mod error;
 mod event_loop;
+pub mod metrics;
 pub mod risk;
 
 pub use error::EngineError;

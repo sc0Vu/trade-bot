@@ -10,6 +10,7 @@
 
 pub mod binance;
 mod error;
+pub mod metrics;
 pub mod paper;
 #[cfg(test)]
 mod test_db;

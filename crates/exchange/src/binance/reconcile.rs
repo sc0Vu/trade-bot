@@ -79,6 +79,14 @@ pub(crate) async fn reconcile_with(
             close_out(client, inst, books, &mut fees, &order, retry_delay).await?;
         done.orders_closed += 1;
     }
+    let label = match phase {
+        Phase::Startup => "startup",
+        Phase::Exit => "exit",
+    };
+    metrics::counter!(crate::metrics::RECONCILE_ORDERS, "phase" => label)
+        .increment(done.orders_closed as u64);
+    metrics::counter!(crate::metrics::RECONCILE_FILLS, "phase" => label)
+        .increment(done.fills_recovered as u64);
     if phase == Phase::Startup {
         refuse_unknown_open_orders(client, instruments).await?;
         check_balances(client, instruments, books).await?;

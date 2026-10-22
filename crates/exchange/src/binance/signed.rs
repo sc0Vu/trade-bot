@@ -318,8 +318,38 @@ impl SignedClient {
     }
 
     async fn call(&self, req: HttpRequest) -> Result<Value, ExchangeError> {
+        let r = self.call_inner(req.clone()).await;
+        if let Err(e) = &r {
+            let code = match e {
+                ExchangeError::Venue { code, .. } => code.to_string(),
+                _ => "http".to_owned(),
+            };
+            metrics::counter!(
+                crate::metrics::BINANCE_ERRORS,
+                "path" => req.path.clone(),
+                "code" => code,
+            )
+            .increment(1);
+        }
+        r
+    }
+
+    async fn call_inner(&self, req: HttpRequest) -> Result<Value, ExchangeError> {
         let path = req.path.clone();
-        let res = self.transport.send(&self.base, req).await?;
+        let method = match req.method {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Delete => "DELETE",
+        };
+        let started = std::time::Instant::now();
+        let sent = self.transport.send(&self.base, req).await;
+        metrics::histogram!(
+            crate::metrics::BINANCE_REQUEST,
+            "method" => method,
+            "path" => path.clone(),
+        )
+        .record(started.elapsed().as_secs_f64());
+        let res = sent?;
         let body: Value = serde_json::from_str(&res.body)
             .map_err(|e| ExchangeError::Decode(format!("{path}: HTTP {}: {e}", res.status)))?;
         if res.status >= 400 {
@@ -449,6 +479,46 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ExchangeError::Venue { code: -2010, .. }));
+    }
+
+    /// Every request lands in the latency histogram by path; a failure is
+    /// counted under Binance's code.
+    #[tokio::test]
+    async fn requests_and_errors_are_recorded() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let t = FakeTransport::default();
+        t.reply(200, "{}");
+        t.reply(400, r#"{"code":-2010,"msg":"insufficient balance"}"#);
+        let c = client(&t);
+        c.signed(Method::Get, "/api/v3/account", &[]).await.unwrap();
+        c.signed(Method::Post, "/api/v3/order", &[])
+            .await
+            .unwrap_err();
+
+        let snap = snapshotter.snapshot().into_vec();
+        let has = |name: &str, labels: &[(&str, &str)]| {
+            snap.iter().find(|(k, _, _, _)| {
+                k.key().name() == name
+                    && labels.iter().all(|(lk, lv)| {
+                        k.key().labels().any(|l| l.key() == *lk && l.value() == *lv)
+                    })
+            })
+        };
+        assert!(matches!(
+            has(crate::metrics::BINANCE_REQUEST, &[("method", "GET"), ("path", "/api/v3/account")]),
+            Some((_, _, _, DebugValue::Histogram(h))) if h.len() == 1
+        ));
+        assert!(matches!(
+            has(
+                crate::metrics::BINANCE_ERRORS,
+                &[("path", "/api/v3/order"), ("code", "-2010")]
+            ),
+            Some((_, _, _, DebugValue::Counter(1)))
+        ));
     }
 
     #[tokio::test]

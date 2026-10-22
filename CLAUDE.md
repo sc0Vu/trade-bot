@@ -494,6 +494,10 @@ Not finished until all hold — per task, not at end:
   tests.
 - Async `tokio`; JSON `serde`; money `rust_decimal`; logs `tracing` (structured,
   no money values at info level).
+- Metrics via `metrics` facade (`engine::metrics`, `exchange::metrics` name
+  consts; no recorder = no-op, backtest clean). Bounded labels only (no ids,
+  amounts). Metric `f64` = display/alerting only, never read back into a
+  decision or books. No money values from the facade.
 - Every strategy and fill model get unit tests. Backtester gets
   known-input regression test so refactor can't silently change P&L.
 - Honest claims: number not measured (backtest return, latency) →

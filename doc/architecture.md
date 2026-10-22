@@ -18,6 +18,7 @@ that pins it is named.
 - [Books: journal, ledger, holdings](#books-journal-ledger-holdings)
 - [Reconcile](#reconcile)
 - [Shutdown](#shutdown)
+- [Observability](#observability)
 - [The live gate](#the-live-gate)
 - [Configuration](#configuration)
 - [Strategies and how they are loaded](#strategies-and-how-they-are-loaded)
@@ -338,6 +339,31 @@ start's reconcile finishes the job. Holdings are kept, not sold.
 A crash or `kill -9` can't be handled in-process. The orders stay live until
 the next start, so a long-running bot belongs under a supervisor that
 restarts it.
+
+## Observability
+
+The engine and the Binance client record metrics through the `metrics`
+facade. Nothing is recorded unless the binary installs a recorder, so
+backtests and tests pay nothing and stay deterministic. Labels are bounded
+(instruments, sides, endpoint paths, error codes), never order ids or
+amounts.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `tradebot_events_total` | counter | | Market events processed |
+| `tradebot_last_candle_close_seconds` | gauge | `instrument` | Close time of the latest candle; `time() - x` is the feed's age |
+| `tradebot_orders_submitted_total` | counter | `instrument`, `side` | Orders the broker accepted |
+| `tradebot_cancels_requested_total` | counter | | Cancels the broker accepted |
+| `tradebot_fills_total` | counter | `instrument`, `side`, `liquidity` | Fills |
+| `tradebot_signals_rejected_total` | counter | `source` (`risk`/`broker`), `code` | Signals that didn't become orders |
+| `tradebot_binance_request_seconds` | histogram | `method`, `path` | REST request time |
+| `tradebot_binance_errors_total` | counter | `path`, `code` | Failed REST requests, by Binance code or `http` |
+| `tradebot_reconcile_orders_closed_total` | counter | `phase` | Journal orders reconcile closed |
+| `tradebot_reconcile_fills_recovered_total` | counter | `phase` | Fills reconcile recorded that the books lacked |
+
+Metric values are `f64`, converted at the moment of recording. They are for
+display and alerting only and are never read back into a decision or the
+books, so invariant 1 still holds where money is decided.
 
 ## The live gate
 
