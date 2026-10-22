@@ -507,7 +507,10 @@ Not finished until all hold — per task, not at end:
   `run` exports via `[metrics]` (`cli::telemetry`): off by default, loopback
   unless `allow_public`, money gauges (position qty, cost basis, realized
   P&L) only with `include_money`; exporter failure = warning, never stops
-  trading.
+  trading. `[api]` same rules: off, loopback default, non-loopback needs
+  `allow_public` + token in `TRADEBOT_API_TOKEN` (not `BOT_*`: that prefix is
+  config layer), live view via observer `watch` channel, bind failure =
+  warning. API stays read-only; future controls only pause/cancel/stop.
 - Every strategy and fill model get unit tests. Backtester gets
   known-input regression test so refactor can't silently change P&L.
 - Honest claims: number not measured (backtest return, latency) →

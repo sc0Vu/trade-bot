@@ -43,6 +43,59 @@ pub struct Config {
     pub db: DbSection,
     #[serde(default)]
     pub metrics: MetricsSection,
+    #[serde(default)]
+    pub api: ApiSection,
+}
+
+/// Env var holding the API's bearer token. Not `BOT_*`: that prefix is the
+/// config layer, where it would be read as an `api_token` field. Secrets
+/// come only from the environment (invariant 6).
+pub const API_TOKEN_VAR: &str = "TRADEBOT_API_TOKEN";
+
+/// The read-only HTTP API for `run` (see the `api` crate).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiSection {
+    /// Serve the API. Off by default.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Address to serve on. Default `127.0.0.1:9185`. A non-loopback
+    /// address also needs `allow_public` and a token in
+    /// `TRADEBOT_API_TOKEN`.
+    #[serde(default = "api_listen")]
+    pub listen: std::net::SocketAddr,
+    /// Permit a non-loopback `listen`. Put TLS (a reverse proxy) in front:
+    /// the token travels in a header.
+    #[serde(default)]
+    pub allow_public: bool,
+}
+
+impl Default for ApiSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: api_listen(),
+            allow_public: false,
+        }
+    }
+}
+
+fn api_listen() -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([127, 0, 0, 1], 9185))
+}
+
+/// The token the API must require, from `TRADEBOT_API_TOKEN`'s value
+/// (`env`). A blank value counts as unset. Off loopback a token is
+/// mandatory: the API shows the account's books.
+pub fn api_token(api: &ApiSection, env: Option<String>) -> anyhow::Result<Option<String>> {
+    let token = env.filter(|t| !t.trim().is_empty());
+    if !api.listen.ip().is_loopback() && token.is_none() {
+        bail!(
+            "api.listen {} is not loopback; set {API_TOKEN_VAR} so requests need a token",
+            api.listen
+        );
+    }
+    Ok(token)
 }
 
 /// Prometheus metrics for `run` (see `telemetry`).
@@ -199,6 +252,13 @@ impl Config {
         if self.exchange.http_timeout_secs == 0 {
             bail!("exchange.http_timeout_secs must be >= 1");
         }
+        if !self.api.listen.ip().is_loopback() && !self.api.allow_public {
+            bail!(
+                "api.listen {} is not loopback; set api.allow_public = true to expose it \
+                 deliberately (and {API_TOKEN_VAR})",
+                self.api.listen
+            );
+        }
         if !self.metrics.listen.ip().is_loopback() && !self.metrics.allow_public {
             bail!(
                 "metrics.listen {} is not loopback; the endpoint has no authentication, \
@@ -249,6 +309,49 @@ mod tests {
             let c = parse(MIN).unwrap();
             assert!(!c.metrics.enabled && !c.metrics.include_money);
             assert_eq!(c.metrics.listen.to_string(), "127.0.0.1:9184");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn api_is_off_and_loopback_by_default() {
+        Jail::expect_with(|_| {
+            let c = parse(MIN).unwrap();
+            assert!(!c.api.enabled);
+            assert_eq!(c.api.listen.to_string(), "127.0.0.1:9185");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn public_api_needs_consent_and_a_token() {
+        Jail::expect_with(|_| {
+            let public = format!("{MIN}\n[api]\nenabled = true\nlisten = \"0.0.0.0:9185\"\n");
+            assert!(parse(&public).is_err(), "no allow_public");
+            let c = parse(&format!("{public}allow_public = true\n")).unwrap();
+            assert!(api_token(&c.api, None).is_err(), "no token");
+            assert!(api_token(&c.api, Some("  ".into())).is_err(), "blank token");
+            assert_eq!(
+                api_token(&c.api, Some("t".into())).unwrap().as_deref(),
+                Some("t")
+            );
+            // Loopback: optional, enforced if set.
+            let local = ApiSection::default();
+            assert_eq!(api_token(&local, None).unwrap(), None);
+            assert_eq!(
+                api_token(&local, Some("t".into())).unwrap().as_deref(),
+                Some("t")
+            );
+            Ok(())
+        });
+    }
+
+    /// The token's env var must not collide with the BOT_ config layer.
+    #[test]
+    fn api_token_var_is_outside_the_config_prefix() {
+        Jail::expect_with(|jail| {
+            jail.set_env(API_TOKEN_VAR, "t");
+            assert!(parse(MIN).is_ok());
             Ok(())
         });
     }

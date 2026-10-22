@@ -50,9 +50,13 @@ pub fn start(cfg: &MetricsSection) {
     });
 }
 
-/// Feeds the live-state gauges from each engine snapshot.
+/// Feeds the live-state gauges, and the API's live view, from each engine
+/// snapshot.
 pub struct RunObserver {
     pub include_money: bool,
+    /// The API's live view, when the API is on. `send_replace` never waits
+    /// for a reader.
+    pub live: Option<tokio::sync::watch::Sender<Option<Snapshot>>>,
 }
 
 /// Exporter-only conversion: a gauge is display and alerting, never read
@@ -64,6 +68,9 @@ fn shown(d: Decimal) -> f64 {
 
 impl Observer for RunObserver {
     fn on_snapshot(&mut self, s: &Snapshot) {
+        if let Some(tx) = &self.live {
+            tx.send_replace(Some(s.clone()));
+        }
         metrics::gauge!(OPEN_ORDERS).set(s.open_orders.len() as f64);
         for c in &s.last_candles {
             metrics::gauge!(LAST_CLOSE, "instrument" => c.instrument.to_string())
@@ -108,9 +115,24 @@ mod tests {
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         metrics::with_local_recorder(&recorder, || {
-            RunObserver { include_money }.on_snapshot(&snapshot());
+            RunObserver {
+                include_money,
+                live: None,
+            }
+            .on_snapshot(&snapshot());
         });
         handle.render()
+    }
+
+    #[test]
+    fn snapshots_reach_the_api_view() {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let mut o = RunObserver {
+            include_money: false,
+            live: Some(tx),
+        };
+        o.on_snapshot(&snapshot());
+        assert_eq!(*rx.borrow(), Some(snapshot()));
     }
 
     #[test]

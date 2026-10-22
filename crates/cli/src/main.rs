@@ -88,6 +88,7 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
     // Hard error in every mode: fake-money networks need their own keys too.
     let creds = Credentials::from_env()?;
     let books = open_books(&cfg.db, network).await?;
+    let api_token = config::api_token(&cfg.api, std::env::var(config::API_TOKEN_VAR).ok())?;
     let provider = BinanceSpotProvider::new(
         BinanceConfig {
             network,
@@ -98,7 +99,7 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
         },
         creds,
         cfg.whitelist.clone(),
-        books,
+        books.clone(),
     );
     let params = Params::new(cfg.strategy.params);
     let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
@@ -110,8 +111,32 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
         eprintln!("LIVE: sending real orders to Binance mainnet");
     }
     telemetry::start(&cfg.metrics);
+    let live = if cfg.api.enabled {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let state = api::ApiState {
+            info: api::RunInfo {
+                network: config::network_name(network).to_owned(),
+                strategy: cfg.strategy.name.clone(),
+                started_at: now(),
+            },
+            live: rx,
+            books: books.clone(),
+            token: api_token,
+        };
+        // Like metrics, the API can never stop trading.
+        match api::serve(cfg.api.listen, state).await {
+            Ok(addr) => tracing::info!(%addr, "API listening"),
+            Err(e) => {
+                tracing::warn!(error = %e, listen = %cfg.api.listen, "API not started; trading continues");
+            }
+        }
+        Some(tx)
+    } else {
+        None
+    };
     let mut observer = telemetry::RunObserver {
         include_money: cfg.metrics.include_money,
+        live,
     };
     tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");
     let outcome = tokio::select! {

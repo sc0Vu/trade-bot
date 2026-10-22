@@ -83,3 +83,14 @@ include_money = false
 # Permit a non-loopback listen address. Put a firewall or an authenticating
 # proxy in front if you set this.
 allow_public = false
+
+[api]
+# Read-only JSON API during `run`: /status, /positions, /open-orders,
+# /orders?limit=N, /trades?limit=N. It can't place or cancel anything.
+# Off by default; if it can't start, trading goes on.
+enabled = false
+# Loopback only unless allow_public. Off loopback a bearer token is
+# required, read from the TRADEBOT_API_TOKEN environment variable (never
+# from this file); put TLS in front, since the token travels in a header.
+listen = "127.0.0.1:9185"
+allow_public = false

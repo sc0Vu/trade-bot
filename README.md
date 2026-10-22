@@ -109,6 +109,7 @@ are errors, so a typo fails loudly instead of falling back to a default.
 | `[engine]` | `history_len` | Candles of history kept per instrument (default 500) |
 | `[db]` | `url` | Where a run keeps its books; default `data/<network>.db` |
 | `[metrics]` | `enabled`, `listen`, `include_money`, `allow_public` | Prometheus `/metrics` during `run`; off, loopback-only and money-free by default |
+| `[api]` | `enabled`, `listen`, `allow_public` | Read-only JSON API during `run` (default `127.0.0.1:9185`); a public address needs a token in `TRADEBOT_API_TOKEN` |
 
 ## Strategies
 
@@ -186,6 +187,11 @@ What a run does:
 Orders and fills are kept in a per-network SQLite database (default
 `data/<network>.db`). It is stamped with its network, so a demo database
 can't be opened for a live run. Positions survive restarts.
+
+For your own UI or scripts, enable `[api]`: `GET /status`, `/positions`,
+`/open-orders`, `/orders?limit=N` and `/trades?limit=N` return JSON (money as
+decimal strings). It is read-only by design: nothing over HTTP can place or
+cancel an order or switch networks.
 
 To watch it, enable `[metrics]` and start the Prometheus, Alertmanager and
 Grafana stack in [`deploy/`](deploy/README.md): a dashboard, plus alerts for

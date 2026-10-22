@@ -377,6 +377,15 @@ has no authentication, so a non-loopback address needs
 `metrics.allow_public`. If the exporter can't start, the run logs a warning
 and trades on.
 
+With `api.enabled`, the same observer feeds the read-only HTTP API (`api`
+crate) through a `watch` channel, which never makes the engine wait:
+`/status` returns the latest snapshot with network, strategy and start time;
+`/positions`, `/orders` and `/trades` read the books. There are only `GET`
+routes and none that changes anything; later controls are limited to
+pausing, cancelling and stopping, never placing orders or loosening the live
+gate. Off loopback the API needs `api.allow_public` and a bearer token from
+`TRADEBOT_API_TOKEN`, compared in constant time.
+
 Metric values are `f64`, converted at the moment of recording. They are for
 display and alerting only and are never read back into a decision or the
 books, so invariant 1 still holds where money is decided.
