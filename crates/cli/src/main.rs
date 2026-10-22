@@ -107,20 +107,42 @@ async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
         eprintln!("LIVE: sending real orders to Binance mainnet");
     }
     tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");
-    tokio::select! {
-        r = engine::run(&provider, strategy.as_mut(), params, &engine_cfg) => {
-            let r = r?;
-            println!("events {}  fills {}  rejected signals {}", r.events, r.fills.len(), r.rejections.len());
-            for p in &r.positions {
-                println!("{}  qty {}  realized {}", p.instrument(), p.qty(), p.realized_pnl());
-            }
-            Ok(())
-        }
+    let outcome = tokio::select! {
+        r = engine::run(&provider, strategy.as_mut(), params, &engine_cfg) => r.map(Some),
         _ = tokio::signal::ctrl_c() => {
-            eprintln!("interrupted: open orders on the venue were NOT cancelled; check the account");
-            Ok(())
+            eprintln!("interrupted");
+            Ok(None)
+        }
+    };
+    // However the run ended, no order may be left working on the venue
+    // with no strategy watching it.
+    let closed = provider.close_out().await;
+    match &closed {
+        Ok(c) => tracing::info!(
+            orders_closed = c.orders_closed,
+            fills_recovered = c.fills_recovered,
+            "closed out open orders"
+        ),
+        Err(e) => eprintln!("could not close out open orders: {e}; check the account"),
+    }
+    if let Some(r) = outcome? {
+        println!(
+            "events {}  fills {}  rejected signals {}",
+            r.events,
+            r.fills.len(),
+            r.rejections.len()
+        );
+        for p in &r.positions {
+            println!(
+                "{}  qty {}  realized {}",
+                p.instrument(),
+                p.qty(),
+                p.realized_pnl()
+            );
         }
     }
+    closed?;
+    Ok(())
 }
 
 #[derive(Args)]

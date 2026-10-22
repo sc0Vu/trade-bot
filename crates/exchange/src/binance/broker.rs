@@ -151,17 +151,16 @@ impl BinanceBroker {
             .as_array()
             .ok_or_else(|| ExchangeError::Decode("myTrades".into()))?
         {
-            let id = t["id"]
-                .as_i64()
-                .ok_or_else(|| ExchangeError::Decode("trade id".into()))?;
+            let id = trade_id(t)?;
             if self.open[idx].seen_trades.contains(&id) {
                 continue;
             }
-            let fill = self.trade_to_fill(&self.open[idx].order, t)?;
+            let order = &self.open[idx].order;
             let inst = self
                 .instruments
-                .get(&fill.instrument)
-                .ok_or_else(|| ExchangeError::UnknownInstrument(fill.instrument.clone()))?;
+                .get(&order.instrument)
+                .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?;
+            let fill = trade_to_fill(inst, &order.id, order.side, t)?;
             // Storage folds the fill into the stored holding; that holding
             // is the position. `None`: already recorded (by a reconcile),
             // so it was reported then and must not be reported twice.
@@ -179,74 +178,91 @@ impl BinanceBroker {
         // Closed only when Binance says nothing more will fill AND every
         // executed unit has shown up as a trade: the two endpoints can lag
         // each other, and dropping the order early would lose a fill.
-        let terminal = matches!(
-            status["status"].as_str(),
-            Some("FILLED" | "CANCELED" | "EXPIRED" | "REJECTED" | "EXPIRED_IN_MATCH")
-        );
-        let executed = status["executedQty"]
-            .as_str()
-            .and_then(|s| Decimal::from_str(s).ok())
-            .ok_or_else(|| ExchangeError::Decode("order executedQty".into()))?;
-        let done = terminal && self.open[idx].seen_qty.get() == executed;
+        let done = is_terminal(&status) && self.open[idx].seen_qty.get() == executed_qty(&status)?;
         if done {
             self.books.mark_closed(&self.open[idx].client_id).await?;
         }
         Ok((fills, done))
     }
+}
 
-    fn trade_to_fill(&self, order: &Order, t: &Value) -> Result<Fill, ExchangeError> {
-        let inst = self
-            .instruments
-            .get(&order.instrument)
-            .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?;
-        let dec = |name: &str| -> Result<Decimal, ExchangeError> {
-            t[name]
-                .as_str()
-                .and_then(|s| Decimal::from_str(s).ok())
-                .ok_or_else(|| ExchangeError::Decode(format!("trade {name}")))
-        };
-        let commission = dec("commission")?;
-        let asset = t["commissionAsset"].as_str().unwrap_or_default();
-        let fee = if asset == inst.base.as_str() {
-            Fee::Base(Qty::new(commission))
-        } else if asset == inst.quote.as_str() {
-            Fee::Quote(Notional::new(commission))
-        } else {
-            return Err(ExchangeError::Decode(format!(
-                "fee charged in {asset}; v1 values fees only in base or quote. \
+/// True once Binance says nothing more will fill.
+pub(super) fn is_terminal(status: &Value) -> bool {
+    matches!(
+        status["status"].as_str(),
+        Some("FILLED" | "CANCELED" | "EXPIRED" | "REJECTED" | "EXPIRED_IN_MATCH")
+    )
+}
+
+/// Base units executed so far, from an order status reply.
+pub(super) fn executed_qty(status: &Value) -> Result<Decimal, ExchangeError> {
+    status["executedQty"]
+        .as_str()
+        .and_then(|s| Decimal::from_str(s).ok())
+        .ok_or_else(|| ExchangeError::Decode("order executedQty".into()))
+}
+
+/// Binance's id of a `myTrades` entry; unique per symbol.
+pub(super) fn trade_id(t: &Value) -> Result<i64, ExchangeError> {
+    t["id"]
+        .as_i64()
+        .ok_or_else(|| ExchangeError::Decode("trade id".into()))
+}
+
+/// One `myTrades` entry as a fill of order `order_id` on `inst`.
+pub(super) fn trade_to_fill(
+    inst: &Instrument,
+    order_id: &OrderId,
+    order_side: Side,
+    t: &Value,
+) -> Result<Fill, ExchangeError> {
+    let dec = |name: &str| -> Result<Decimal, ExchangeError> {
+        t[name]
+            .as_str()
+            .and_then(|s| Decimal::from_str(s).ok())
+            .ok_or_else(|| ExchangeError::Decode(format!("trade {name}")))
+    };
+    let commission = dec("commission")?;
+    let asset = t["commissionAsset"].as_str().unwrap_or_default();
+    let fee = if asset == inst.base.as_str() {
+        Fee::Base(Qty::new(commission))
+    } else if asset == inst.quote.as_str() {
+        Fee::Quote(Notional::new(commission))
+    } else {
+        return Err(ExchangeError::Decode(format!(
+            "fee charged in {asset}; v1 values fees only in base or quote. \
                  Turn off paying fees with BNB on the account."
-            )));
-        };
-        let side = if t["isBuyer"].as_bool() == Some(true) {
-            Side::Buy
-        } else {
-            Side::Sell
-        };
-        if side != order.side {
-            return Err(ExchangeError::Decode(
-                "trade side differs from order side".into(),
-            ));
-        }
-        Fill::new(FillSpec {
-            order_id: order.id.clone(),
-            instrument: order.instrument.clone(),
-            side,
-            qty: Qty::new(dec("qty")?),
-            price: Price::new(dec("price")?),
-            fee,
-            liquidity: if t["isMaker"].as_bool() == Some(true) {
-                Liquidity::Maker
-            } else {
-                Liquidity::Taker
-            },
-            ts: Timestamp::from_millis(
-                t["time"]
-                    .as_i64()
-                    .ok_or_else(|| ExchangeError::Decode("trade time".into()))?,
-            ),
-        })
-        .map_err(|e| ExchangeError::Decode(e.to_string()))
+        )));
+    };
+    let side = if t["isBuyer"].as_bool() == Some(true) {
+        Side::Buy
+    } else {
+        Side::Sell
+    };
+    if side != order_side {
+        return Err(ExchangeError::Decode(
+            "trade side differs from order side".into(),
+        ));
     }
+    Fill::new(FillSpec {
+        order_id: order_id.clone(),
+        instrument: inst.id.clone(),
+        side,
+        qty: Qty::new(dec("qty")?),
+        price: Price::new(dec("price")?),
+        fee,
+        liquidity: if t["isMaker"].as_bool() == Some(true) {
+            Liquidity::Maker
+        } else {
+            Liquidity::Taker
+        },
+        ts: Timestamp::from_millis(
+            t["time"]
+                .as_i64()
+                .ok_or_else(|| ExchangeError::Decode("trade time".into()))?,
+        ),
+    })
+    .map_err(|e| ExchangeError::Decode(e.to_string()))
 }
 
 /// Plain decimal text Binance accepts: no exponent, no trailing zeros.
@@ -835,12 +851,13 @@ mod tests {
         let (mut b, t, db) = broker().await;
         t.reply(200, r#"{"orderId":28}"#);
         b.submit(market_buy("o-1")).await.unwrap();
-        let earlier = b
-            .trade_to_fill(
-                &market_buy("o-1"),
-                &serde_json::from_str(&trade(7, "100", "1", "0.001", "BTC", true)).unwrap(),
-            )
-            .unwrap();
+        let earlier = trade_to_fill(
+            &btcusdt(),
+            &OrderId::new("o-1").unwrap(),
+            Side::Buy,
+            &serde_json::from_str(&trade(7, "100", "1", "0.001", "BTC", true)).unwrap(),
+        )
+        .unwrap();
         db.store
             .record_venue_fill(&earlier, &btcusdt(), "7")
             .await

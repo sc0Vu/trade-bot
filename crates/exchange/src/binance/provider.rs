@@ -1,3 +1,4 @@
+use super::reconcile::{Phase, Reconciled, reconcile};
 use super::{
     BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_URL, KlineStream, LIVE_REST_URL,
     LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL,
@@ -99,6 +100,38 @@ impl BinanceSpotProvider {
     pub fn network(&self) -> Network {
         self.config.network
     }
+
+    /// Cancels every order the books still have open on Binance and records
+    /// their last fills ([`Phase::Exit`]). Call it however a run ends:
+    /// orders left working have no strategy watching them.
+    pub async fn close_out(&self) -> Result<Reconciled, ExchangeError> {
+        let client = self.client().await?;
+        let instruments = self.books_instruments().await?;
+        reconcile(&client, &instruments, &*self.books, Phase::Exit).await
+    }
+
+    async fn client(&self) -> Result<SignedClient, ExchangeError> {
+        let mut client = SignedClient::new(
+            self.config.rest_url(),
+            Box::new(ReqwestTransport::default()),
+            self.creds.clone(),
+            Box::new(SystemClock),
+        );
+        client.sync_time().await?;
+        Ok(client)
+    }
+
+    /// The whitelist plus any instrument an unfinished journal order is on
+    /// (the whitelist may have changed since it was placed).
+    async fn books_instruments(&self) -> Result<Vec<Instrument>, ExchangeError> {
+        let mut ids = self.universe.clone();
+        for o in self.books.unfinished_orders().await? {
+            if !ids.contains(&o.instrument) {
+                ids.push(o.instrument);
+            }
+        }
+        self.resolve(&InstrumentQuery::Ids(ids)).await
+    }
 }
 
 #[async_trait]
@@ -122,18 +155,22 @@ impl Provider for BinanceSpotProvider {
         Ok(Box::new(stream))
     }
 
+    /// Checks the key, then reconciles the books with Binance
+    /// ([`Phase::Startup`]) before the broker starts from them.
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
-        let mut client = SignedClient::new(
-            self.config.rest_url(),
-            Box::new(ReqwestTransport::default()),
-            self.creds.clone(),
-            Box::new(SystemClock),
-        );
-        client.sync_time().await?;
+        let client = self.client().await?;
         client.check_credentials().await?;
-        let instruments = self
-            .resolve(&InstrumentQuery::Ids(self.universe.clone()))
-            .await?;
+        let books_instruments = self.books_instruments().await?;
+        let r = reconcile(&client, &books_instruments, &*self.books, Phase::Startup).await?;
+        tracing::info!(
+            orders_closed = r.orders_closed,
+            fills_recovered = r.fills_recovered,
+            "reconciled with Binance"
+        );
+        let instruments = books_instruments
+            .into_iter()
+            .filter(|i| self.universe.contains(&i.id))
+            .collect();
         let tag = run_tag(SystemClock.now_millis());
         Ok(Box::new(
             BinanceBroker::open(client, instruments, tag, self.books.clone()).await?,

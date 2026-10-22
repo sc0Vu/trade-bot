@@ -213,7 +213,15 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    ignored. `run` db: `db.url`, default `sqlite://data/<network>.db`, migrated
    on open, network-stamped.
    Refusals identical to PaperBroker. Fee in third asset (BNB) → error:
-   disable BNB fee payment. Ctrl-C does NOT cancel venue orders.
+   disable BNB fee payment.
+   Reconcile (`binance::reconcile`, Binance = truth, books = which are ours):
+   startup (in `provider.broker()`) and every exit incl. Ctrl-C/error
+   (`close_out`). Each unfinished journal order: find (venue id, else client
+   id; `-2013` on pending = never placed), cancel if working (strategy state
+   not persisted → leftover order has no owner), wait until terminal + trades
+   = `executedQty`, record trades idempotently, close. Startup also refuses
+   any open order on traded symbol not in books (manual, other software, other
+   db) and books holding > account free+locked.
    `run --paper` = testnet or demo only; `run --live` needs `mode = "live"` +
    `exchange.network = "live"` + `--i-understand` (`cli::gate`, all combos
    tested); fake-money run refuses `*.binance.com` URL overrides except the

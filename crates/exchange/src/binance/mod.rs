@@ -5,6 +5,7 @@
 mod broker;
 mod provider;
 pub mod public;
+pub mod reconcile;
 pub mod signed;
 pub mod ws;
 
