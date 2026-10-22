@@ -1,0 +1,13 @@
+# Where alerts go. The default receiver drops them; replace it with one that
+# reaches you (email, Slack, Telegram, a webhook). Examples:
+#   https://prometheus.io/docs/alerting/latest/configuration/#receiver
+route:
+  receiver: drop
+  group_by: [alertname, instrument]
+  repeat_interval: 1h
+
+receivers:
+  - name: drop
+  # - name: webhook
+  #   webhook_configs:
+  #     - url: http://example.invalid/alert

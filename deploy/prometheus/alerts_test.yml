@@ -1,0 +1,52 @@
+# Unit tests for alerts.yml:
+#   promtool test rules deploy/prometheus/alerts_test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # Last candle closed at t=0 and none since: the age passes 150 s just
+  # after 2.5 min, and the alert fires once it has held for 30 s.
+  - interval: 15s
+    input_series:
+      - series: 'tradebot_last_candle_close_seconds{instrument="binance:BTCUSDT"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FeedStale
+        exp_alerts: []
+      - eval_time: 3m30s
+        alertname: FeedStale
+        exp_alerts:
+          - exp_labels: { severity: critical, instrument: "binance:BTCUSDT" }
+            exp_annotations:
+              summary: "No closed candle for binance:BTCUSDT in over 150 s"
+              description: "The market-data feed looks stalled; the bot is trading blind or about to stop."
+
+  # Five -2010 refusals in 15 minutes: more than 3, so it fires.
+  - interval: 1m
+    input_series:
+      - series: 'tradebot_signals_rejected_total{source="broker", code="-2010"}'
+        values: '0 1 2 3 4 5 5 5 5 5 5 5 5 5 5 5'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SignalsRejected
+        exp_alerts:
+          - exp_labels: { severity: warning, source: broker, code: "-2010" }
+            exp_annotations:
+              summary: "Signals rejected (broker -2010)"
+              description: "Several orders refused in 15 min: the strategy may be stuck (e.g. -2010 insufficient balance)."
+
+  - interval: 15s
+    input_series:
+      - series: 'up{job="trade-bot"}'
+        values: '1 1 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 1m45s
+        alertname: TradeBotDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: trade-bot }
+            exp_annotations:
+              summary: "trade-bot is not answering /metrics"
+              description: "The process is down or the endpoint is unreachable. Its orders on Binance are unwatched until it restarts and reconciles."

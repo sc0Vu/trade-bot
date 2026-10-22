@@ -1,0 +1,55 @@
+# Alert rules for the bot. Thresholds assume 1m candles; scale the feed and
+# rejection windows with exchange.interval.
+groups:
+  - name: trade-bot
+    rules:
+      - alert: TradeBotDown
+        expr: up{job="trade-bot"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "trade-bot is not answering /metrics"
+          description: "The process is down or the endpoint is unreachable. Its orders on Binance are unwatched until it restarts and reconciles."
+
+      - alert: FeedStale
+        # The bot itself stops after 2 bars + 60 s without a closed candle;
+        # this fires first so a person hears about it.
+        expr: time() - max by (instrument) (tradebot_last_candle_close_seconds) > 150
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "No closed candle for {{ $labels.instrument }} in over 150 s"
+          description: "The market-data feed looks stalled; the bot is trading blind or about to stop."
+
+      - alert: SignalsRejected
+        expr: sum by (source, code) (increase(tradebot_signals_rejected_total[15m])) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "Signals rejected ({{ $labels.source }} {{ $labels.code }})"
+          description: "Several orders refused in 15 min: the strategy may be stuck (e.g. -2010 insufficient balance)."
+
+      - alert: BinanceErrors
+        expr: sum by (path, code) (increase(tradebot_binance_errors_total[5m])) > 5
+        labels: { severity: warning }
+        annotations:
+          summary: "Binance errors on {{ $labels.path }} (code {{ $labels.code }})"
+
+      - alert: BinanceSlow
+        expr: max by (path) (tradebot_binance_request_seconds{quantile="0.99"}) > 2
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Binance p99 latency above 2 s on {{ $labels.path }}"
+
+      - alert: FillsRecoveredAtStartup
+        expr: increase(tradebot_reconcile_fills_recovered_total{phase="startup"}[1h]) > 0
+        labels: { severity: info }
+        annotations:
+          summary: "Startup reconcile recorded fills that happened while the bot was down"
+
+      - alert: TradeBotMemoryHigh
+        expr: process_resident_memory_bytes{job="trade-bot"} > 500e6
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "trade-bot uses over 500 MB of memory"

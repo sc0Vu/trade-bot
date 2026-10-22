@@ -187,6 +187,10 @@ Orders and fills are kept in a per-network SQLite database (default
 `data/<network>.db`). It is stamped with its network, so a demo database
 can't be opened for a live run. Positions survive restarts.
 
+To watch it, enable `[metrics]` and start the Prometheus, Alertmanager and
+Grafana stack in [`deploy/`](deploy/README.md): a dashboard, plus alerts for
+a stalled feed, a stuck strategy, Binance errors and the bot being down.
+
 For a long-running bot, run it under a supervisor (for example systemd with
 `Restart=always`). A crash or `kill -9` can't be handled in-process, and
 until the bot restarts and reconciles, its orders on Binance go unwatched.
@@ -226,6 +230,7 @@ crates/
 migration/    SeaORM schema migrations
 config/       config.example.toml (committed); real configs are gitignored
 doc/          architecture notes
+deploy/       Prometheus, Alertmanager, Grafana (compose) and alert rules
 ```
 
 ## Known limitations

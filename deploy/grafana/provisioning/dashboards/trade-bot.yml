@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: trade-bot
+    folder: trade-bot
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
