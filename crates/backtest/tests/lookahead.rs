@@ -1,5 +1,5 @@
 //! No-lookahead property (invariant 2), end to end: changing the future
-//! must not change the past, for ratio_hop and for sma_trend.
+//! must not change the past, for ratio_hop, sma_trend and buy_and_hold.
 //!
 //! For every cut point t, all candles after t are replaced (BTC halved,
 //! ETH doubled) and ratio_hop runs on both feeds. Every fill stamped at or
@@ -134,11 +134,9 @@ async fn changing_the_future_never_changes_the_past() {
     );
 }
 
-/// The same property for sma_trend on its single-coin fixture: halving
-/// every BTC candle after t must leave every fill and rejection up to t's
-/// close unchanged.
-#[tokio::test]
-async fn sma_trend_never_lets_the_future_change_the_past() {
+/// The same property on the single-coin BTC fixture: halving every candle
+/// after t must leave every fill and rejection up to t's close unchanged.
+async fn single_coin_property(strategy: &str, params: &str) {
     let btc: Vec<InstrumentId> = vec!["binance:BTCUSDT".parse().unwrap()];
     let dir = DataDir::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -165,15 +163,8 @@ async fn sma_trend_never_lets_the_future_change_the_past() {
                 RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
                 BpsSlippage::new(dec!(10)).unwrap(),
             );
-            let params = Params::from_toml(
-                r#"coin = "binance:BTCUSDT"
-                   sma_period = 3
-                   quote_amount = "1009.08"
-                   fee = "0.001"
-                   slippage_bps = "10""#,
-            )
-            .unwrap();
-            let mut s = strategy::build("sma_trend", &params).unwrap();
+            let params = Params::from_toml(params).unwrap();
+            let mut s = strategy::build(strategy, &params).unwrap();
             let config = EngineConfig {
                 whitelist: btc,
                 history_len: 10,
@@ -190,7 +181,7 @@ async fn sma_trend_never_lets_the_future_change_the_past() {
         assert_eq!(
             up_to(&base.fills, cut),
             up_to(&alt.fills, cut),
-            "sma_trend fills up to t{cut} changed when only candles after t{cut} did"
+            "{strategy} fills up to t{cut} changed when only candles after t{cut} did"
         );
         let horizon = Timestamp::from_millis(cut * HOUR + HOUR - 1);
         let early = |r: &RunReport| -> Vec<_> {
@@ -205,6 +196,31 @@ async fn sma_trend_never_lets_the_future_change_the_past() {
     }
     assert!(
         future_mattered,
-        "rewriting the future never changed any sma_trend fill"
+        "rewriting the future never changed any {strategy} fill"
     );
+}
+
+#[tokio::test]
+async fn sma_trend_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "sma_trend",
+        r#"coin = "binance:BTCUSDT"
+           sma_period = 3
+           quote_amount = "1009.08"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn buy_and_hold_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "buy_and_hold",
+        r#"coin = "binance:BTCUSDT"
+           quote_amount = "1009.08"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
 }
