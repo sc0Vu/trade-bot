@@ -8,6 +8,13 @@
 //! trade. That is an approximation: at most a minute of BNB price movement
 //! on a fee of a fraction of a percent. The multiplication itself is that
 //! pair's `Instrument::notional` (invariant 4).
+//!
+//! Binance publishes a minute's kline over REST a few seconds after the
+//! minute opens (about 5 s measured on demo trading, 2026-10-23), so a
+//! trade early in a minute is often valued before its candle exists. An
+//! empty reply is retried every [`CANDLE_RETRY`] for up to
+//! [`CANDLE_ATTEMPTS`] tries; a later candle in its place, or none after
+//! that, is an error, never a guessed price.
 
 use super::public::{parse_exchange_info, parse_klines};
 use super::signed::{Method, SignedClient};
@@ -16,6 +23,11 @@ use bot_core::{Fee, Fill, FillSpec, Instrument, InstrumentId, Interval, Symbol};
 use std::collections::HashMap;
 
 const MINUTE_MS: i64 = 60_000;
+/// Pause between asks for a fee candle not yet published.
+const CANDLE_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+/// Asks for a fee candle before giving up: about a minute, well past the
+/// measured publishing delay.
+const CANDLE_ATTEMPTS: u32 = 30;
 
 /// Fills in `value` on third-asset fees. Caches each fee pair's reference
 /// data for the life of the run.
@@ -62,25 +74,38 @@ impl FeeValuer {
         }
         let pair = &self.pairs[&pair_id];
         let minute = fill.ts.as_millis().div_euclid(MINUTE_MS) * MINUTE_MS;
-        let page = client
-            .public(
-                Method::Get,
-                "/api/v3/klines",
-                &[
-                    ("symbol", symbol.to_string()),
-                    ("interval", Interval::M1.code().to_owned()),
-                    ("startTime", minute.to_string()),
-                    ("limit", "1".to_owned()),
-                ],
-            )
-            .await?;
-        let candle = parse_klines(&page, &pair_id, Interval::M1)?
-            .into_iter()
-            .next()
-            .filter(|c| c.open_time.as_millis() == minute)
-            .ok_or_else(|| {
-                ExchangeError::Decode(format!("no {symbol} candle at the fee's minute"))
-            })?;
+        let mut attempt = 1;
+        let candle = loop {
+            let page = client
+                .public(
+                    Method::Get,
+                    "/api/v3/klines",
+                    &[
+                        ("symbol", symbol.to_string()),
+                        ("interval", Interval::M1.code().to_owned()),
+                        ("startTime", minute.to_string()),
+                        ("limit", "1".to_owned()),
+                    ],
+                )
+                .await?;
+            let first = parse_klines(&page, &pair_id, Interval::M1)?
+                .into_iter()
+                .next();
+            match first {
+                Some(c) if c.open_time.as_millis() == minute => break c,
+                // Empty: the minute isn't published yet.
+                None if attempt < CANDLE_ATTEMPTS => {
+                    attempt += 1;
+                    tokio::time::sleep(CANDLE_RETRY).await;
+                }
+                // A later minute in its place: ours will never come.
+                _ => {
+                    return Err(ExchangeError::Decode(format!(
+                        "no {symbol} candle at the fee's minute"
+                    )));
+                }
+            }
+        };
         let value = pair.notional(*amount, candle.close);
         let spec = FillSpec {
             fee: Fee::Other {
@@ -209,15 +234,57 @@ pub(crate) mod tests {
         assert!(t.sent().is_empty());
     }
 
-    #[tokio::test]
-    async fn missing_candle_is_an_error_not_a_guess() {
+    /// The trade's minute opened 1 s ago and isn't published yet: asked
+    /// again 2 s later, still nothing; on the third ask it's there.
+    #[tokio::test(start_paused = true)]
+    async fn unpublished_candle_is_waited_for() {
         let t = FakeTransport::default();
         t.reply(200, BNBUSDT_INFO);
         t.reply(200, "[]");
+        t.reply(200, "[]");
+        t.reply(200, &bnb_kline(120_000, "600.00"));
+        let start = tokio::time::Instant::now();
+        let got = FeeValuer::default()
+            .complete(&client(&t), &btcusdt(), fill(bnb(dec!(0.0001)), 121_000))
+            .await
+            .unwrap();
+        assert!(
+            matches!(got.fee, Fee::Other { value: Some(v), .. } if v == Notional::new(dec!(0.06)))
+        );
+        assert_eq!(start.elapsed(), std::time::Duration::from_secs(4));
+        assert_eq!(t.sent().len(), 4);
+    }
+
+    /// Never published: 30 asks over 58 s, then an error, not a guess.
+    #[tokio::test(start_paused = true)]
+    async fn missing_candle_is_an_error_not_a_guess() {
+        let t = FakeTransport::default();
+        t.reply(200, BNBUSDT_INFO);
+        for _ in 0..30 {
+            t.reply(200, "[]");
+        }
+        let start = tokio::time::Instant::now();
         let err = FeeValuer::default()
             .complete(&client(&t), &btcusdt(), fill(bnb(dec!(0.0001)), 150_000))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("BNBUSDT"), "{err}");
+        assert_eq!(start.elapsed(), std::time::Duration::from_secs(58));
+        assert_eq!(t.sent().len(), 31);
+    }
+
+    /// A later minute where the trade's should be: it will never come, so
+    /// no waiting.
+    #[tokio::test(start_paused = true)]
+    async fn later_candle_is_an_error_at_once() {
+        let t = FakeTransport::default();
+        t.reply(200, BNBUSDT_INFO);
+        t.reply(200, &bnb_kline(180_000, "600.00"));
+        let err = FeeValuer::default()
+            .complete(&client(&t), &btcusdt(), fill(bnb(dec!(0.0001)), 150_000))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("BNBUSDT"), "{err}");
+        assert_eq!(t.sent().len(), 2);
     }
 }
