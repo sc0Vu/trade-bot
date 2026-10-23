@@ -13,7 +13,7 @@ mod runner;
 
 pub use data::{DataDir, DataError, FetchSummary, fetch};
 pub use feed::KlineFeed;
-pub use provider::BacktestProvider;
+pub use provider::{BacktestProvider, PaperConfig};
 pub use report::Report;
 pub use runner::{BacktestError, run_backtest};
 

@@ -1,8 +1,9 @@
 //! Backtest report: P&L, drawdown, trade stats and Sharpe, all `Decimal`
 //! (invariant 1).
 //!
-//! The paper broker keeps no cash balance, so the report keeps its own
-//! ledger: it replays the fills, in order, against the candle stream.
+//! The report keeps its own cash ledger, independent of the paper broker's
+//! balance: it replays the fills, in order, against the candle stream, so
+//! a broker that let an overspend through still shows up here.
 //! Equity (cash plus holdings marked at each instrument's latest close) is
 //! taken once per close time, after every candle and fill up to it.
 
@@ -24,8 +25,9 @@ pub struct Report {
     /// Profit closed out by sells, after fees (average-cost accounting).
     pub realized_pnl: Notional,
     /// Lowest cash balance after any fill, starting at `initial_cash`.
-    /// Negative means the strategy spent quote it didn't have: the paper
-    /// broker has no cash balance to refuse it, so this is where it shows.
+    /// The backtest broker refuses buys it can't cover, so this stays at
+    /// or above zero; negative would mean quote spent that wasn't there,
+    /// a broker bug this independent ledger exists to expose.
     pub min_cash: Notional,
     /// Largest fall from a running equity peak, as a fraction of that peak
     /// (`0.25` = 25%). The peak starts at `initial_cash`.
@@ -339,8 +341,8 @@ mod tests {
         assert_eq!(r.sharpe, None);
     }
 
-    /// Buying 20 @ 100 with 1000 cash spends 2000: cash -1000. The broker
-    /// can't refuse it (no cash model), so the report must expose it.
+    /// Buying 20 @ 100 with 1000 cash spends 2000: cash -1000. The ledger
+    /// doesn't trust the broker to have refused it, so it must expose it.
     #[test]
     fn overspend_shows_as_negative_min_cash() {
         let id = btcusdt().id.clone();

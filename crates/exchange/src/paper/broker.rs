@@ -1,15 +1,24 @@
-use super::{Decision, FeeModel, FillModel, OrderState, SlippageModel};
+use super::{Decision, Execution, FeeModel, FillModel, OrderState, SlippageModel};
 use crate::{Broker, ExchangeError};
 use async_trait::async_trait;
 use bot_core::{
-    Candle, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent, Notional, Order,
-    OrderId, OrderKind, Position, Price, Qty, Side, Size,
+    Asset, Candle, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent, Notional,
+    Order, OrderId, OrderKind, Position, Price, Qty, Side, Size,
 };
 use std::collections::HashMap;
 
 struct Pending {
     order: Order,
     state: OrderState,
+    /// Quote held back for this buy (zero for sells): the most it can
+    /// spend, set at submit.
+    reserved: Notional,
+}
+
+/// The one quote balance the broker trades from.
+struct Cash {
+    asset: Asset,
+    balance: Notional,
 }
 
 /// Simulated broker for backtest and paper trading.
@@ -26,8 +35,23 @@ struct Pending {
 ///
 /// Rejects at submit what a spot venue would: unknown instruments, reused
 /// ids, and sells larger than the holding minus sells already pending.
-/// Does not model a cash balance yet, so buys are never refused for lack of
-/// quote.
+///
+/// Given a cash balance ([`PaperBroker::with_cash`]) it also refuses buys
+/// it can't pay for, at submit like Binance (`-2010`). Each pending buy
+/// reserves the most it can spend: a quote budget its budget; a limit or
+/// stop-limit its notional at the limit plus the larger of the maker and
+/// taker quote fee; a market or stop-market buy by quantity its notional
+/// at the last close (the stop, if higher), slipped, plus the taker fee.
+/// Available = balance − reservations + the expected proceeds of pending
+/// market sells (last close, slipped, less fee): live, a market sell fills
+/// at once, so a buy placed right after can spend what it raised, and
+/// rotating strategies depend on that. Resting limit sells don't count;
+/// they may never fill. When a buy fills, its actual cost is checked
+/// again against what is then available (an expected sale may have
+/// raised less, or been cancelled) and the buy is dropped unfilled if it
+/// no longer fits, so cash never goes negative. Orders on an instrument
+/// quoted in another asset are refused. Without a balance nothing is
+/// refused for lack of quote.
 pub struct PaperBroker {
     instruments: HashMap<InstrumentId, Instrument>,
     fill_model: Box<dyn FillModel>,
@@ -35,6 +59,10 @@ pub struct PaperBroker {
     fees: Box<dyn FeeModel>,
     pending: Vec<Pending>,
     positions: HashMap<InstrumentId, Position>,
+    cash: Option<Cash>,
+    /// Latest close per instrument: prices market orders for the balance
+    /// check.
+    last_close: HashMap<InstrumentId, Price>,
 }
 
 impl PaperBroker {
@@ -53,7 +81,118 @@ impl PaperBroker {
             fees,
             pending: Vec::new(),
             positions: HashMap::new(),
+            cash: None,
+            last_close: HashMap::new(),
         }
+    }
+
+    /// Trades from a balance of `balance` in `asset` (the quote of the
+    /// universe), refusing buys it can't cover. See the type docs.
+    pub fn with_cash(mut self, asset: Asset, balance: Notional) -> Self {
+        self.cash = Some(Cash { asset, balance });
+        self
+    }
+
+    /// Current quote balance, fills applied; `None` without one.
+    pub fn cash(&self) -> Option<Notional> {
+        self.cash.as_ref().map(|c| c.balance)
+    }
+
+    /// The larger of the maker and taker fee on a buy, where it is paid in
+    /// quote; zero where it is taken from the base received.
+    fn worst_quote_fee(&self, instrument: &Instrument, q: Qty, price: Price) -> Notional {
+        [Liquidity::Maker, Liquidity::Taker]
+            .into_iter()
+            .map(|l| quote_part(&self.fees.fee(instrument, Side::Buy, q, price, l)))
+            .max()
+            .unwrap_or(Notional::ZERO)
+    }
+
+    /// `price` worsened by taker slippage for `side`.
+    fn slipped(&self, instrument: &Instrument, side: Side, price: Price) -> Price {
+        self.slippage.apply(
+            instrument,
+            side,
+            Execution {
+                price,
+                liquidity: Liquidity::Taker,
+                at_open: true,
+            },
+        )
+    }
+
+    /// Most quote `order` can spend; zero for a sell.
+    fn reservation(&self, order: &Order) -> Result<Notional, ExchangeError> {
+        let Some(cash) = &self.cash else {
+            return Ok(Notional::ZERO);
+        };
+        let instrument = self
+            .instruments
+            .get(&order.instrument)
+            .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?;
+        if instrument.quote != cash.asset {
+            return Err(ExchangeError::Rejected(
+                "no balance in the order's quote asset",
+            ));
+        }
+        if order.side == Side::Sell {
+            return Ok(Notional::ZERO);
+        }
+        let qty = match order.size {
+            Size::Quote(budget) => return Ok(budget),
+            Size::Base(q) => q,
+        };
+        let price = match order.kind {
+            OrderKind::Limit { price, .. } => price,
+            OrderKind::StopLimit { limit, .. } => limit,
+            OrderKind::Market | OrderKind::StopMarket { .. } => {
+                let last = *self
+                    .last_close
+                    .get(&order.instrument)
+                    .ok_or(ExchangeError::Rejected("no price yet to check the balance"))?;
+                let base = match order.kind {
+                    OrderKind::StopMarket { stop } => last.max(stop),
+                    _ => last,
+                };
+                self.slipped(instrument, Side::Buy, base)
+            }
+        };
+        Ok(instrument.notional(qty, price) + self.worst_quote_fee(instrument, qty, price))
+    }
+
+    /// Quote a new buy may spend now: balance, less pending reservations,
+    /// plus the expected proceeds of pending market sells.
+    fn available(&self) -> Notional {
+        let Some(cash) = &self.cash else {
+            return Notional::ZERO;
+        };
+        let mut free = cash.balance;
+        for p in &self.pending {
+            free -= p.reserved;
+            if p.order.side == Side::Sell && p.order.kind == OrderKind::Market {
+                free += self.expected_proceeds(&p.order);
+            }
+        }
+        free
+    }
+
+    /// What a pending market sell should raise at the last close, slipped,
+    /// less a quote fee; zero if there is no close to price it.
+    fn expected_proceeds(&self, order: &Order) -> Notional {
+        let (Some(instrument), Some(last), Size::Base(q)) = (
+            self.instruments.get(&order.instrument),
+            self.last_close.get(&order.instrument),
+            order.size,
+        ) else {
+            return Notional::ZERO;
+        };
+        let price = self.slipped(instrument, Side::Sell, *last);
+        let fee = quote_part(
+            &self
+                .fees
+                .fee(instrument, Side::Sell, q, price, Liquidity::Taker),
+        );
+        instrument.notional(q, price) - fee
     }
 
     fn pending_sell_qty(&self, id: &InstrumentId) -> Qty {
@@ -137,6 +276,13 @@ impl PaperBroker {
                 return None;
             }
         };
+        let notional = instrument.notional(fill.qty, fill.price);
+        let quote_fee = quote_part(&fill.fee);
+        if order.side == Side::Buy && self.cash.is_some() && notional + quote_fee > self.available()
+        {
+            tracing::warn!(order = %order.id, "insufficient balance at fill; order dropped");
+            return None;
+        }
         let position = self
             .positions
             .entry(order.instrument.clone())
@@ -145,7 +291,22 @@ impl PaperBroker {
             tracing::warn!(order = %order.id, error = %e, "paper fill rejected by position; order dropped");
             return None;
         }
+        if let Some(cash) = &mut self.cash {
+            match order.side {
+                Side::Buy => cash.balance -= notional + quote_fee,
+                Side::Sell => cash.balance += notional - quote_fee,
+            }
+        }
         Some(fill)
+    }
+}
+
+/// The part of a fee paid in quote: a quote fee, or a third-asset fee
+/// valued in quote (as position accounting counts it).
+fn quote_part(fee: &Fee) -> Notional {
+    match fee {
+        Fee::Quote(n) | Fee::Other { value: Some(n), .. } => *n,
+        Fee::Base(_) | Fee::Other { value: None, .. } => Notional::ZERO,
     }
 }
 
@@ -176,6 +337,10 @@ impl Broker for PaperBroker {
                 return Err(ExchangeError::Rejected("sell exceeds holding"));
             }
         }
+        let reserved = self.reservation(&order)?;
+        if reserved > self.available() {
+            return Err(ExchangeError::Rejected("insufficient balance"));
+        }
         let id = order.id.clone();
         self.pending.push(Pending {
             order,
@@ -183,6 +348,7 @@ impl Broker for PaperBroker {
                 triggered: false,
                 first_look: true,
             },
+            reserved,
         });
         Ok(id)
     }
@@ -201,31 +367,40 @@ impl Broker for PaperBroker {
             return Ok(Vec::new());
         };
         let mut fills = Vec::new();
-        let mut still_pending = Vec::with_capacity(self.pending.len());
-        for mut p in std::mem::take(&mut self.pending) {
+        // In place, so a filling order is checked against the orders still
+        // pending around it.
+        let mut i = 0;
+        while i < self.pending.len() {
+            let p = &self.pending[i];
             // Only candles that opened after the order was decided: the bar
             // it was decided on (or any earlier one) can't fill it.
             if p.order.instrument != candle.instrument || candle.open_time <= p.order.created_at {
-                still_pending.push(p);
+                i += 1;
                 continue;
             }
             match self.fill_model.evaluate(&p.order, p.state, candle) {
-                Decision::Fill(exec) => fills.extend(self.execute(&p.order, candle, exec)),
+                Decision::Fill(exec) => {
+                    let p = self.pending.remove(i);
+                    fills.extend(self.execute(&p.order, candle, exec));
+                }
                 Decision::Trigger => {
-                    p.state = OrderState {
+                    self.pending[i].state = OrderState {
                         triggered: true,
                         first_look: true,
                     };
-                    still_pending.push(p);
+                    i += 1;
                 }
                 Decision::Rest => {
-                    p.state.first_look = false;
-                    still_pending.push(p);
+                    self.pending[i].state.first_look = false;
+                    i += 1;
                 }
-                Decision::Expire => {}
+                Decision::Expire => {
+                    self.pending.remove(i);
+                }
             }
         }
-        self.pending = still_pending;
+        self.last_close
+            .insert(candle.instrument.clone(), candle.close);
         Ok(fills)
     }
 
@@ -504,5 +679,187 @@ mod tests {
             .unwrap();
         assert_eq!(fills[0].liquidity, Liquidity::Taker);
         assert_eq!(fills[0].price, Price::new(dec!(101)));
+    }
+
+    fn cashed(balance: rust_decimal::Decimal, slippage_bps: rust_decimal::Decimal) -> PaperBroker {
+        broker(slippage_bps).with_cash(btcusdt().quote.clone(), Notional::new(balance))
+    }
+
+    fn buy_with(id: &str, budget: rust_decimal::Decimal, decided_on: i64) -> Order {
+        Order::new(OrderSpec {
+            size: Size::Quote(Notional::new(budget)),
+            ..market(id, Side::Buy, dec!(1), decided_on).into()
+        })
+        .unwrap()
+    }
+
+    fn limit_buy(id: &str, qty: rust_decimal::Decimal, price: rust_decimal::Decimal) -> Order {
+        Order::new(OrderSpec {
+            kind: OrderKind::Limit {
+                price: Price::new(price),
+                tif: bot_core::TimeInForce::Gtc,
+            },
+            ..market(id, Side::Buy, qty, 0).into()
+        })
+        .unwrap()
+    }
+
+    fn rejected(r: Result<OrderId, ExchangeError>) -> bool {
+        matches!(r, Err(ExchangeError::Rejected(_)))
+    }
+
+    #[tokio::test]
+    async fn refuses_a_budget_beyond_the_balance() {
+        let mut b = cashed(dec!(1000), dec!(0));
+        assert!(rejected(b.submit(buy_with("o-1", dec!(1000.01), 0)).await));
+        b.submit(buy_with("o-2", dec!(1000), 0)).await.unwrap();
+        // The whole balance is now reserved.
+        assert!(rejected(b.submit(buy_with("o-3", dec!(5), 0)).await));
+    }
+
+    /// Fee 0.1% in quote. Limit 9 @ 100 reserves 900 + 0.9 = 900.9; 1 @
+    /// 100 more would need 100.1, total 1001 > 1000. Cancelling the first
+    /// frees its reservation.
+    #[tokio::test]
+    async fn resting_limit_buys_reserve_their_cost() {
+        let mut b = PaperBroker::new(
+            vec![btcusdt()],
+            Box::new(NextOpenFillModel),
+            Box::new(BpsSlippage::zero()),
+            Box::new(RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Quote).unwrap()),
+        )
+        .with_cash(btcusdt().quote.clone(), Notional::new(dec!(1000)));
+        b.submit(limit_buy("o-1", dec!(9), dec!(100)))
+            .await
+            .unwrap();
+        assert!(rejected(
+            b.submit(limit_buy("o-2", dec!(1), dec!(100))).await
+        ));
+        b.cancel(OrderId::new("o-1").unwrap()).await.unwrap();
+        b.submit(limit_buy("o-2", dec!(1), dec!(100)))
+            .await
+            .unwrap();
+    }
+
+    /// Cash 2000, fee 0.1% in the received asset. Buy 10 @ 101 (base fee):
+    /// cash 2000 - 1010 = 990. Sell 5 @ 102: 510 less quote fee 0.51 =
+    /// 509.49; cash 1499.49.
+    #[tokio::test]
+    async fn fills_move_the_balance() {
+        let mut b = cashed(dec!(2000), dec!(0));
+        b.settle(&ev(0, ["100", "100", "100", "100"]))
+            .await
+            .unwrap();
+        b.submit(market("o-1", Side::Buy, dec!(10), 0))
+            .await
+            .unwrap();
+        b.settle(&ev(1, ["101", "101", "101", "101"]))
+            .await
+            .unwrap();
+        assert_eq!(b.cash(), Some(Notional::new(dec!(990))));
+        b.submit(market("o-2", Side::Sell, dec!(5), 1))
+            .await
+            .unwrap();
+        b.settle(&ev(2, ["102", "102", "102", "102"]))
+            .await
+            .unwrap();
+        assert_eq!(b.cash(), Some(Notional::new(dec!(1499.49))));
+    }
+
+    /// Holding 9.99 BTC (bought 10 @ 101, base fee) with cash 990, last
+    /// close 102. A 1500 buy alone is refused. After a market sell of the
+    /// holding, it fits: 990 + 9.99 * 102 = 1018.98 less fee 1.01898 =
+    /// 2007.96102 available. At the next open (102) the sale lands first,
+    /// then the buy: 1500 / 102 -> lot 14.70588, spend 1499.99976; cash
+    /// 2007.96102 - 1499.99976 = 507.96126.
+    #[tokio::test]
+    async fn a_same_bar_market_sale_can_fund_a_buy() {
+        let mut b = cashed(dec!(2000), dec!(0));
+        b.settle(&ev(0, ["100", "100", "100", "100"]))
+            .await
+            .unwrap();
+        b.submit(market("o-1", Side::Buy, dec!(10), 0))
+            .await
+            .unwrap();
+        b.settle(&ev(1, ["101", "102", "101", "102"]))
+            .await
+            .unwrap();
+        assert!(rejected(b.submit(buy_with("o-2", dec!(1500), 1)).await));
+        b.submit(market("o-3", Side::Sell, dec!(9.99), 1))
+            .await
+            .unwrap();
+        b.submit(buy_with("o-4", dec!(1500), 1)).await.unwrap();
+        let fills = b
+            .settle(&ev(2, ["102", "102", "102", "102"]))
+            .await
+            .unwrap();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[1].qty, Qty::new(dec!(14.70588)));
+        assert_eq!(b.cash(), Some(Notional::new(dec!(507.96126))));
+    }
+
+    /// As above, but the sale is cancelled before the bar: the buy no
+    /// longer fits at its fill (1499.99976 > 990) and is dropped unfilled.
+    #[tokio::test]
+    async fn a_buy_that_no_longer_fits_at_its_fill_is_dropped() {
+        let mut b = cashed(dec!(2000), dec!(0));
+        b.settle(&ev(0, ["100", "100", "100", "100"]))
+            .await
+            .unwrap();
+        b.submit(market("o-1", Side::Buy, dec!(10), 0))
+            .await
+            .unwrap();
+        b.settle(&ev(1, ["101", "102", "101", "102"]))
+            .await
+            .unwrap();
+        b.submit(market("o-3", Side::Sell, dec!(9.99), 1))
+            .await
+            .unwrap();
+        b.submit(buy_with("o-4", dec!(1500), 1)).await.unwrap();
+        b.cancel(OrderId::new("o-3").unwrap()).await.unwrap();
+        let fills = b
+            .settle(&ev(2, ["102", "102", "102", "102"]))
+            .await
+            .unwrap();
+        assert!(fills.is_empty());
+        assert_eq!(b.cash(), Some(Notional::new(dec!(990))));
+        assert!(b.open_orders().is_empty());
+    }
+
+    /// A market buy by quantity is priced at the last close, slipped: 10
+    /// bps on 100 = 100.1 for 1 BTC (fee in base). Before any close it
+    /// can't be priced and is refused.
+    #[tokio::test]
+    async fn a_market_buy_by_quantity_reserves_the_slipped_close() {
+        let mut short = cashed(dec!(100.09), dec!(10));
+        assert!(rejected(
+            short.submit(market("o-1", Side::Buy, dec!(1), 0)).await
+        ));
+        short
+            .settle(&ev(0, ["100", "100", "100", "100"]))
+            .await
+            .unwrap();
+        assert!(rejected(
+            short.submit(market("o-1", Side::Buy, dec!(1), 0)).await
+        ));
+
+        let mut enough = cashed(dec!(100.1), dec!(10));
+        enough
+            .settle(&ev(0, ["100", "100", "100", "100"]))
+            .await
+            .unwrap();
+        enough
+            .submit(market("o-1", Side::Buy, dec!(1), 0))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refuses_orders_quoted_in_another_asset() {
+        let mut b = broker(dec!(0)).with_cash(
+            bot_core::Asset::new("BTC").unwrap(),
+            Notional::new(dec!(1000)),
+        );
+        assert!(rejected(b.submit(buy_with("o-1", dec!(10), 0)).await));
     }
 }

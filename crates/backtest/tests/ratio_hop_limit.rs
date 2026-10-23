@@ -7,7 +7,7 @@
 //! fills, maker, at the limit. Fee 0.1%; slippage 10 bps (taker only, so
 //! unused here: no limit is marketable at an open equal to it).
 
-use backtest::{BacktestProvider, DataDir, Report, run_backtest};
+use backtest::{BacktestProvider, DataDir, PaperConfig, Report, run_backtest};
 use bot_core::{InstrumentId, Interval, Notional, Timestamp};
 use engine::EngineConfig;
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
@@ -32,8 +32,11 @@ async fn run(fixture: &str, limit_timeout: u32) -> Report {
         Interval::H1,
         Timestamp::from_millis(0),
         Timestamp::from_millis(7 * 3_600_000),
-        RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-        BpsSlippage::new(dec!(10)).unwrap(),
+        PaperConfig {
+            fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+            slippage: BpsSlippage::new(dec!(10)).unwrap(),
+            initial_cash: Notional::new(dec!(1000)),
+        },
     )
     .unwrap();
     let params = Params::from_toml(&format!(
@@ -52,16 +55,9 @@ async fn run(fixture: &str, limit_timeout: u32) -> Report {
         whitelist: ids(),
         history_len: 10,
     };
-    run_backtest(
-        &provider,
-        s.as_mut(),
-        params,
-        &config,
-        Notional::new(dec!(1000)),
-        Interval::H1,
-    )
-    .await
-    .unwrap()
+    run_backtest(&provider, s.as_mut(), params, &config, Interval::H1)
+        .await
+        .unwrap()
 }
 
 /// Worked by hand, confirmed by owner 2026-10-22. Each leg is a limit at the last close; the next bar
@@ -155,8 +151,11 @@ async fn stale_limit_is_repriced_to_the_new_close() {
     let provider = BacktestProvider::new(
         instruments,
         candles,
-        RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-        BpsSlippage::new(dec!(10)).unwrap(),
+        PaperConfig {
+            fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+            slippage: BpsSlippage::new(dec!(10)).unwrap(),
+            initial_cash: Notional::new(dec!(1000)),
+        },
     );
     let params = Params::from_toml(
         r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]

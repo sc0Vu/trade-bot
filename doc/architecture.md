@@ -205,8 +205,16 @@ every time:
 - If a stop and a target fall in one candle, the model can't know which came
   first, and it assumes the worse.
 
-The paper broker refuses sells beyond the holding minus pending sells. It
-keeps no cash balance, so buys aren't refused for lack of quote. A finer
+The paper broker refuses sells beyond the holding minus pending sells. In
+a backtest it also trades from the initial cash and refuses, at submit, a
+buy it can't cover, as Binance does. Each pending buy reserves the most it
+can spend (its quote budget, its notional at the limit, or a market buy's
+notional at the last close plus slippage). A pending market sell's
+expected proceeds count as available: live, a market sell fills at once,
+so a buy placed right after it can spend them, and rotating strategies
+rely on that. When a buy fills, its actual cost is checked again, and if
+it no longer fits (the sale raised less, or was cancelled) the buy is
+dropped unfilled, so cash never goes negative. A finer
 `VolumeFillModel` (capping fills at a share of bar volume) can be plugged in
 later; the engine and strategies never see which model is in use.
 
@@ -218,9 +226,9 @@ All figures are exact decimals:
   The report keeps its own cash ledger by replaying fills.
 - **Maximum drawdown** is a fraction of the running peak, which starts at
   the initial cash.
-- **`min_cash`** is the lowest cash after any fill. A negative value means
-  the strategy overspent, which the broker can't refuse, so the report has
-  to show it.
+- **`min_cash`** is the lowest cash after any fill. The report's ledger is
+  independent of the broker's balance, so a negative value would expose a
+  broker that let an overspend through.
 - **A closed trade** is a sell, and it counts as a win if its realized P&L
   is positive.
 - **Sharpe** is the mean over the sample standard deviation of per-bar

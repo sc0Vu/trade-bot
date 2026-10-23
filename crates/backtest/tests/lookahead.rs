@@ -8,8 +8,8 @@
 //! influence them. A strategy, engine or broker that peeked ahead would
 //! break this.
 
-use backtest::{BacktestProvider, DataDir};
-use bot_core::{Candle, CandleSpec, Decimal, Fill, InstrumentId, Interval, Timestamp};
+use backtest::{BacktestProvider, DataDir, PaperConfig};
+use bot_core::{Candle, CandleSpec, Decimal, Fill, InstrumentId, Interval, Notional, Timestamp};
 use engine::{EngineConfig, RunReport};
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
 use rust_decimal_macros::dec;
@@ -36,8 +36,11 @@ fn fixture() -> (Vec<bot_core::Instrument>, Vec<Candle>) {
         Interval::H1,
         Timestamp::from_millis(0),
         Timestamp::from_millis(BARS * HOUR),
-        RateFee::zero(),
-        BpsSlippage::zero(),
+        PaperConfig {
+            fees: RateFee::zero(),
+            slippage: BpsSlippage::zero(),
+            initial_cash: Notional::new(dec!(10000)),
+        },
     )
     .unwrap();
     (p.instruments().to_vec(), p.candles().to_vec())
@@ -76,8 +79,11 @@ async fn run(instruments: &[bot_core::Instrument], candles: Vec<Candle>) -> RunR
     let provider = BacktestProvider::new(
         instruments.to_vec(),
         candles,
-        RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-        BpsSlippage::new(dec!(10)).unwrap(),
+        PaperConfig {
+            fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+            slippage: BpsSlippage::new(dec!(10)).unwrap(),
+            initial_cash: Notional::new(dec!(10000)),
+        },
     );
     let params = Params::from_toml(
         r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
@@ -148,8 +154,11 @@ async fn single_coin_property(fixture: &str, bars: i64, strategy: &str, params: 
         Interval::H1,
         Timestamp::from_millis(0),
         Timestamp::from_millis(bars * HOUR),
-        RateFee::zero(),
-        BpsSlippage::zero(),
+        PaperConfig {
+            fees: RateFee::zero(),
+            slippage: BpsSlippage::zero(),
+            initial_cash: Notional::new(dec!(10000)),
+        },
     )
     .unwrap();
     let (instruments, candles) = (cached.instruments().to_vec(), cached.candles().to_vec());
@@ -160,8 +169,11 @@ async fn single_coin_property(fixture: &str, bars: i64, strategy: &str, params: 
             let provider = BacktestProvider::new(
                 instruments,
                 candles,
-                RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-                BpsSlippage::new(dec!(10)).unwrap(),
+                PaperConfig {
+                    fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+                    slippage: BpsSlippage::new(dec!(10)).unwrap(),
+                    initial_cash: Notional::new(dec!(10000)),
+                },
             );
             let params = Params::from_toml(params).unwrap();
             let mut s = strategy::build(strategy, &params).unwrap();
@@ -245,8 +257,11 @@ async fn momentum_rotation_never_lets_the_future_change_the_past() {
         Interval::H1,
         Timestamp::from_millis(0),
         Timestamp::from_millis(BARS * HOUR),
-        RateFee::zero(),
-        BpsSlippage::zero(),
+        PaperConfig {
+            fees: RateFee::zero(),
+            slippage: BpsSlippage::zero(),
+            initial_cash: Notional::new(dec!(10000)),
+        },
     )
     .unwrap();
     let (instruments, candles) = (cached.instruments().to_vec(), cached.candles().to_vec());
@@ -256,8 +271,11 @@ async fn momentum_rotation_never_lets_the_future_change_the_past() {
             let provider = BacktestProvider::new(
                 instruments,
                 candles,
-                RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-                BpsSlippage::new(dec!(10)).unwrap(),
+                PaperConfig {
+                    fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+                    slippage: BpsSlippage::new(dec!(10)).unwrap(),
+                    initial_cash: Notional::new(dec!(10000)),
+                },
             );
             let params = Params::from_toml(
                 r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]

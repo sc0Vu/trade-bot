@@ -8,7 +8,7 @@
 //! taker in the received asset; slippage 10 bps on taker fills, rounded to
 //! the tick against the trader.
 
-use backtest::{BacktestProvider, DataDir, Report, run_backtest};
+use backtest::{BacktestProvider, DataDir, PaperConfig, Report, run_backtest};
 use bot_core::{Fee, InstrumentId, Interval, Notional, Price, Qty, Side, Timestamp};
 use engine::{EngineConfig, RunReport};
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
@@ -25,6 +25,10 @@ fn ids() -> Vec<InstrumentId> {
 }
 
 fn provider() -> BacktestProvider {
+    provider_with(dec!(990.99))
+}
+
+fn provider_with(cash: rust_decimal::Decimal) -> BacktestProvider {
     let dir = DataDir::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/momentum_rotation"
@@ -35,8 +39,11 @@ fn provider() -> BacktestProvider {
         Interval::H1,
         Timestamp::from_millis(0),
         Timestamp::from_millis(8 * HOUR),
-        RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-        BpsSlippage::new(dec!(10)).unwrap(),
+        PaperConfig {
+            fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+            slippage: BpsSlippage::new(dec!(10)).unwrap(),
+            initial_cash: Notional::new(cash),
+        },
     )
     .unwrap()
 }
@@ -70,16 +77,9 @@ async fn engine_run() -> RunReport {
 async fn report() -> Report {
     let p = params();
     let mut s = strategy::build("momentum_rotation", &p).unwrap();
-    run_backtest(
-        &provider(),
-        s.as_mut(),
-        p,
-        &config(),
-        Notional::new(dec!(990.99)),
-        Interval::H1,
-    )
-    .await
-    .unwrap()
+    run_backtest(&provider(), s.as_mut(), p, &config(), Interval::H1)
+        .await
+        .unwrap()
 }
 
 /// Worked by hand (Python decimal, 28 digits); confirmed by owner, 2026-10-23.
@@ -177,4 +177,31 @@ async fn report_matches_the_hand_worked_run() {
     assert_eq!(r.min_cash, Notional::ZERO);
     assert_eq!(r.max_drawdown.round_dp(12), dec!(0.081079421050));
     assert_eq!(r.sharpe.unwrap().round_dp(6), dec!(-11.926392));
+}
+
+/// Same run starting with 990, a cent short of the 990.99 entry. Every
+/// buy the hand-worked run makes is refused at submit, as Binance would
+/// (`-2010`), and the strategy stays in cash: the targets are BTC at t2
+/// and t3 and ETH at t4 and t5 (each not held, so bought again), cash at
+/// t6 and t7 with nothing to sell. 4 refusals, no fills; equity stays 990,
+/// so no drawdown and no Sharpe (zero volatility).
+#[tokio::test]
+async fn buys_beyond_the_balance_are_refused() {
+    let p = params();
+    let mut s = strategy::build("momentum_rotation", &p).unwrap();
+    let r = run_backtest(
+        &provider_with(dec!(990)),
+        s.as_mut(),
+        p,
+        &config(),
+        Interval::H1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.fills, 0);
+    assert_eq!(r.rejected_signals, 4);
+    assert_eq!(r.final_equity, Notional::new(dec!(990)));
+    assert_eq!(r.min_cash, Notional::new(dec!(990)));
+    assert_eq!(r.max_drawdown, dec!(0));
+    assert_eq!(r.sharpe, None);
 }

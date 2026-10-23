@@ -11,7 +11,7 @@ mod state;
 mod telemetry;
 
 use anyhow::Context;
-use backtest::{BacktestProvider, DataDir, fetch, run_backtest};
+use backtest::{BacktestProvider, DataDir, PaperConfig, fetch, run_backtest};
 use bot_core::{Decimal, InstrumentId, Interval, Notional, Symbol, Timestamp, VenueId};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use engine::EngineConfig;
@@ -221,7 +221,8 @@ struct BacktestArgs {
     /// Day to stop before, `YYYY-MM-DD` (UTC).
     #[arg(long, value_parser = date::parse)]
     to: Timestamp,
-    /// Starting cash for the report, in quote.
+    /// Starting cash in quote: the paper broker's balance (buys beyond it
+    /// are refused) and the report's starting equity.
     #[arg(long, default_value = "1000", value_parser = parse_decimal)]
     initial_cash: Decimal,
     /// Maker and taker fee as a fraction (`0.001` = 0.1%), charged in the
@@ -268,23 +269,18 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         a.interval,
         a.from,
         a.to,
-        fees,
-        slippage,
+        PaperConfig {
+            fees,
+            slippage,
+            initial_cash: Notional::new(a.initial_cash),
+        },
     )?;
     let mut strategy = strategy::build(&a.strategy, &params)?;
     let config = EngineConfig {
         whitelist: ids,
         history_len: a.history_len,
     };
-    let report = run_backtest(
-        &provider,
-        strategy.as_mut(),
-        params,
-        &config,
-        Notional::new(a.initial_cash),
-        a.interval,
-    )
-    .await?;
+    let report = run_backtest(&provider, strategy.as_mut(), params, &config, a.interval).await?;
     println!("{report}");
     println!("(model output under the stated fill model; unverified against live)");
     Ok(())

@@ -317,7 +317,9 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    cash ledger (broker has none) replaying fills vs candles; equity = cash +
    holdings at latest close, once per close time. Max drawdown = fraction of
    running peak (starts at initial cash). `min_cash` = lowest cash after any
-   fill; negative = overspent (broker can't refuse, report must show). Closed trade = sell; win = realized
+   fill; report ledger independent of broker → negative = broker let overspend through (bug).
+   `BacktestProvider` takes `initial_cash` = PaperBroker balance (first
+   instrument's quote; other-quoted orders refused) = report start. Closed trade = sell; win = realized
    delta > 0. Sharpe = mean/sample-sd of per-bar equity returns × √(bars/yr,
    24/7: 8760 at 1h), rf 0; `None` if < 2 returns or zero sd.
    `cli backtest --slippage-bps` (and `make backtest SLIPPAGE_BPS=`) required,
@@ -355,8 +357,17 @@ Candle = four prices, can't tell whether high or low first. So:
 - fee (taker/maker rate, received asset like Binance or quote) every fill;
   slippage (bps) taker fills only, rounded to tick against trader. Maker
   fills never slipped: limit can't fill worse than itself.
-- PaperBroker refuses sells > holding − pending sells. No cash balance
-  yet: buys not refused for lack of quote.
+- PaperBroker refuses sells > holding − pending sells. With balance
+  (`with_cash`; backtest always) refuses unaffordable buy at submit like
+  Binance `-2010` (→ `RunReport` rejection). Pending buy reserves max
+  spend: quote budget = budget; limit/stop-limit = notional at limit +
+  worse of maker/taker quote fee; market/stop by qty = last close (stop if
+  higher) slipped + taker fee (no close yet → refused). Available =
+  balance − reservations + pending market sells' expected proceeds (last
+  close slipped, less fee): live market sell fills at once, buy right
+  after spends it (rotations). Resting limit sells not counted. At fill
+  buy re-checked on actual cost (sale raised less / cancelled) → dropped
+  unfilled; cash never negative.
 - **intra-bar ambiguity**: stop and target both in one candle →
   model can't know which first, assumes worse. Finer-timeframe
   replay = future. Backtest P&L = model output, never promise.
@@ -419,8 +430,8 @@ open order: return over `lookback` bars per coin (needs `lookback + 1`
 closes each, else nothing); best (tie → first listed) is target if return >
 `min_momentum` (default 0), else cash. Sell every held coin ≠ target (sells
 first), buy target if not held. Entry = fixed `quote_amount`, not sale
-proceeds: losing hop overspends (backtest negative `min_cash`; live `-2010`,
-stays cash). Bets winners persist; fails on sharp reversals, choppy
+proceeds: losing hop can't afford entry (backtest and live refuse,
+`-2010`; stays cash). Bets winners persist; fails on sharp reversals, choppy
 leadership. Dust = cash.
 
 `donchian_breakout` — `sma_trend` skeleton. Channel = highest high / lowest low

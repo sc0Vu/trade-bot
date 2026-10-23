@@ -8,7 +8,7 @@
 //! 10 bps in the strategy's estimate: no fill happens at a price the
 //! decision saw.
 
-use backtest::{BacktestProvider, DataDir, Report, run_backtest};
+use backtest::{BacktestProvider, DataDir, PaperConfig, Report, run_backtest};
 use bot_core::{InstrumentId, Interval, Notional, Timestamp};
 use engine::EngineConfig;
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
@@ -35,8 +35,11 @@ async fn run(freefall_pct: &str) -> Report {
         Interval::H1,
         Timestamp::from_millis(0),
         Timestamp::from_millis(7 * 3_600_000),
-        RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-        BpsSlippage::new(SLIPPAGE_BPS.parse().unwrap()).unwrap(),
+        PaperConfig {
+            fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+            slippage: BpsSlippage::new(SLIPPAGE_BPS.parse().unwrap()).unwrap(),
+            initial_cash: Notional::new(dec!(1000)),
+        },
     )
     .unwrap();
     let params = Params::from_toml(&format!(
@@ -54,16 +57,9 @@ async fn run(freefall_pct: &str) -> Report {
         whitelist: ids(),
         history_len: 10,
     };
-    run_backtest(
-        &provider,
-        s.as_mut(),
-        params,
-        &config,
-        Notional::new(dec!(1000)),
-        Interval::H1,
-    )
-    .await
-    .unwrap()
+    run_backtest(&provider, s.as_mut(), params, &config, Interval::H1)
+        .await
+        .unwrap()
 }
 
 /// Expected values (confirmed by owner, 2026-10-22), worked by hand.

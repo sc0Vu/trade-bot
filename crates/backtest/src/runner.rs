@@ -1,5 +1,5 @@
 use crate::{BacktestProvider, Report};
-use bot_core::{Interval, Notional};
+use bot_core::Interval;
 use engine::{EngineConfig, EngineError};
 use strategy::{Params, Strategy};
 use thiserror::Error;
@@ -11,14 +11,14 @@ pub enum BacktestError {
 }
 
 /// Runs `strategy` over the provider's candles through the shared engine
-/// loop and reports the result. `initial_cash` seeds the report's cash
-/// ledger; `interval` annualizes Sharpe.
+/// loop and reports the result. The provider's initial cash is both the
+/// broker's balance and the report's starting equity; `interval`
+/// annualizes Sharpe.
 pub async fn run_backtest(
     provider: &BacktestProvider,
     strategy: &mut dyn Strategy,
     params: Params,
     config: &EngineConfig,
-    initial_cash: Notional,
     interval: Interval,
 ) -> Result<Report, BacktestError> {
     let run = engine::run(provider, strategy, params, config).await?;
@@ -26,7 +26,7 @@ pub async fn run_backtest(
         &run,
         provider.candles(),
         provider.instruments(),
-        initial_cash,
+        provider.initial_cash(),
         interval,
     ))
 }
@@ -34,7 +34,9 @@ pub async fn run_backtest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PaperConfig;
     use crate::test_support::{btcusdt, candle};
+    use bot_core::Notional;
     use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
     use rust_decimal_macros::dec;
 
@@ -53,8 +55,11 @@ mod tests {
                 candle(&id, 1, ["101", "103", "100", "102"]),
                 candle(&id, 2, ["102", "104", "101", "103"]),
             ],
-            RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-            BpsSlippage::zero(),
+            PaperConfig {
+                fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+                slippage: BpsSlippage::zero(),
+                initial_cash: Notional::new(dec!(1000)),
+            },
         );
         let params = Params::from_toml(
             "coin = \"binance:BTCUSDT\"\nquote_amount = \"1000\"\nfee = \"0.001\"\nslippage_bps = \"0\"",
@@ -65,16 +70,9 @@ mod tests {
             whitelist: vec![id],
             history_len: 10,
         };
-        let r = run_backtest(
-            &provider,
-            s.as_mut(),
-            params,
-            &config,
-            Notional::new(dec!(1000)),
-            Interval::H1,
-        )
-        .await
-        .unwrap();
+        let r = run_backtest(&provider, s.as_mut(), params, &config, Interval::H1)
+            .await
+            .unwrap();
         assert_eq!(r.fills, 1);
         assert_eq!(r.closed_trades, 0);
         assert_eq!(r.realized_pnl, Notional::ZERO);

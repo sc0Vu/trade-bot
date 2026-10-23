@@ -1,31 +1,40 @@
 use crate::{DataDir, DataError, KlineFeed};
 use async_trait::async_trait;
-use bot_core::{AssetClass, Candle, Instrument, InstrumentId, Interval, Timestamp};
+use bot_core::{AssetClass, Candle, Instrument, InstrumentId, Interval, Notional, Timestamp};
 use exchange::paper::{BpsSlippage, NextOpenFillModel, PaperBroker, RateFee};
 use exchange::{Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
+
+/// How the backtest's paper broker trades: its fee and slippage models and
+/// the quote it starts with.
+#[derive(Clone, Copy, Debug)]
+pub struct PaperConfig {
+    pub fees: RateFee,
+    pub slippage: BpsSlippage,
+    /// The broker's starting balance (buys beyond it are refused) and the
+    /// report's starting equity.
+    pub initial_cash: Notional,
+}
 
 /// Backtest venue: cached candles as the feed, a [`PaperBroker`] with the
 /// default [`NextOpenFillModel`] as the broker. The engine can't tell it
 /// from a live provider, which is the point (invariant 3).
+///
+/// The broker trades from the initial cash in the first instrument's quote
+/// asset and refuses buys it can't cover, as Binance would. The report
+/// values everything in that one quote, so a universe mixing quote assets
+/// gets its other-quoted orders refused.
 pub struct BacktestProvider {
     instruments: Vec<Instrument>,
     candles: Vec<Candle>,
-    fees: RateFee,
-    slippage: BpsSlippage,
+    paper: PaperConfig,
 }
 
 impl BacktestProvider {
-    pub fn new(
-        instruments: Vec<Instrument>,
-        candles: Vec<Candle>,
-        fees: RateFee,
-        slippage: BpsSlippage,
-    ) -> Self {
+    pub fn new(instruments: Vec<Instrument>, candles: Vec<Candle>, paper: PaperConfig) -> Self {
         Self {
             instruments,
             candles,
-            fees,
-            slippage,
+            paper,
         }
     }
 
@@ -37,8 +46,7 @@ impl BacktestProvider {
         interval: Interval,
         from: Timestamp,
         to: Timestamp,
-        fees: RateFee,
-        slippage: BpsSlippage,
+        paper: PaperConfig,
     ) -> Result<Self, DataError> {
         let mut instruments = Vec::new();
         let mut candles = Vec::new();
@@ -46,7 +54,7 @@ impl BacktestProvider {
             instruments.push(dir.read_instrument(id)?);
             candles.extend(dir.load_klines(id, interval, from, to)?);
         }
-        Ok(Self::new(instruments, candles, fees, slippage))
+        Ok(Self::new(instruments, candles, paper))
     }
 
     /// The candles this provider replays, in no particular order.
@@ -56,6 +64,11 @@ impl BacktestProvider {
 
     pub fn instruments(&self) -> &[Instrument] {
         &self.instruments
+    }
+
+    /// Quote the broker starts with; the report's starting equity.
+    pub fn initial_cash(&self) -> Notional {
+        self.paper.initial_cash
     }
 }
 
@@ -74,12 +87,16 @@ impl Provider for BacktestProvider {
     }
 
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
-        Ok(Box::new(PaperBroker::new(
+        let broker = PaperBroker::new(
             self.instruments.clone(),
             Box::new(NextOpenFillModel),
-            Box::new(self.slippage),
-            Box::new(self.fees),
-        )))
+            Box::new(self.paper.slippage),
+            Box::new(self.paper.fees),
+        );
+        Ok(Box::new(match self.instruments.first() {
+            Some(i) => broker.with_cash(i.quote.clone(), self.paper.initial_cash),
+            None => broker,
+        }))
     }
 
     async fn resolve(&self, query: &InstrumentQuery) -> Result<Vec<Instrument>, ExchangeError> {

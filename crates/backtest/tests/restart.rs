@@ -144,8 +144,11 @@ async fn run_case(c: &Case) {
         bot_core::Interval::H1,
         bot_core::Timestamp::from_millis(0),
         bot_core::Timestamp::from_millis(c.bars * 3_600_000),
-        RateFee::zero(),
-        BpsSlippage::zero(),
+        backtest::PaperConfig {
+            fees: RateFee::zero(),
+            slippage: BpsSlippage::zero(),
+            initial_cash: bot_core::Notional::new(dec!(10000)),
+        },
     )
     .unwrap();
     let instruments = cached.instruments().to_vec();

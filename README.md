@@ -249,8 +249,10 @@ deploy/       Prometheus, Alertmanager, Grafana (compose) and alert rules
   history; only the newest is traded on.
 - Strategy state is saved per strategy and restored only under the same
   params; changing a strategy's params (say, its coin list) starts it fresh.
-- No cash balance in the brokers: buys aren't refused for lack of quote
-  (the backtest report shows overspending as negative `min_cash`).
+- The backtest broker trades from `--initial-cash` in one quote asset and
+  refuses buys it can't cover, as Binance would. A buy placed right after
+  a market sell may count that sale's expected proceeds (last close); if
+  the sale raises less, the buy is dropped unfilled at the next bar.
 - BNB fees are valued at the BNB price in the trade's minute, an
   approximation, because Binance doesn't report its conversion rate.
 - MySQL is supported by the storage layer but untested.

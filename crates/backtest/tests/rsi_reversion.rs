@@ -7,7 +7,7 @@
 //! slippage 10 bps on taker fills, rounded to the 0.01 tick against the
 //! trader.
 
-use backtest::{BacktestProvider, DataDir, Report, run_backtest};
+use backtest::{BacktestProvider, DataDir, PaperConfig, Report, run_backtest};
 use bot_core::{Fee, InstrumentId, Interval, Notional, Price, Qty, Side, Timestamp};
 use engine::{EngineConfig, RunReport};
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
@@ -31,8 +31,11 @@ fn provider() -> BacktestProvider {
         Interval::H1,
         Timestamp::from_millis(0),
         Timestamp::from_millis(7 * HOUR),
-        RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
-        BpsSlippage::new(dec!(10)).unwrap(),
+        PaperConfig {
+            fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+            slippage: BpsSlippage::new(dec!(10)).unwrap(),
+            initial_cash: Notional::new(dec!(850.9)),
+        },
     )
     .unwrap()
 }
@@ -68,16 +71,9 @@ async fn engine_run() -> RunReport {
 async fn report() -> Report {
     let p = params();
     let mut s = strategy::build("rsi_reversion", &p).unwrap();
-    run_backtest(
-        &provider(),
-        s.as_mut(),
-        p,
-        &config(),
-        Notional::new(dec!(850.9)),
-        Interval::H1,
-    )
-    .await
-    .unwrap()
+    run_backtest(&provider(), s.as_mut(), p, &config(), Interval::H1)
+        .await
+        .unwrap()
 }
 
 /// Worked by hand (Python decimal, 28 digits); confirmed by owner,
