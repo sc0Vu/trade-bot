@@ -76,8 +76,7 @@ async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<
     Ok(Arc::new(store))
 }
 
-async fn run_bot(a: RunArgs) -> anyhow::Result<()> {
-    let cfg = config::Config::load(a.config.as_deref())?;
+async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
     gate::check_overrides(
         network,
@@ -345,22 +344,36 @@ async fn fetch_data(a: FetchArgs) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    // A live run must show its orders and fills without RUST_LOG set; a
-    // backtest logging every simulated order would bury its report.
-    let default = match cli.command {
-        // sqlx logs every SQL statement at info.
-        Command::Run(_) => "info,sqlx=warn",
-        _ => "warn",
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default)),
-        )
-        .init();
+    let rust_log = std::env::var("RUST_LOG").ok();
     match cli.command {
-        Command::FetchData(a) => fetch_data(a).await,
-        Command::Backtest(a) => backtest(a).await,
-        Command::Run(a) => run_bot(a).await,
+        Command::Run(a) => {
+            // Config first: it may set the level. Loading logs nothing, and
+            // a bad config is reported as main's error. A live run must
+            // show its orders and fills by default; sqlx logs every SQL
+            // statement at info.
+            let cfg = config::Config::load(a.config.as_deref())?;
+            init_logging(&config::log_filter(
+                rust_log,
+                cfg.log.level.as_deref(),
+                "info,sqlx=warn",
+            ));
+            run_bot(a, cfg).await
+        }
+        // A backtest logging every simulated order would bury its report.
+        Command::FetchData(a) => {
+            init_logging(&config::log_filter(rust_log, None, "warn"));
+            fetch_data(a).await
+        }
+        Command::Backtest(a) => {
+            init_logging(&config::log_filter(rust_log, None, "warn"));
+            backtest(a).await
+        }
     }
+}
+
+/// Installs the log subscriber with `filter` (already validated).
+fn init_logging(filter: &str) {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .init();
 }

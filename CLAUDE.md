@@ -517,6 +517,10 @@ Layered; each source overrides one above:
   gitignored) or env; only `config.example.toml` committed (and loaded by a
   test, so it can't rot). `exchange.network` defaults `testnet`. No field exists
   for a secret: `api_key` in a file = unknown-field error.
+- `[log] level` (`run` only): `RUST_LOG`-syntax filter, validated on load;
+  precedence `RUST_LOG` > config (`BOT_LOG__LEVEL` > file) > default
+  `info,sqlx=warn`. `run` loads config before logging starts (loading
+  logs nothing). backtest / fetch-data: `RUST_LOG` else `warn`.
 
 ## Definition of done (every change)
 Not finished until all hold — per task, not at end:

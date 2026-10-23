@@ -45,6 +45,27 @@ pub struct Config {
     pub metrics: MetricsSection,
     #[serde(default)]
     pub api: ApiSection,
+    #[serde(default)]
+    pub log: LogSection,
+}
+
+/// Logging for `run`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogSection {
+    /// A `tracing` filter, the syntax `RUST_LOG` takes (`"info,sqlx=warn"`,
+    /// `"info,exchange=debug"`). Unset: `info,sqlx=warn`. `RUST_LOG`, when
+    /// set, overrides it.
+    pub level: Option<String>,
+}
+
+/// The log filter for `run`: `RUST_LOG` if set and valid, else the
+/// configured `log.level`, else `default`.
+pub fn log_filter(rust_log: Option<String>, configured: Option<&str>, default: &str) -> String {
+    rust_log
+        .filter(|f| tracing_subscriber::EnvFilter::try_new(f).is_ok())
+        .or_else(|| configured.map(str::to_owned))
+        .unwrap_or_else(|| default.to_owned())
 }
 
 /// Env var holding the API's bearer token. Not `BOT_*`: that prefix is the
@@ -250,6 +271,10 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        if let Some(level) = &self.log.level {
+            tracing_subscriber::EnvFilter::try_new(level)
+                .with_context(|| format!("log.level {level:?} is not a valid filter"))?;
+        }
         if self.whitelist.is_empty() {
             bail!("whitelist is empty: list the instruments the bot may trade");
         }
@@ -309,6 +334,38 @@ mod tests {
             assert_eq!(c.strategy.params["quote_amount"].as_str(), Some("100"));
             Ok(())
         });
+    }
+
+    #[test]
+    fn log_level_loads_and_bad_filters_fail() {
+        Jail::expect_with(|_| {
+            assert_eq!(parse(MIN).unwrap().log.level, None);
+            let c = parse(&format!("{MIN}\n[log]\nlevel = \"debug,sqlx=error\"")).unwrap();
+            assert_eq!(c.log.level.as_deref(), Some("debug,sqlx=error"));
+            let err = parse(&format!("{MIN}\n[log]\nlevel = \"info,sqlx=loud\"")).unwrap_err();
+            assert!(format!("{err:#}").contains("log.level"), "{err:#}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn log_level_from_env() {
+        Jail::expect_with(|j| {
+            j.set_env("BOT_LOG__LEVEL", "warn");
+            assert_eq!(parse(MIN).unwrap().log.level.as_deref(), Some("warn"));
+            Ok(())
+        });
+    }
+
+    /// RUST_LOG wins, then the config, then the default; an invalid
+    /// RUST_LOG is skipped rather than half-applied.
+    #[test]
+    fn log_filter_precedence() {
+        let d = "info,sqlx=warn";
+        assert_eq!(log_filter(None, None, d), d);
+        assert_eq!(log_filter(None, Some("debug"), d), "debug");
+        assert_eq!(log_filter(Some("trace".into()), Some("debug"), d), "trace");
+        assert_eq!(log_filter(Some("x=loud".into()), Some("debug"), d), "debug");
     }
 
     /// The reported error: `interval = "1s"` must load.

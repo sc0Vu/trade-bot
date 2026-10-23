@@ -101,3 +101,11 @@ enabled = false
 # from this file); put TLS in front, since the token travels in a header.
 listen = "127.0.0.1:9185"
 allow_public = false
+
+[log]
+# What `run` logs, as a tracing filter (same syntax as RUST_LOG): a default
+# level plus per-crate overrides. Default "info,sqlx=warn" (sqlx logs every
+# SQL statement at info). RUST_LOG, when set, overrides this. A filter that
+# doesn't parse fails at startup.
+# level = "info,sqlx=error"      # also hide slow-statement warnings
+# level = "info,exchange=debug"  # more detail from the exchange layer
