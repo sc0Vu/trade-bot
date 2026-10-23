@@ -18,6 +18,11 @@
 //!   between the end of the backfill and the start of the stream, and it
 //!   drops any bar at or before the last one it emitted for that coin: the
 //!   overlap is expected.
+//! - **The backfill stops at the oldest coin's newest bar.** Coins are
+//!   fetched one by one; at short intervals a bar closes in between, and a
+//!   later coin's extra bar queued ahead of the stream would make time run
+//!   backwards. The stream delivers those bars instead. A warm-up fetches
+//!   a few bars extra per coin so each still gets its full `warmup`.
 //!
 //! Missed bars are merged across coins by (close time, instrument), the
 //! order the backtest feed uses. Errors other than feed errors (a
@@ -35,6 +40,10 @@ const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Most bars one gap backfill fetches per coin (one Binance klines page).
 const MAX_GAP: usize = 1000;
+/// Extra bars per coin a warm-up fetches, so a coin still has `warmup`
+/// bars once those past the cutoff are left to the stream: room for that
+/// many bars to close while the coins are fetched.
+const WARMUP_SLACK: usize = 60;
 
 /// Opens a live stream of closed candles.
 #[async_trait]
@@ -119,22 +128,57 @@ impl ReconnectingFeed {
     async fn try_connect(&mut self, first: bool) -> Result<(), ExchangeError> {
         let live = self.connector.connect().await?;
         let mut missed: Vec<Candle> = Vec::new();
+        // Newest bar each coin is known to have closed by, fetched or
+        // already emitted; the oldest of them bounds the backfill.
+        let mut cutoff: Option<Timestamp> = None;
         for id in &self.ids {
             let since = self.last.get(id).copied();
             if !first && since.is_none() {
                 continue; // no bar of this coin yet: nothing to fill
             }
-            let max = if first { self.warmup } else { MAX_GAP };
-            if max == 0 {
+            if first && self.warmup == 0 {
                 continue;
             }
-            missed.extend(self.source.recent(id, since, max).await?);
+            let max = if first {
+                self.warmup + WARMUP_SLACK
+            } else {
+                MAX_GAP
+            };
+            let bars = self.source.recent(id, since, max).await?;
+            if let Some(newest) = bars.last().map(|c| c.close_time).or(since) {
+                cutoff = Some(cutoff.map_or(newest, |c| c.min(newest)));
+            }
+            missed.extend(bars);
         }
+        // Coins are fetched one after another, so a later fetch can hold a
+        // bar that closed after an earlier one returned. Queued, it would
+        // precede the earlier coin's copy of that bar arriving on the
+        // stream: time going backwards. Leave everything past the cutoff
+        // to the stream, which has it: it was subscribed before any fetch.
         missed.retain(|c| {
-            self.last
-                .get(&c.instrument)
-                .is_none_or(|t| c.close_time > *t)
+            cutoff.is_none_or(|t| c.close_time <= t)
+                && self
+                    .last
+                    .get(&c.instrument)
+                    .is_none_or(|t| c.close_time > *t)
         });
+        if first {
+            // Each coin's bars are still together, oldest first: keep the
+            // newest `warmup` of each.
+            let mut kept: HashMap<InstrumentId, usize> = HashMap::new();
+            let mut keep: Vec<bool> = missed
+                .iter()
+                .rev()
+                .map(|c| {
+                    let n = kept.entry(c.instrument.clone()).or_default();
+                    *n += 1;
+                    *n <= self.warmup
+                })
+                .collect();
+            keep.reverse();
+            let mut keep = keep.into_iter();
+            missed.retain(|_| keep.next().unwrap_or(false));
+        }
         missed.sort_by(|a, b| (a.close_time, &a.instrument).cmp(&(b.close_time, &b.instrument)));
         let newest: HashMap<&InstrumentId, Timestamp> = missed
             .iter()
@@ -481,6 +525,84 @@ mod tests {
                 "C:ETHUSDT@1",
                 "B:BTCUSDT@2",
                 "B:ETHUSDT@2",
+                "C:BTCUSDT@3",
+                "C:ETHUSDT@3"
+            ]
+        );
+    }
+
+    /// A bar closes between the warm-up fetches: BTC's history ends at 3,
+    /// ETH's (fetched later) at 5. Queuing ETH 4 and 5 would put them
+    /// before the stream's BTC 4, time going backwards; they come from the
+    /// stream instead, in order.
+    #[tokio::test(start_paused = true)]
+    async fn warmup_stops_at_the_oldest_coins_newest_bar() {
+        let conns = Connections::default();
+        conns.push(Ok(live(
+            vec![
+                bar("BTCUSDT", 4),
+                bar("ETHUSDT", 4),
+                bar("BTCUSDT", 5),
+                bar("ETHUSDT", 5),
+            ],
+            None,
+        )));
+        let mut f = feed(
+            &conns,
+            vec![
+                ("BTCUSDT", (0..=3).collect()),
+                ("ETHUSDT", (0..=5).collect()),
+            ],
+            &["BTCUSDT", "ETHUSDT"],
+            2,
+        );
+        assert_eq!(
+            take(&mut f, 8).await,
+            vec![
+                "B:BTCUSDT@2",
+                "B:ETHUSDT@2",
+                "B:BTCUSDT@3",
+                "B:ETHUSDT@3",
+                "C:BTCUSDT@4",
+                "C:ETHUSDT@4",
+                "C:BTCUSDT@5",
+                "C:ETHUSDT@5"
+            ]
+        );
+    }
+
+    /// Gap backfill, same race: BTC has nothing new past its last bar 1
+    /// yet, ETH already has 2 and 3. Those come from the stream after
+    /// BTC 2, not ahead of it.
+    #[tokio::test(start_paused = true)]
+    async fn gap_stops_at_a_coin_with_nothing_new() {
+        let conns = Connections::default();
+        conns.push(Ok(live(
+            vec![bar("BTCUSDT", 1), bar("ETHUSDT", 1)],
+            drop_err(),
+        )));
+        conns.push(Ok(live(
+            vec![
+                bar("BTCUSDT", 2),
+                bar("ETHUSDT", 2),
+                bar("BTCUSDT", 3),
+                bar("ETHUSDT", 3),
+            ],
+            None,
+        )));
+        let mut f = feed(
+            &conns,
+            vec![("BTCUSDT", vec![0, 1]), ("ETHUSDT", vec![0, 1, 2, 3])],
+            &["BTCUSDT", "ETHUSDT"],
+            0,
+        );
+        assert_eq!(
+            take(&mut f, 6).await,
+            vec![
+                "C:BTCUSDT@1",
+                "C:ETHUSDT@1",
+                "C:BTCUSDT@2",
+                "C:ETHUSDT@2",
                 "C:BTCUSDT@3",
                 "C:ETHUSDT@3"
             ]
