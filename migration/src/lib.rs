@@ -14,6 +14,7 @@ mod m20261022_000001_create_trades_and_holdings;
 mod m20261022_000002_create_orders_and_venue_trade_ids;
 mod m20261022_000003_add_trade_fee_value;
 mod m20261023_000004_create_strategy_state;
+mod m20261026_000005_add_trade_client_order_id;
 
 /// Ordered list of every migration. Append only; never edit or reorder one
 /// that has shipped.
@@ -27,6 +28,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261022_000002_create_orders_and_venue_trade_ids::Migration),
             Box::new(m20261022_000003_add_trade_fee_value::Migration),
             Box::new(m20261023_000004_create_strategy_state::Migration),
+            Box::new(m20261026_000005_add_trade_client_order_id::Migration),
         ]
     }
 }
@@ -49,14 +51,29 @@ mod tests {
         assert!(schema.has_column("trades", "venue_trade_id").await.unwrap());
         assert!(schema.has_column("trades", "fee_value").await.unwrap());
         assert!(schema.has_table("strategy_state").await.unwrap());
+        assert!(
+            schema
+                .has_column("trades", "client_order_id")
+                .await
+                .unwrap()
+        );
         for (table, index) in [
             ("trades", "idx_trades_instrument_ts"),
             ("trades", "idx_trades_venue_trade_id"),
             ("orders", "idx_orders_status"),
+            ("trades", "idx_trades_client_order_id"),
         ] {
             assert!(schema.has_index(table, index).await.unwrap(), "{index}");
         }
 
+        Migrator::down(&db, Some(1)).await.unwrap();
+        assert!(
+            !schema
+                .has_column("trades", "client_order_id")
+                .await
+                .unwrap()
+        );
+        assert!(schema.has_column("trades", "venue_trade_id").await.unwrap());
         Migrator::down(&db, Some(1)).await.unwrap();
         assert!(!schema.has_table("strategy_state").await.unwrap());
         Migrator::down(&db, Some(1)).await.unwrap();

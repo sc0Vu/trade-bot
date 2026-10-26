@@ -209,13 +209,21 @@ struct TradeBody {
     id: i64,
     #[serde(flatten)]
     fill: Fill,
+    /// The journal's run-tagged order id, matching `/orders`; `null` for
+    /// paper fills and fills recorded before it was kept. `order_id` (from
+    /// the fill) restarts at `o-1` every run.
+    client_order_id: Option<String>,
 }
 
 async fn trades(State(s): State<ApiState>, Query(q): Query<Limit>) -> Response {
     match s.books.recent_trades(q.get()).await {
         Ok(v) => Json(
             v.into_iter()
-                .map(|(id, fill)| TradeBody { id: id.get(), fill })
+                .map(|t| TradeBody {
+                    id: t.id.get(),
+                    fill: t.fill,
+                    client_order_id: t.client_order_id,
+                })
                 .collect::<Vec<_>>(),
         )
         .into_response(),
@@ -329,7 +337,10 @@ mod tests {
             ts: Timestamp::from_millis(10_800_000),
         })
         .unwrap();
-        db.store.record_fill(&fill, &btcusdt()).await.unwrap();
+        db.store
+            .record_venue_fill(&fill, &btcusdt(), "7", "tbx-o-1")
+            .await
+            .unwrap();
         let (base, _tx) = start(&db, None).await;
 
         let (code, positions) = get(&format!("{base}/positions")).await;
@@ -341,6 +352,7 @@ mod tests {
         let (_, trades) = get(&format!("{base}/trades?limit=10")).await;
         assert_eq!(trades.as_array().unwrap().len(), 1);
         assert_eq!(trades[0]["price"], "110.11");
+        assert_eq!(trades[0]["client_order_id"], "tbx-o-1");
         assert!(trades[0]["id"].is_number());
     }
 

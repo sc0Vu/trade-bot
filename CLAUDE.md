@@ -294,9 +294,13 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    transaction appends trade + folds into holding via `Position::apply`
    (storage folds, caller can't pass drifted position); `FOR UPDATE` on MySQL.
    Reads re-validate through core constructors: corrupt row → error.
-   Venue fills via `Ledger::record_venue_fill(fill, instrument, venue_trade_id)`:
-   idempotent (unique `(instrument, venue_trade_id)`), so restart can replay
-   venue trade history safely. `OrderJournal` (`orders` table): row written
+   Venue fills via `Ledger::record_venue_fill(fill, instrument, venue_trade_id,
+   client_order_id)`: idempotent (unique `(instrument, venue_trade_id)`), so
+   restart can replay venue trade history safely. `trades.client_order_id`
+   (migration 5) = journal's run-tagged id (`Fill.order_id` restarts `o-1`
+   each run; reconcile-recorded fills carry client id there instead); NULL
+   for paper and pre-migration rows (no exact link → not guessed).
+   `recent_trades` → `StoredTrade { id, fill, client_order_id }`. `OrderJournal` (`orders` table): row written
    `pending` *before* submit, `open` + venue id on ack, `closed` after last
    fill recorded → crash leaves row to check. `SqlStore::open` applies pending
    migrations; `bind_network` stamps db with network (testnet/demo/live),

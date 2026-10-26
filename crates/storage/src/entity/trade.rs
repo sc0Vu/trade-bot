@@ -30,6 +30,10 @@ pub struct Model {
     /// The venue's trade id; unique per instrument. `None` for paper
     /// fills.
     pub venue_trade_id: Option<String>,
+    /// The journal's id for the order a venue fill belongs to
+    /// (`orders.client_order_id`, run-tagged). `None` for paper fills and
+    /// fills recorded before it existed.
+    pub client_order_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

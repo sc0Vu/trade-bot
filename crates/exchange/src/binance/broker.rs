@@ -180,7 +180,7 @@ impl BinanceBroker {
             // so it was reported then and must not be reported twice.
             let recorded = self
                 .books
-                .record_venue_fill(&fill, inst, &id.to_string())
+                .record_venue_fill(&fill, inst, &id.to_string(), &self.open[idx].client_id)
                 .await?;
             self.open[idx].seen_trades.insert(id);
             self.open[idx].seen_qty += fill.qty;
@@ -873,6 +873,11 @@ mod tests {
             Some(expected.clone())
         );
         assert!(db.store.unfinished_orders().await.unwrap().is_empty());
+        // The trade names the journal's run-tagged order, not just `o-1`.
+        let trades = storage::TradeRepository::recent_trades(db.store.as_ref(), 10)
+            .await
+            .unwrap();
+        assert_eq!(trades[0].client_order_id.as_deref(), Some("tbrun-o-1"));
 
         // A new broker over the same books starts from that holding, so it
         // may sell what the last run bought.
@@ -895,7 +900,7 @@ mod tests {
         )
         .unwrap();
         db.store
-            .record_venue_fill(&earlier, &btcusdt(), "7")
+            .record_venue_fill(&earlier, &btcusdt(), "7", "tbrun-o-1")
             .await
             .unwrap()
             .unwrap();

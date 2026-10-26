@@ -40,8 +40,21 @@ pub trait TradeRepository: Send + Sync {
     ) -> Result<Vec<(TradeId, Fill)>, StorageError>;
 
     /// The latest `limit` fills across all instruments, newest first (by
-    /// fill time, then insert order). For display: a status page or API.
-    async fn recent_trades(&self, limit: u64) -> Result<Vec<(TradeId, Fill)>, StorageError>;
+    /// fill time, then insert order), each with the order it belongs to.
+    /// For display: a status page or API.
+    async fn recent_trades(&self, limit: u64) -> Result<Vec<StoredTrade>, StorageError>;
+}
+
+/// A trade as stored, with what the fill alone can't say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredTrade {
+    pub id: TradeId,
+    pub fill: Fill,
+    /// The journal's id for the fill's order (`JournalOrder::client_order_id`,
+    /// run-tagged, unique across runs; `fill.order_id` restarts at `o-1`
+    /// every run). `None` for paper fills and fills recorded before the
+    /// column existed.
+    pub client_order_id: Option<String>,
 }
 
 /// Current position per instrument, one row each. A cache of the trade log
@@ -82,15 +95,16 @@ pub trait Ledger: Send + Sync {
     ) -> Result<(TradeId, Position), StorageError>;
 
     /// [`record_fill`](Self::record_fill) for a fill the venue reported
-    /// under `venue_trade_id`, idempotently: if that trade is already
-    /// recorded for this instrument, nothing is written and `None` comes
-    /// back. Lets a restart replay the venue's trade history without
-    /// counting a fill twice.
+    /// under `venue_trade_id`, for the journaled order `client_order_id`,
+    /// idempotently: if that trade is already recorded for this
+    /// instrument, nothing is written and `None` comes back. Lets a restart
+    /// replay the venue's trade history without counting a fill twice.
     async fn record_venue_fill(
         &self,
         fill: &Fill,
         instrument: &Instrument,
         venue_trade_id: &str,
+        client_order_id: &str,
     ) -> Result<Option<(TradeId, Position)>, StorageError>;
 }
 

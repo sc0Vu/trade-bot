@@ -20,7 +20,7 @@ mod sql;
 
 pub use error::StorageError;
 pub use repo::{
-    HoldingRepository, JournalOrder, Ledger, OrderJournal, OrderStatus, SavedState,
+    HoldingRepository, JournalOrder, Ledger, OrderJournal, OrderStatus, SavedState, StoredTrade,
     StrategyStateRepository, TradeId, TradeRepository,
 };
 pub use sql::SqlStore;

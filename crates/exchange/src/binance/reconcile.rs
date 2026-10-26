@@ -180,7 +180,7 @@ async fn close_out(
             }
             let fill = fees.complete(client, inst, fill).await?;
             if books
-                .record_venue_fill(&fill, inst, &id.to_string())
+                .record_venue_fill(&fill, inst, &id.to_string(), &order.client_order_id)
                 .await?
                 .is_some()
             {
@@ -389,6 +389,10 @@ mod tests {
         assert_eq!(r.fills[0].order_id.as_str(), "tbold-o-3");
         assert_eq!(r.fills[0].qty, Qty::new(dec!(1)));
         assert_eq!(held(&db).await, Some(Qty::new(dec!(1))));
+        let trades = storage::TradeRepository::recent_trades(db.store.as_ref(), 10)
+            .await
+            .unwrap();
+        assert_eq!(trades[0].client_order_id.as_deref(), Some("tbold-o-3"));
         assert!(
             t.sent().iter().all(|r| r.method != Method::Delete),
             "a closed order is not cancelled"

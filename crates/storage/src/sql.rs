@@ -2,7 +2,7 @@ use crate::decimal::DbDecimal;
 use crate::entity::{holding, meta, order, strategy_state, trade};
 use crate::{
     HoldingRepository, JournalOrder, Ledger, OrderJournal, OrderStatus, SavedState, StorageError,
-    StrategyStateRepository, TradeId, TradeRepository,
+    StoredTrade, StrategyStateRepository, TradeId, TradeRepository,
 };
 use async_trait::async_trait;
 use bot_core::{
@@ -93,7 +93,11 @@ fn liquidity_text(l: Liquidity) -> &'static str {
     }
 }
 
-fn to_trade_row(f: &Fill, venue_trade_id: Option<&str>) -> trade::ActiveModel {
+/// Where a venue fill came from: the venue's trade id and the journal's
+/// client order id. `None` for a paper fill.
+type VenueRef<'a> = Option<(&'a str, &'a str)>;
+
+fn to_trade_row(f: &Fill, venue: VenueRef<'_>) -> trade::ActiveModel {
     let (kind, amount, asset, value) = match &f.fee {
         Fee::Base(q) => ("base", q.get(), None, None),
         Fee::Quote(n) => ("quote", n.get(), None, None),
@@ -121,7 +125,8 @@ fn to_trade_row(f: &Fill, venue_trade_id: Option<&str>) -> trade::ActiveModel {
         fee_value: Set(value),
         liquidity: Set(liquidity_text(f.liquidity).to_owned()),
         ts: Set(f.ts.as_millis()),
-        venue_trade_id: Set(venue_trade_id.map(str::to_owned)),
+        venue_trade_id: Set(venue.map(|(t, _)| t.to_owned())),
+        client_order_id: Set(venue.map(|(_, c)| c.to_owned())),
     }
 }
 
@@ -178,9 +183,9 @@ fn from_holding_row(m: holding::Model) -> Result<Position, StorageError> {
 async fn insert_trade_on<C: ConnectionTrait>(
     conn: &C,
     fill: &Fill,
-    venue_trade_id: Option<&str>,
+    venue: VenueRef<'_>,
 ) -> Result<TradeId, StorageError> {
-    let res = trade::Entity::insert(to_trade_row(fill, venue_trade_id))
+    let res = trade::Entity::insert(to_trade_row(fill, venue))
         .exec(conn)
         .await
         .map_err(StorageError::backend)?;
@@ -250,7 +255,7 @@ impl TradeRepository for SqlStore {
             .collect()
     }
 
-    async fn recent_trades(&self, limit: u64) -> Result<Vec<(TradeId, Fill)>, StorageError> {
+    async fn recent_trades(&self, limit: u64) -> Result<Vec<StoredTrade>, StorageError> {
         trade::Entity::find()
             .order_by_desc(trade::Column::Ts)
             .order_by_desc(trade::Column::Id)
@@ -259,7 +264,14 @@ impl TradeRepository for SqlStore {
             .await
             .map_err(StorageError::backend)?
             .into_iter()
-            .map(from_trade_row)
+            .map(|m| {
+                let client_order_id = m.client_order_id.clone();
+                from_trade_row(m).map(|(id, fill)| StoredTrade {
+                    id,
+                    fill,
+                    client_order_id,
+                })
+            })
             .collect()
     }
 }
@@ -311,19 +323,21 @@ impl Ledger for SqlStore {
         fill: &Fill,
         instrument: &Instrument,
         venue_trade_id: &str,
+        client_order_id: &str,
     ) -> Result<Option<(TradeId, Position)>, StorageError> {
-        self.record(fill, instrument, Some(venue_trade_id)).await
+        self.record(fill, instrument, Some((venue_trade_id, client_order_id)))
+            .await
     }
 }
 
 impl SqlStore {
-    /// One transaction: skip if `venue_trade_id` is already recorded, else
-    /// append the trade and fold it into the holding.
+    /// One transaction: skip if the venue trade id is already recorded,
+    /// else append the trade and fold it into the holding.
     async fn record(
         &self,
         fill: &Fill,
         instrument: &Instrument,
-        venue_trade_id: Option<&str>,
+        venue: VenueRef<'_>,
     ) -> Result<Option<(TradeId, Position)>, StorageError> {
         if fill.instrument != instrument.id {
             return Err(StorageError::Rejected(bot_core::Error::PositionUpdate(
@@ -332,7 +346,7 @@ impl SqlStore {
         }
         // Every early return drops `txn`, which rolls it back.
         let txn = self.db.begin().await.map_err(StorageError::backend)?;
-        if let Some(vid) = venue_trade_id {
+        if let Some((vid, _)) = venue {
             let seen = trade::Entity::find()
                 .filter(trade::Column::Instrument.eq(fill.instrument.to_string()))
                 .filter(trade::Column::VenueTradeId.eq(vid))
@@ -365,7 +379,7 @@ impl SqlStore {
             .map_err(StorageError::Rejected)?;
         // The unique (instrument, venue_trade_id) index backs the check
         // above: a concurrent duplicate fails here and rolls back.
-        let id = insert_trade_on(&txn, fill, venue_trade_id).await?;
+        let id = insert_trade_on(&txn, fill, venue).await?;
         upsert_holding_on(&txn, &position).await?;
         txn.commit().await.map_err(StorageError::backend)?;
         Ok(Some((id, position)))
@@ -1039,23 +1053,72 @@ mod tests {
             1,
         );
         let (_, pos) = s
-            .record_venue_fill(&buy, &i, "12345")
+            .record_venue_fill(&buy, &i, "12345", "tbx-o-1")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(pos.cost_basis(), Notional::new(dec!(100.1)));
         // A restart replaying the venue's history sees the same trade again.
-        assert_eq!(s.record_venue_fill(&buy, &i, "12345").await.unwrap(), None);
+        assert_eq!(
+            s.record_venue_fill(&buy, &i, "12345", "tbx-o-1")
+                .await
+                .unwrap(),
+            None
+        );
         assert_eq!(trade_count(&s).await, 1);
         assert_eq!(s.get_holding(&btc()).await.unwrap(), Some(pos));
         // Another trade id is another fill.
         assert!(
-            s.record_venue_fill(&buy, &i, "12346")
+            s.record_venue_fill(&buy, &i, "12346", "tbx-o-1")
                 .await
                 .unwrap()
                 .is_some()
         );
         assert_eq!(trade_count(&s).await, 2);
+    }
+
+    /// Two runs both number their first order `o-1`; the journal's
+    /// run-tagged id tells their fills apart. A paper fill has none.
+    #[tokio::test]
+    async fn trades_keep_the_journal_order_id() {
+        let s = store().await;
+        let i = btcusdt();
+        let at = |ts| {
+            Fill::new(FillSpec {
+                order_id: OrderId::new("o-1").unwrap(),
+                ..fill(
+                    Side::Buy,
+                    Qty::new(dec!(1)),
+                    Price::new(dec!(100)),
+                    quote_fee(dec!(0)),
+                    ts,
+                )
+                .into()
+            })
+            .unwrap()
+        };
+        s.record_venue_fill(&at(1), &i, "1", "tbrun1-o-1")
+            .await
+            .unwrap();
+        s.record_venue_fill(&at(2), &i, "2", "tbrun2-o-1")
+            .await
+            .unwrap();
+        s.record_fill(&at(3), &i).await.unwrap();
+        let got: Vec<_> = s
+            .recent_trades(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.fill.order_id.to_string(), t.client_order_id))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("o-1".to_owned(), None),
+                ("o-1".to_owned(), Some("tbrun2-o-1".to_owned())),
+                ("o-1".to_owned(), Some("tbrun1-o-1".to_owned())),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1082,13 +1145,13 @@ mod tests {
         })
         .unwrap();
         assert!(
-            s.record_venue_fill(&btc_buy, &btcusdt(), "7")
+            s.record_venue_fill(&btc_buy, &btcusdt(), "7", "tbx-o-1")
                 .await
                 .unwrap()
                 .is_some()
         );
         assert!(
-            s.record_venue_fill(&eth_buy, &eth_inst, "7")
+            s.record_venue_fill(&eth_buy, &eth_inst, "7", "tbx-o-2")
                 .await
                 .unwrap()
                 .is_some()
@@ -1189,7 +1252,7 @@ mod tests {
             .insert_trade(&fill(Side::Buy, q, p, fee(), 30))
             .await
             .unwrap();
-        let ids = |v: Vec<(TradeId, Fill)>| v.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        let ids = |v: Vec<StoredTrade>| v.into_iter().map(|t| t.id).collect::<Vec<_>>();
         assert_eq!(ids(s.recent_trades(10).await.unwrap()), vec![new, mid, old]);
         assert_eq!(ids(s.recent_trades(2).await.unwrap()), vec![new, mid]);
     }

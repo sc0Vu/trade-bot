@@ -324,7 +324,12 @@ A live broker keeps its books through three storage traits, combined as
   folds it into the holding with `Position::apply`, so storage computes the
   position and a caller can't pass one in that has drifted. It is idempotent
   on the venue's trade id (unique per instrument), so replaying Binance's
-  trade history never counts a fill twice. MySQL uses `FOR UPDATE`.
+  trade history never counts a fill twice. MySQL uses `FOR UPDATE`. Each
+  trade also keeps its journal order's run-tagged `client_order_id`, so a
+  trade can be joined to its `orders` row across runs: the fill's own
+  `order_id` is the engine's, which restarts at `o-1` every run. Rows
+  recorded before that column existed have none; no exact link exists for
+  them, so none is guessed.
 - **`HoldingRepository`**. The current position per instrument, a cache of
   the trade log. The broker's positions *are* these holdings, so they
   survive restarts.
