@@ -522,6 +522,7 @@ crates/
   cli/         binary: run | backtest | fetch-data | migrate
 migration/     SeaORM migrations
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.
+  examples/    one runnable config per built-in (`<strategy>.toml`, paper/testnet), README
 data/          downloaded klines, per-network run dbs (gitignored)
 deploy/        Prometheus + Alertmanager + Grafana compose, alerts.yml (+ promtool
                unit tests alerts_test.yml), dashboard; keep in sync with metric names
@@ -567,8 +568,10 @@ Layered; each source overrides one above:
   requires `exchange.network = "live"` + `--i-understand` gate. Bad config
   never reaches trading loop.
 - Real config = `config/config.toml` or `config/*.local.toml` (both
-  gitignored) or env; only `config.example.toml` committed (and loaded by a
-  test, so it can't rot). `exchange.network` defaults `testnet`. No field exists
+  gitignored) or env; only `config.example.toml` and `config/examples/`
+  committed (both loaded by tests, so they can't rot: every example loads,
+  its strategy builds, file named after it, one per registered strategy →
+  new strategy = add `config/examples/<name>.toml`). `exchange.network` defaults `testnet`. No field exists
   for a secret: `api_key` in a file = unknown-field error.
 - `[log] level` (`run` only): `RUST_LOG`-syntax filter, validated on load;
   precedence `RUST_LOG` > config (`BOT_LOG__LEVEL` > file) > default

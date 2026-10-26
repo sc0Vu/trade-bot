@@ -1,0 +1,29 @@
+# ratio_hop: holds one coin of a set and rotates A -> USDT -> B only when the
+# post-fee estimate of B's units beats the units of B last held, so unit
+# counts only ratchet up. Maximizes units, not value. Edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/ratio_hop.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:BNBUSDT", "binance:SOLUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1h"
+
+[strategy]
+name = "ratio_hop"
+
+[strategy.params]
+coins = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:BNBUSDT", "binance:SOLUSDT"]
+quote_amount = "100"    # USDT for the first buy (the first coin)
+fee = "0.001"           # per-leg estimate
+slippage_bps = "5"      # per-leg estimate; match the backtest
+scout_margin = "0.002"  # extra improvement required to rotate
+freefall_pct = "0.2"    # refuse a coin down more than 20%...
+freefall_candles = 24   # ...over the last 24 bars (one day at 1h)
+order_type = "limit"    # maker legs at the last close; "market" pays the spread
+limit_timeout = 3       # evaluations a limit leg rests before re-pricing
+
+[engine]
+history_len = 500       # must exceed freefall_candles

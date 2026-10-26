@@ -94,6 +94,10 @@ Start from the documented example, which a test loads so it can't go stale:
 cp config/config.example.toml config/config.toml
 ```
 
+[`config/examples/`](config/examples/README.md) has a complete config for
+each built-in strategy (paper on testnet, textbook params), runnable as
+`run --paper --config config/examples/<strategy>.toml`.
+
 `config/config.toml` and `config/*.local.toml` are gitignored. Unknown keys
 are errors, so a typo fails loudly instead of falling back to a default.
 
@@ -132,7 +136,8 @@ is deserialized into that strategy's own typed struct.
 Each strategy's module docs and parameter fields document its parameters.
 To add one, create a file under `crates/strategy/src/builtin/`, implement
 `Strategy`, and register it with `inventory::submit!`. It then runs in
-backtests and live with no other changes.
+backtests and live with no other changes. Add an example config under
+`config/examples/` too: a test requires one per registered strategy.
 
 A strategy's only window to the world is its `Context`: positions, recent
 candles, open orders, params, and a way to submit signals. It never touches
@@ -241,7 +246,7 @@ crates/
   api/        read-only HTTP API: status, positions, orders, trades
   cli/        the `cli` binary: fetch-data, backtest, run
 migration/    SeaORM schema migrations
-config/       config.example.toml (committed); real configs are gitignored
+config/       config.example.toml and examples/ (committed); real configs are gitignored
 doc/          architecture notes
 deploy/       Prometheus, Alertmanager, Grafana (compose) and alert rules
 ```

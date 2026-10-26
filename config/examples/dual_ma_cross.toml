@@ -1,0 +1,25 @@
+# dual_ma_cross: one coin, long while the fast average is above the slow
+# one, cash otherwise. Textbook 50/200; not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/dual_ma_cross.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "dual_ma_cross"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+fast_period = 50
+slow_period = 200       # > fast_period, <= engine.history_len
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

@@ -1,0 +1,25 @@
+# donchian_breakout: one coin. Buys a close above the highest high of the
+# previous channel_period candles, sells a close below their lowest low.
+# Classic 55-bar channel; not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/donchian_breakout.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "donchian_breakout"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+channel_period = 55     # needs channel_period + 1 candles of history
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

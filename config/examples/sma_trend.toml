@@ -1,0 +1,26 @@
+# sma_trend: one coin, long or flat. Long while the close is above its
+# simple moving average (outside a dead band), cash below it. Textbook
+# params, not tuned; edge unverified. Backtest before trusting it.
+#
+#   cargo run -p cli -- run --paper --config config/examples/sma_trend.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "sma_trend"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+sma_period = 200        # closes in the average; <= engine.history_len
+band_pct = "0.01"       # 1% dead zone each side, against whipsaw
+quote_amount = "100"    # USDT per entry (quote-budget market buy)
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

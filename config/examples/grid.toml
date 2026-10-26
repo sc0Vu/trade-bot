@@ -1,0 +1,32 @@
+# grid: a spot grid on one coin. Splits [lower, upper] into levels, buys
+# quote_per_grid at each and sells that lot one level up: each round trip
+# earns one step less two fees (a grid whose step doesn't cover them is
+# refused). Bets on the price oscillating inside the range; falling out of
+# it, it holds every level, rising out of it, it sits in cash.
+#
+# The range below is about +-10% around BTC at 80,000 (late October 2026):
+# set it around the coin's price when you run it. The opening buys every
+# level above the price at once.
+#
+#   cargo run -p cli -- run --paper --config config/examples/grid.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "15m"
+
+[strategy]
+name = "grid"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+lower = "72000"
+upper = "88000"
+grids = 20              # gaps; 21 levels
+spacing = "geometric"   # equal ratios (~1% a step here); or "arithmetic"
+quote_per_grid = "50"   # USDT per buy: up to 20 x 50 = 1000 in use
+fee = "0.001"           # a step must beat two of these
+slippage_bps = "5"      # on the stop's market sell
+stop_price = "68000"    # optional, below lower: cancel all, sell all, stop

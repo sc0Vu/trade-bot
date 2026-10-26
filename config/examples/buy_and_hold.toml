@@ -1,0 +1,24 @@
+# buy_and_hold: the benchmark. Buys one coin once on its first candle and
+# holds. A strategy that can't beat this on the same coin after costs has
+# no edge.
+#
+#   cargo run -p cli -- run --paper --config config/examples/buy_and_hold.toml
+#
+# Safe by default: paper mode on testnet (fake money). Money values are
+# strings, never bare numbers.
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"   # or "demo" (demo.binance.com keys)
+interval = "1h"
+
+[strategy]
+name = "buy_and_hold"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+quote_amount = "100"   # USDT spent on the one buy
+fee = "0.001"          # stated costs; unused in decisions
+slippage_bps = "5"

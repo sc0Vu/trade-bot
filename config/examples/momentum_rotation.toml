@@ -1,0 +1,27 @@
+# momentum_rotation: several coins quoted in one asset. Holds the coin with
+# the best return over `lookback` bars while it beats `min_momentum`, cash
+# when none does. Each entry is a fixed quote_amount (not the last sale's
+# proceeds). One-month lookback on daily bars; not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/momentum_rotation.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:BNBUSDT", "binance:SOLUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "momentum_rotation"
+
+[strategy.params]
+coins = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:BNBUSDT", "binance:SOLUSDT"]
+lookback = 30           # bars; needs lookback + 1 closes per coin
+min_momentum = "0"      # a return at or below this means cash
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

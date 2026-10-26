@@ -503,6 +503,42 @@ mod tests {
         assert!(Config::load(Some(Path::new("/nonexistent/config.toml"))).is_err());
     }
 
+    /// Every file in `config/examples/` is a valid config whose strategy
+    /// builds from its params, and every registered strategy has one, so
+    /// the examples can't rot or fall behind the registry.
+    #[test]
+    fn strategy_examples_load_and_cover_every_strategy() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/examples");
+        let mut covered = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "toml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            // In a jail, so no `BOT_*` variable in the shell leaks in.
+            let mut loaded = None;
+            Jail::expect_with(|_| {
+                loaded = Some(parse(&text).unwrap_or_else(|e| panic!("{}: {e:#}", path.display())));
+                Ok(())
+            });
+            let c = loaded.unwrap();
+            let params = strategy::Params::new(c.strategy.params);
+            strategy::build(&c.strategy.name, &params)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(
+                path.file_stem().unwrap().to_str().unwrap(),
+                c.strategy.name,
+                "an example is named after its strategy"
+            );
+            covered.push(c.strategy.name);
+        }
+        covered.sort();
+        let mut all: Vec<String> = strategy::names().into_iter().map(str::to_owned).collect();
+        all.sort();
+        assert_eq!(covered, all, "one example per registered strategy");
+    }
+
     #[test]
     fn example_config_loads() {
         Jail::expect_with(|_| {

@@ -1,0 +1,27 @@
+# rsi_reversion: one coin. Buys when RSI is oversold, sells when
+# overbought. Bets on ranges; in a downtrend it holds a falling coin to the
+# bottom (no stop, by design). Textbook 14 / 30 / 70; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/rsi_reversion.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "rsi_reversion"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+rsi_period = 14         # needs rsi_period + 1 closes
+oversold = "30"
+overbought = "70"
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500
