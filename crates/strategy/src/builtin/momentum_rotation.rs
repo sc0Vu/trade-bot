@@ -127,7 +127,9 @@ impl MomentumRotation {
         let inst = ctx.instrument(id)?;
         let units = inst.round_qty(ctx.position(id).qty());
         let close = ctx.last_candle(id)?.close;
-        inst.check_order(units, close).ok().map(|()| units)
+        inst.check_market(units, close, Side::Sell)
+            .ok()
+            .map(|()| units)
     }
 
     fn evaluate(&self, ctx: &Context) -> Vec<Signal> {

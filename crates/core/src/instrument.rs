@@ -155,6 +155,29 @@ impl Instrument {
         Price::new(steps * tick)
     }
 
+    /// The price a market order on `side` is sized and checked at, given a
+    /// `reference` such as the last close: rounded to tick against the
+    /// trader (a buy up, so a budget buys fewer units; a sell down, so the
+    /// notional check stays conservative). A market order sends no price,
+    /// so the venue's tick rule doesn't apply to it, but a reference can be
+    /// off today's tick in history fetched with today's filters (SOLUSDT
+    /// closed at 1.8421 in 2021; its tick is now 0.01).
+    pub fn market_price(&self, reference: Price, side: Side) -> Price {
+        let against = match side {
+            Side::Buy => Side::Sell,
+            Side::Sell => Side::Buy,
+        };
+        self.round_price(reference, against)
+    }
+
+    /// `check_order` for a market order of `qty` on `side` at `reference`
+    /// (see [`market_price`](Self::market_price)). What "could this holding
+    /// be sold?" means: checking a raw off-tick close instead would call
+    /// every holding unsellable.
+    pub fn check_market(&self, qty: Qty, reference: Price, side: Side) -> Result<(), FilterError> {
+        self.check_order(qty, self.market_price(reference, side))
+    }
+
     /// Checks `qty` at `price` against every venue filter. Run on the final,
     /// rounded order; returns the first rule broken.
     pub fn check_order(&self, qty: Qty, price: Price) -> Result<(), FilterError> {
@@ -293,6 +316,23 @@ mod tests {
         let on = Price::new(dec!(100.01));
         assert_eq!(i.round_price(on, Side::Buy), on);
         assert_eq!(i.round_price(on, Side::Sell), on);
+    }
+
+    /// 0.0001 BTC at an off-tick 49999.999: a buy is checked at 50000.00
+    /// (notional 5, the minimum: passes), a sell at 49999.99 (4.999999:
+    /// too small). The raw price fails the tick rule either way.
+    #[test]
+    fn market_checks_round_the_reference_against_the_trader() {
+        let i = btcusdt();
+        let (q, p) = (Qty::new(dec!(0.0001)), Price::new(dec!(49999.999)));
+        assert_eq!(i.market_price(p, Side::Buy), Price::new(dec!(50000.00)));
+        assert_eq!(i.market_price(p, Side::Sell), Price::new(dec!(49999.99)));
+        assert_eq!(i.check_order(q, p), Err(FilterError::PriceNotOnTick));
+        assert_eq!(i.check_market(q, p, Side::Buy), Ok(()));
+        assert_eq!(
+            i.check_market(q, p, Side::Sell),
+            Err(FilterError::BelowMinNotional)
+        );
     }
 
     #[test]

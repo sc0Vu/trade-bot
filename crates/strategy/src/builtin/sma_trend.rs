@@ -101,7 +101,9 @@ impl SmaTrend {
     fn long_units(&self, ctx: &Context, c: &Candle) -> Option<bot_core::Qty> {
         let inst = ctx.instrument(&self.p.coin)?;
         let units = inst.round_qty(ctx.position(&self.p.coin).qty());
-        inst.check_order(units, c.close).ok().map(|()| units)
+        inst.check_market(units, c.close, Side::Sell)
+            .ok()
+            .map(|()| units)
     }
 }
 
@@ -331,6 +333,22 @@ mod tests {
         hold(&mut ctx, dec!(0.00001));
         for (i, p) in [(0, "100"), (1, "100"), (2, "90")] {
             assert!(bar(s.as_mut(), &mut ctx, i, p).is_empty(), "bar {i}");
+        }
+    }
+
+    /// Closes off the tick (history under today's filters: the tick is
+    /// 0.01, closes 110.005 and 90.005). Holding 10 BTC is a holding, not
+    /// cash: above the average (100, 100, 110.005 -> 103.335) no second
+    /// buy; below it (100, 100, 90.005 -> 96.668) a sell of all 10.
+    #[test]
+    fn a_holding_at_an_off_tick_close_is_still_long() {
+        for (last, want) in [("110.005", vec![]), ("90.005", vec![sell(dec!(10))])] {
+            let mut s = build(NAME, &params("")).unwrap();
+            let mut ctx = ctx();
+            hold(&mut ctx, dec!(10));
+            bar(s.as_mut(), &mut ctx, 0, "100");
+            bar(s.as_mut(), &mut ctx, 1, "100");
+            assert_eq!(bar(s.as_mut(), &mut ctx, 2, last), want, "close {last}");
         }
     }
 

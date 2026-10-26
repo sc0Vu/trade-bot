@@ -37,24 +37,17 @@ impl fmt::Display for RiskRejection {
 }
 
 /// The price an order is sized and checked at: its own limit for resting
-/// kinds, else the last close rounded to tick against the trader (a buy
-/// up, so a budget buys fewer units; a sell down, so the notional check is
-/// conservative). A market order sends no price, so the venue's tick rule
-/// doesn't apply to it; the close can be off today's tick in history
-/// fetched with today's filters (SOLUSDT closed at 1.8421 in 2021, tick
-/// now 0.01), and checking it raw refused every such order.
+/// kinds, else the last close as `Instrument::market_price` rounds it (a
+/// market order sends no price; checking an off-tick close raw refused
+/// every order on history fetched with today's filters).
 fn order_price(
     i: &Instrument,
     side: Side,
     kind: OrderKind,
     reference: Option<Price>,
 ) -> Option<Price> {
-    let against = match side {
-        Side::Buy => Side::Sell,
-        Side::Sell => Side::Buy,
-    };
     match kind {
-        OrderKind::Market => reference.map(|p| i.round_price(p, against)),
+        OrderKind::Market => reference.map(|p| i.market_price(p, side)),
         OrderKind::Limit { price, .. } => Some(price),
         OrderKind::StopMarket { stop } => Some(stop),
         OrderKind::StopLimit { limit, .. } => Some(limit),

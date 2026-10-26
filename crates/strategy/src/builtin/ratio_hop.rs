@@ -243,7 +243,7 @@ impl RatioHop {
                 let inst = ctx.instrument(id)?;
                 let units = Self::sellable(ctx, id)?;
                 let close = ctx.last_candle(id)?.close;
-                inst.check_order(units, close).ok()?;
+                inst.check_market(units, close, Side::Sell).ok()?;
                 Some((inst.notional(units, close), id))
             })
             .max_by(|x, y| x.0.cmp(&y.0))

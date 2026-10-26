@@ -89,6 +89,10 @@ impl Instrument {
     fn round_qty(&self, q: Qty) -> Qty;                        // toward zero, to lot
     fn round_price(&self, p: Price, side: Side) -> Price;      // toward passive side, to tick
     fn check_order(&self, q: Qty, p: Price) -> Result<(), FilterError>; // venue filters
+    fn market_price(&self, reference: Price, side: Side) -> Price;   // to tick against trader
+    fn check_market(&self, q: Qty, reference: Price, side: Side) -> Result<(), FilterError>;
+    // market order sends no price: check at market_price, never raw close (history
+    // under today's filters is off tick → raw check called every holding unsellable)
 }
 ```
 
@@ -442,7 +446,7 @@ Never sells; rejected buy not retried. Keep minimal.
 Long while close > SMA(`sma_period` closes, current bar included) ×
 (1 + `band_pct`); cash below SMA × (1 − `band_pct`). Buy = quote-budget market
 (`quote_amount`), sell = lot-rounded full holding. "Cash" = holding not
-sellable under venue filters (dust from base fee counts as cash, else never
+sellable under venue filters (`check_market`, every built-in) (dust from base fee counts as cash, else never
 rebuys). No decision while an order on coin is open. `fee`/`slippage_bps`
 required, range-checked, unused in decisions. `history_len` ≥ `sma_period`.
 

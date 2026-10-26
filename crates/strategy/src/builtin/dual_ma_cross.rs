@@ -99,7 +99,9 @@ impl DualMaCross {
     fn long_units(&self, ctx: &Context, c: &Candle) -> Option<Qty> {
         let inst = ctx.instrument(&self.p.coin)?;
         let units = inst.round_qty(ctx.position(&self.p.coin).qty());
-        inst.check_order(units, c.close).ok().map(|()| units)
+        inst.check_market(units, c.close, Side::Sell)
+            .ok()
+            .map(|()| units)
     }
 }
 
