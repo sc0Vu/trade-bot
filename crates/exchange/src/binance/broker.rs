@@ -459,6 +459,14 @@ impl Broker for BinanceBroker {
             .collect()
     }
 
+    fn cancelling_orders(&self) -> Vec<Order> {
+        self.open
+            .iter()
+            .filter(|o| o.cancelling)
+            .map(|o| o.order.clone())
+            .collect()
+    }
+
     fn take_recovered_fills(&mut self) -> Vec<Fill> {
         std::mem::take(&mut self.recovered)
     }
@@ -698,6 +706,8 @@ mod tests {
             b.open_orders().is_empty(),
             "cancelling orders are hidden from strategies"
         );
+        let cancelling: Vec<_> = b.cancelling_orders().iter().map(|o| o.id.clone()).collect();
+        assert_eq!(cancelling, vec![OrderId::new("o-1").unwrap()]);
 
         t.reply(
             200,
@@ -705,6 +715,7 @@ mod tests {
         );
         t.reply(200, "[]");
         assert!(b.settle(&any_event()).await.unwrap().is_empty());
+        assert!(b.cancelling_orders().is_empty(), "closed: can't fill now");
         assert!(b.settle(&any_event()).await.unwrap().is_empty());
         assert_eq!(t.sent().len(), 4, "closed order is no longer polled");
     }

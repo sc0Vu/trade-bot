@@ -20,6 +20,7 @@ pub struct Context {
     instruments: BTreeMap<InstrumentId, Instrument>,
     positions: HashMap<InstrumentId, Position>,
     open_orders: Vec<Order>,
+    cancelling: Vec<Order>,
     history: HashMap<InstrumentId, VecDeque<Candle>>,
     history_len: usize,
     params: Params,
@@ -56,6 +57,14 @@ impl Context {
     /// `Signal::Cancel` takes.
     pub fn open_orders(&self, id: &InstrumentId) -> impl Iterator<Item = &Order> {
         self.open_orders.iter().filter(move |o| o.instrument == *id)
+    }
+
+    /// The strategy's orders on `id` it has cancelled that may still fill
+    /// (as of the last settle): a venue confirms a cancel, and reports any
+    /// fill that beat it, only later. Until this and `open_orders` are both
+    /// empty, a fill on `id` can still arrive. Never cancel these again.
+    pub fn cancelling_orders(&self, id: &InstrumentId) -> impl Iterator<Item = &Order> {
+        self.cancelling.iter().filter(move |o| o.instrument == *id)
     }
 
     /// Closed candles for `id`, oldest first, ending with the current one.
@@ -95,6 +104,7 @@ pub mod driver {
             instruments: instruments.into_iter().map(|i| (i.id.clone(), i)).collect(),
             positions: HashMap::new(),
             open_orders: Vec::new(),
+            cancelling: Vec::new(),
             history: HashMap::new(),
             history_len: history_len.max(1),
             params,
@@ -129,6 +139,11 @@ pub mod driver {
     /// Replaces the strategy's view of open orders with the broker's.
     pub fn set_open_orders(ctx: &mut Context, orders: Vec<Order>) {
         ctx.open_orders = orders;
+    }
+
+    /// Replaces the strategy's view of orders being cancelled.
+    pub fn set_cancelling_orders(ctx: &mut Context, orders: Vec<Order>) {
+        ctx.cancelling = orders;
     }
 
     /// Drains queued signals in submission order.

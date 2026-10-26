@@ -165,6 +165,7 @@ trait Broker {
     async fn settle(&mut self, e: &MarketEvent) -> Result<Vec<Fill>>;
     fn position(&self, i: &InstrumentId) -> Position;
     fn open_orders(&self) -> Vec<Order>;
+    fn cancelling_orders(&self) -> Vec<Order>;  // cancelled, may still fill; default none
 }
 ```
 

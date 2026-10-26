@@ -60,6 +60,9 @@ pub struct TestProvider {
     pub prior: Option<Position>,
     /// Fills the broker reports as recovered at startup.
     pub recovered: Vec<Fill>,
+    /// When set, a cancelled order stays "cancelling" through the next
+    /// settle, as a live venue confirms a cancel only on a later poll.
+    pub slow_cancel: bool,
 }
 
 impl TestProvider {
@@ -72,7 +75,39 @@ impl TestProvider {
             submit_error: None,
             prior: None,
             recovered: Vec::new(),
+            slow_cancel: false,
         }
+    }
+}
+
+/// Paper broker whose cancels stay pending through one settle.
+struct SlowCancel {
+    paper: PaperBroker,
+    cancelling: Vec<Order>,
+}
+
+#[async_trait]
+impl Broker for SlowCancel {
+    async fn submit(&mut self, o: Order) -> Result<OrderId, ExchangeError> {
+        self.paper.submit(o).await
+    }
+    async fn cancel(&mut self, id: OrderId) -> Result<(), ExchangeError> {
+        let order = self.paper.open_orders().into_iter().find(|o| o.id == id);
+        self.paper.cancel(id).await?;
+        self.cancelling.extend(order);
+        Ok(())
+    }
+    async fn settle(&mut self, e: &MarketEvent) -> Result<Vec<Fill>, ExchangeError> {
+        self.paper.settle(e).await
+    }
+    fn position(&self, i: &InstrumentId) -> Position {
+        self.paper.position(i)
+    }
+    fn open_orders(&self) -> Vec<Order> {
+        self.paper.open_orders()
+    }
+    fn cancelling_orders(&self) -> Vec<Order> {
+        self.cancelling.clone()
     }
 }
 
@@ -185,6 +220,10 @@ impl Provider for TestProvider {
         Ok(match (self.submit_error, &self.prior) {
             (Some(code), _) => Box::new(FailingSubmit(paper, code)),
             (None, Some(p)) => Box::new(Holding(paper, p.clone())),
+            (None, None) if self.slow_cancel => Box::new(SlowCancel {
+                paper,
+                cancelling: Vec::new(),
+            }),
             (None, None) if !self.recovered.is_empty() => {
                 Box::new(Recovering(paper, self.recovered.clone()))
             }

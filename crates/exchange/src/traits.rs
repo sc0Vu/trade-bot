@@ -71,6 +71,15 @@ pub trait Broker: Send {
     /// `Context` so a strategy can cancel by id without a broker handle.
     fn open_orders(&self) -> Vec<Order>;
 
+    /// Orders cancelled but not yet confirmed closed with every fill
+    /// reported: they may still fill. Kept apart from `open_orders` so a
+    /// strategy won't cancel twice, and copied into `Context` so it can
+    /// wait until a cancelled order's last fill is in. Default: none (a
+    /// broker whose cancel is final at once, like the paper broker).
+    fn cancelling_orders(&self) -> Vec<Order> {
+        Vec::new()
+    }
+
     /// Fills that happened while the bot was down, recovered by the
     /// broker's startup reconcile, each returned once. Already in the
     /// positions; the engine hands them to the strategy's `on_fill` so it

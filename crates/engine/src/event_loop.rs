@@ -177,6 +177,7 @@ async fn run_inner<P: Provider + ?Sized>(
             fills = late;
         }
         driver::set_open_orders(&mut ctx, run.broker.open_orders());
+        driver::set_cancelling_orders(&mut ctx, run.broker.cancelling_orders());
         for fill in fills {
             metrics::counter!(
                 m::FILLS,
@@ -885,5 +886,55 @@ mod tests {
         assert_eq!(s.seen, vec![vec![], vec!["o-1".to_owned()], vec![]]);
         assert!(r.rejections.is_empty());
         assert!(r.fills.is_empty());
+    }
+
+    /// An order the venue hasn't confirmed cancelled yet leaves
+    /// `open_orders` at once but shows in `cancelling_orders`, so a
+    /// strategy can tell a fill may still come.
+    #[tokio::test]
+    async fn strategy_sees_orders_still_being_cancelled() {
+        #[derive(Default)]
+        struct Watcher {
+            seen: Vec<(usize, Vec<String>)>,
+        }
+        impl Strategy for Watcher {
+            fn name(&self) -> &str {
+                "watcher"
+            }
+            fn on_candle(&mut self, ctx: &mut Context, c: &bot_core::Candle) -> Vec<Signal> {
+                let open: Vec<_> = ctx
+                    .open_orders(&c.instrument)
+                    .map(|o| o.id.clone())
+                    .collect();
+                let cancelling = ctx
+                    .cancelling_orders(&c.instrument)
+                    .map(|o| o.id.to_string())
+                    .collect();
+                self.seen.push((open.len(), cancelling));
+                match self.seen.len() {
+                    1 => vec![Signal::Submit {
+                        instrument: c.instrument.clone(),
+                        side: bot_core::Side::Buy,
+                        size: bot_core::Size::Base(Qty::new(dec!(1))),
+                        kind: bot_core::OrderKind::Limit {
+                            price: Price::new(dec!(50)),
+                            tif: bot_core::TimeInForce::Gtc,
+                        },
+                    }],
+                    2 => open.into_iter().map(Signal::Cancel).collect(),
+                    _ => Vec::new(),
+                }
+            }
+        }
+        let mut provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        provider.slow_cancel = true;
+        let mut s = Watcher::default();
+        run(&provider, &mut s, Params::default(), &config())
+            .await
+            .unwrap();
+        assert_eq!(
+            s.seen,
+            vec![(0, vec![]), (1, vec![]), (0, vec!["o-1".to_owned()])]
+        );
     }
 }
