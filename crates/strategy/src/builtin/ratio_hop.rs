@@ -134,6 +134,11 @@ pub struct RatioHop {
     /// Units of each coin a rotation into it must beat.
     baseline: HashMap<InstrumentId, Qty>,
     last_eval: Option<Timestamp>,
+    /// Close time at which `progress` last placed a leg. That close
+    /// time's evaluation is skipped: the order isn't in `open_orders` yet,
+    /// so with `limit_timeout = 1` it would count as stale at once, be
+    /// marked cancelled with nothing cancelled, and never be re-priced.
+    placed: Option<Timestamp>,
 }
 
 /// What `save_state` writes. Baselines as a sorted list, so the same state
@@ -187,6 +192,7 @@ impl RatioHop {
             phase: Phase::Start,
             baseline: HashMap::new(),
             last_eval: None,
+            placed: None,
         }))
     }
 
@@ -437,7 +443,8 @@ impl RatioHop {
             .collect()
     }
 
-    /// Ends a leg, run on every candle after the event's fills. A venue may split one order into many fills,
+    /// Ends a leg, run on every candle after the event's fills (`t` is the
+    /// candle's close time). A venue may split one order into many fills,
     /// and one settle may deliver all of them, so `on_fill` only adds them
     /// up; the leg ends once no order of ours on the coin is open or being
     /// cancelled, i.e. no fill can still arrive (the broker drops an order
@@ -446,7 +453,7 @@ impl RatioHop {
     /// - sell cancelled, nothing sold: hold again;
     /// - buy cancelled: place what's left of the budget at the last close;
     /// - bought something: that's the holding.
-    fn progress(&mut self, ctx: &Context) -> Vec<Signal> {
+    fn progress(&mut self, ctx: &Context, t: Timestamp) -> Vec<Signal> {
         let idle = |id: &InstrumentId| {
             ctx.open_orders(id).next().is_none() && ctx.cancelling_orders(id).next().is_none()
         };
@@ -492,6 +499,7 @@ impl RatioHop {
             spent,
             cancelling: false,
         };
+        self.placed = Some(t);
         vec![buy]
     }
 }
@@ -610,7 +618,7 @@ impl Strategy for RatioHop {
     /// arrived, so no coin is judged on a stale price.
     fn on_candle(&mut self, ctx: &mut Context, c: &Candle) -> Vec<Signal> {
         let t = c.close_time;
-        let mut out = self.progress(ctx);
+        let mut out = self.progress(ctx, t);
         if !self.p.coins.contains(&c.instrument) || self.last_eval == Some(t) {
             return out;
         }
@@ -623,7 +631,9 @@ impl Strategy for RatioHop {
             return out;
         }
         self.last_eval = Some(t);
-        out.extend(self.evaluate(ctx));
+        if self.placed != Some(t) {
+            out.extend(self.evaluate(ctx));
+        }
         out
     }
 
@@ -1343,6 +1353,48 @@ mod tests {
                     size: Size::Quote(Notional::new(dec!(700))),
                     kind: limit_at(dec!(60000)),
                 }]
+            );
+        }
+
+        /// Limit mode, timeout 1: the t2 sell (0.01 BTC at 60000) fills
+        /// whole at t3 for 600 - 0.6 = 599.4, and the ETH buy is placed
+        /// then. It isn't in `open_orders` until the next settle, so the
+        /// same close time's evaluation must not count it as stale: it
+        /// would mark it cancelled without cancelling anything, and it
+        /// would never be re-priced. Resting unfilled through t4 (as
+        /// lot(599.4 / 2900) = 0.2066 ETH), it is cancelled then.
+        #[test]
+        fn a_leg_placed_mid_close_rests_a_full_evaluation() {
+            let (mut s, mut ctx) =
+                start_with(limit_params(1), vec![held(&btc(), dec!(0.01), dec!(600))]);
+            close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(3000));
+            close(s.as_mut(), &mut ctx, 2, dec!(60000), dec!(2900));
+            let sold = part(
+                &btc(),
+                Side::Sell,
+                dec!(0.01),
+                dec!(60000),
+                Liquidity::Maker,
+            );
+            settle(s.as_mut(), &mut ctx, vec![], &[sold], dec!(0));
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 3, dec!(60000), dec!(2900)),
+                vec![buy_eth(dec!(599.4), limit_at(dec!(2900)))]
+            );
+            let buy = Order::new(OrderSpec {
+                id: OrderId::new("o-2").unwrap(),
+                instrument: eth().id.clone(),
+                side: Side::Buy,
+                size: Size::Base(Qty::new(dec!(0.2066))),
+                kind: limit_at(dec!(2900)),
+                created_at: Timestamp::from_millis(4 * HOUR - 1),
+            })
+            .unwrap();
+            driver::set_open_orders(&mut ctx, vec![buy.clone()]);
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 4, dec!(60000), dec!(2900)),
+                vec![Signal::Cancel(buy.id.clone())]
             );
         }
 

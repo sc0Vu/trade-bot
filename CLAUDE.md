@@ -398,7 +398,10 @@ into many fills (paper never does; one settle may carry all), so `on_fill`
 only sums, leg ends when something filled + no order of ours working on
 coin open or cancelling (checked in `on_candle`, after event's fills; a
 fill can beat a cancel and be reported after it). Leg that started
-filling never cancelled as stale / stopped (would split holding). `order_type` required: `market` (taker,
+filling never cancelled as stale / stopped (would split holding). Leg
+placed by that check skips its close time's evaluation (not yet in
+`open_orders`: timeout 1 would mark it stale, cancel nothing, never
+re-price). `order_type` required: `market` (taker,
 next open + slippage; leg unfilled 2 evals → stops) or `limit` (GTC at last
 close, maker, estimate without slippage; needs `limit_timeout`: stale buy
 cancelled by id via `ctx.open_orders`, once cancel final re-priced at close
