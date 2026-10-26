@@ -50,8 +50,9 @@ http_timeout_secs = 10
 max_outage_secs = 600
 
 [strategy]
-# A registered strategy: buy_and_hold, donchian_breakout, dual_ma_cross,
-# grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend.
+# A registered strategy: avwap, buy_and_hold, donchian_breakout,
+# dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion,
+# sma_trend. config/examples/ has a complete config for each.
 name = "ratio_hop"
 
 # Strategy-specific; checked when the strategy is built.

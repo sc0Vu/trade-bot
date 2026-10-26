@@ -433,7 +433,7 @@ Start. No/refused state: resume on most valuable sellable held coin
 (baselines from that eval), else buy `quote_amount`. Flat start (every
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
-(sma_trend, dual_ma_cross, donchian_breakout, rsi_reversion) only version;
+(sma_trend, dual_ma_cross, donchian_breakout, rsi_reversion, avwap) only version;
 buy_and_hold `decided`; momentum_rotation `last_eval`; grid stage, gaps,
 dust. Pinned by
 `crates/backtest/tests/restart.rs`: every strategy, every idle cut point
@@ -486,6 +486,16 @@ RSI = v1 simple-average form (not Wilder) over last `rsi_period` changes
 move 50. Bets on ranges; in sustained downtrend catches falling knife, holds
 to the bottom (no stop, by design). Dust = cash; no decision while order open.
 
+`avwap` — `sma_trend` skeleton, anchored VWAP instead of SMA. AVWAP =
+Σ quote_volume / Σ volume from anchor bar through current (exact via
+`Instrument::price_for`, not typical-price approx). `anchor` required:
+`day` / `week` (Monday) / `month` = first bar of current UTC period (must
+be in history, else no decision; month via Hinnant civil-date math);
+`swing_low` / `swing_high` + `swing_lookback` = lowest low / highest high
+of last N bars incl. current (tie → most recent). Long above
+avwap·(1+`band_pct`), cash below avwap·(1−`band_pct`). Zero volume / no
+anchor / order open → no decision. Dust = cash.
+
 `grid` — one coin, spot grid. `grids + 1` levels split [`lower`, `upper`]
 (`spacing` `arithmetic` | `geometric`, required); gap i buys
 `quote_per_grid` at Lᵢ (GTC limit), its lot (net of base fee) sells at
@@ -511,8 +521,8 @@ rising). Edge unverified.
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, donchian_breakout, dual_ma_cross,
-               grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
+  strategy/    Strategy trait, Context, inventory registry, built-ins (avwap, buy_and_hold, donchian_breakout,
+               dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report

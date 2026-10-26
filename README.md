@@ -124,6 +124,7 @@ is deserialized into that strategy's own typed struct.
 
 | Name | What it does |
 |---|---|
+| `avwap` | One coin, long or flat. Holds while the close is above its anchored VWAP (the exact average price of all trading since the start of the day, week or month, or since a recent swing low or high), cash below. |
 | `buy_and_hold` | The benchmark. Buys one coin once with a fixed quote amount on its first candle, then holds forever. A strategy that can't beat it on the same coin after costs has no edge. |
 | `ratio_hop` | Holds one coin of a set and rotates `A → USDT → B` only when the post-fee estimate of B's units beats the units of B last held, so unit counts only ratchet up. Includes a freefall guard against rotating into a collapsing coin. Maximizes units, not value. |
 | `donchian_breakout` | One coin. Buys when the close breaks above the highest high of the previous `channel_period` candles, sells when it breaks below their lowest low. Bets breakouts continue; whipsaws in ranges. |

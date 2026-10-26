@@ -4,6 +4,7 @@ One complete, runnable config per built-in strategy:
 
 | File | Strategy |
 |---|---|
+| `avwap.toml` | one coin, long above its anchored VWAP |
 | `buy_and_hold.toml` | the benchmark: buy once, hold |
 | `sma_trend.toml` | one coin, long above its moving average |
 | `dual_ma_cross.toml` | one coin, long while the fast average is above the slow |

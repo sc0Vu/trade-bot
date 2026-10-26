@@ -242,6 +242,21 @@ async fn buy_and_hold_never_lets_the_future_change_the_past() {
 }
 
 #[tokio::test]
+async fn avwap_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "sma_trend",
+        7,
+        "avwap",
+        r#"coin = "binance:BTCUSDT"
+           anchor = "day"
+           quote_amount = "1009.08"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn grid_never_lets_the_future_change_the_past() {
     single_coin_property(
         "sma_trend",

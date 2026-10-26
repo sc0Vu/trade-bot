@@ -195,6 +195,17 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "avwap",
+            fixture: "sma_trend",
+            coins: BTC,
+            bars: 7,
+            params: r#"coin = "binance:BTCUSDT"
+                anchor = "day"
+                quote_amount = "1009.08"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "dual_ma_cross",
             fixture: "dual_ma_cross",
             coins: BTC,

@@ -1,0 +1,27 @@
+# avwap: one coin, long or flat around its anchored VWAP: the exact average
+# price of every trade since the anchor (quote volume / base volume). Long
+# while the close is above it, cash below. Not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/avwap.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1h"
+
+[strategy]
+name = "avwap"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+anchor = "week"         # "day" | "week" (from Monday UTC) | "month" | "swing_low" | "swing_high"
+# swing_lookback = 72   # swing anchors only: bars searched for the swing
+band_pct = "0.005"      # 0.5% dead zone each side, against whipsaw
+quote_amount = "100"    # USDT per entry (quote-budget market buy)
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500       # must reach back to the anchor: a week of 1h bars is 168
