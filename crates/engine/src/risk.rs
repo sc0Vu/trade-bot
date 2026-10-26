@@ -37,10 +37,24 @@ impl fmt::Display for RiskRejection {
 }
 
 /// The price an order is sized and checked at: its own limit for resting
-/// kinds, else the last close.
-fn order_price(kind: OrderKind, reference: Option<Price>) -> Option<Price> {
+/// kinds, else the last close rounded to tick against the trader (a buy
+/// up, so a budget buys fewer units; a sell down, so the notional check is
+/// conservative). A market order sends no price, so the venue's tick rule
+/// doesn't apply to it; the close can be off today's tick in history
+/// fetched with today's filters (SOLUSDT closed at 1.8421 in 2021, tick
+/// now 0.01), and checking it raw refused every such order.
+fn order_price(
+    i: &Instrument,
+    side: Side,
+    kind: OrderKind,
+    reference: Option<Price>,
+) -> Option<Price> {
+    let against = match side {
+        Side::Buy => Side::Sell,
+        Side::Sell => Side::Buy,
+    };
     match kind {
-        OrderKind::Market => reference,
+        OrderKind::Market => reference.map(|p| i.round_price(p, against)),
         OrderKind::Limit { price, .. } => Some(price),
         OrderKind::StopMarket { stop } => Some(stop),
         OrderKind::StopLimit { limit, .. } => Some(limit),
@@ -88,7 +102,7 @@ pub fn to_order(
 ) -> Result<Order, RiskRejection> {
     let i = instrument.ok_or(RiskRejection::NotInUniverse)?;
     let kind = round_kind(i, side, kind);
-    let price = order_price(kind, reference).ok_or(RiskRejection::NoReferencePrice)?;
+    let price = order_price(i, side, kind, reference).ok_or(RiskRejection::NoReferencePrice)?;
     let raw = match size {
         Size::Base(q) => q,
         Size::Quote(n) => i.qty_for(n, price).map_err(RiskRejection::Filter)?,
@@ -174,6 +188,30 @@ mod tests {
             }
         );
         assert_eq!(o.size, Size::Base(Qty::new(dec!(1.0001))));
+    }
+
+    /// A last close off the tick (history under today's filters) is
+    /// rounded against the trader, not refused. 0.0001 BTC at 49999.999:
+    /// a buy checks at 50000.00 (notional 5, the minimum: accepted); a
+    /// sell at 49999.99 (4.999999 < 5: refused as too small).
+    #[test]
+    fn market_reference_off_tick_is_rounded_against_the_trader() {
+        let at = |side| {
+            to_order(
+                OrderId::new("o-1").unwrap(),
+                Some(&btcusdt()),
+                side,
+                Size::Base(Qty::new(dec!(0.0001))),
+                OrderKind::Market,
+                Some(Price::new(dec!(49999.999))),
+                Timestamp::from_millis(0),
+            )
+        };
+        assert!(at(Side::Buy).is_ok());
+        assert_eq!(
+            at(Side::Sell).unwrap_err(),
+            RiskRejection::Filter(FilterError::BelowMinNotional)
+        );
     }
 
     #[test]

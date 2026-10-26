@@ -133,7 +133,9 @@ live broker's stored holdings), and then `on_start` runs. For each event:
 Risk (v1) checks the whitelist, sizes orders (converting a quote amount to
 base at the order price, except a market buy, which keeps its quote budget),
 rounds to lot and tick in the direction that is never more aggressive, and
-applies `check_order`. Order ids are deterministic (`o-1`, `o-2`, …), so two
+applies `check_order`. A market order is sized and checked at the last close
+rounded to tick against the trader (a buy up, a sell down): it sends no
+price, and a historical close can be off today's tick. Order ids are deterministic (`o-1`, `o-2`, …), so two
 runs over the same data produce identical orders.
 
 **Errors.** A risk refusal, or a venue refusing *one order* (paper refusals,

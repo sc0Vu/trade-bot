@@ -155,7 +155,10 @@ fill and closed-trade counts, win rate, Sharpe ratio and rejected signals,
 all as exact decimals. The fill model is stated, not hidden; see
 [doc/architecture.md](doc/architecture.md#backtest-fill-model). Two
 approximations to keep in mind: instrument filters are today's, not
-historical, and a whitelist chosen today carries survivorship bias.
+historical (on old, low prices today's coarser tick makes taker fills
+slightly worse: SOL at about 1.84 in 2021 with a 0.01 tick costs up to
+about 0.5% per fill), and a whitelist chosen today carries survivorship
+bias.
 
 ## Paper and live trading
 

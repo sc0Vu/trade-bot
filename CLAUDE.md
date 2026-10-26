@@ -174,8 +174,10 @@ at t+1. Prevents deciding on close and trading at it.
 `on_fill`, *before* event joins history (fill at open must not see that
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
 broker, `created_at` = event ts. Risk v1: whitelist, sizing (quote → base
-at order price, except market buy keeps quote budget), lot/tick rounding
-(never more aggressive), `check_order`. Strategy state: `save_state() -> Option<Value>` (versioned, money as strings)
+at order price, except market buy keeps quote budget; market reference =
+last close rounded to tick against trader, buy up / sell down: market order
+sends no price, history under today's filters can be off tick), lot/tick
+rounding (never more aggressive), `check_order`. Strategy state: `save_state() -> Option<Value>` (versioned, money as strings)
 in `Snapshot.strategy_state` after each event; `run_observed(.., resume)`
 calls `restore_state(state, &ctx)` after `on_start`, all-or-nothing, must
 refuse state contradicting books; refused → fresh + warning.
@@ -318,7 +320,9 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    into `data/klines/<venue>/<SYMBOL>-<interval>.jsonl` and
    `data/instruments/<venue>/<SYMBOL>.json`; only missing head/tail ranges
    downloaded, then offline. Reads re-validate (corrupt cache → error).
-   Filters are today's, not historical — approximation. `KlineFeed` merges
+   Filters are today's, not historical — approximation (older, finer-tick
+   prices: slipped fills rounded to today's coarser tick, e.g. SOL 2021 at
+   ~1.84 with tick 0.01 ≈ 0.5% worse per taker fill). `KlineFeed` merges
    instruments ordered by (close_time, id).
    `BacktestProvider` = cached feed + PaperBroker(NextOpenFillModel), through
    `engine::run`; `run_backtest` → `Report` (all `Decimal`). Report keeps own
