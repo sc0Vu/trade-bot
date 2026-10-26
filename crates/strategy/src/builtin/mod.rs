@@ -40,6 +40,7 @@ pub(crate) fn state_error(name: &str, reason: impl ToString) -> StrategyError {
 pub mod buy_and_hold;
 pub mod donchian_breakout;
 pub mod dual_ma_cross;
+pub mod grid;
 pub mod momentum_rotation;
 pub mod ratio_hop;
 pub mod rsi_reversion;

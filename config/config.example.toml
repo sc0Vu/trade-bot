@@ -51,7 +51,7 @@ max_outage_secs = 600
 
 [strategy]
 # A registered strategy: buy_and_hold, donchian_breakout, dual_ma_cross,
-# momentum_rotation, ratio_hop, rsi_reversion, sma_trend.
+# grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend.
 name = "ratio_hop"
 
 # Strategy-specific; checked when the strategy is built.

@@ -11,7 +11,9 @@
 //!
 //! Only cuts with no working order are compared: a live restart's
 //! reconcile cancels working orders, which genuinely changes what follows
-//! (unit tests cover how strategies restore from that).
+//! (unit tests cover how strategies restore from that). `grid` always has
+//! orders working, so it has no case here: `tests/grid.rs` checks that a
+//! restart after the reconcile rebuilds the same book.
 
 mod common;
 

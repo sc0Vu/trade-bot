@@ -9,6 +9,8 @@ license.workspace = true
 [dependencies]
 bot-core.workspace = true
 inventory.workspace = true
+# `maths`: `powd` for a geometric grid's level ratio.
+rust_decimal = { workspace = true, features = ["maths"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

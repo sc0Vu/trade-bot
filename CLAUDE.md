@@ -434,11 +434,14 @@ Start. No/refused state: resume on most valuable sellable held coin
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, rsi_reversion) only version;
-buy_and_hold `decided`; momentum_rotation `last_eval`. Pinned by
+buy_and_hold `decided`; momentum_rotation `last_eval`; grid stage, gaps,
+dust. Pinned by
 `crates/backtest/tests/restart.rs`: every strategy, every idle cut point
 (no working order): run₁ + save → fresh strategy + restore + Backfill
 warm-up + same broker → fills identical to uninterrupted run. New strategy
-→ add a case.
+→ add a case. Exception: grid always has orders working (no idle cut), so
+its property lives in `tests/grid.rs`: cut, cancel all (as reconcile),
+restore → rebuilds the identical book. Harness shared: `tests/common`.
 
 ## Other built-ins
 `buy_and_hold` — the benchmark every strategy is measured against: can't beat
@@ -483,13 +486,33 @@ RSI = v1 simple-average form (not Wilder) over last `rsi_period` changes
 move 50. Bets on ranges; in sustained downtrend catches falling knife, holds
 to the bottom (no stop, by design). Dust = cash; no decision while order open.
 
+`grid` — one coin, spot grid. `grids + 1` levels split [`lower`, `upper`]
+(`spacing` `arithmetic` | `geometric`, required); gap i buys
+`quote_per_grid` at Lᵢ (GTC limit), its lot (net of base fee) sells at
+Lᵢ₊₁. Build refuses a grid whose narrowest step doesn't clear two `fee`s
+(Lᵢ₊₁·(1−fee)² > Lᵢ); `on_start` re-checks on the tick (levels rounded at
+12 dp then floored, `powd` approximate) and that each buy passes filters,
+else Stopped. First eval: every gap buys, those above price marketable
+(neutral opening). Order ↔ gap via `on_order` ids (paper order can fill
+before visible); fills sum, gap settles when its order neither open nor
+cancelling (split fills); refusal (`on_rejected`) → gap back, no new orders
+until next fill (no `-2010` loop). Lot remainders → `dust`. Optional
+`stop_price` < `lower`: close below → cancel all, once idle market-sell
+all, Stopped. Restart (reconcile cancelled all; position already has
+downtime fills): working gaps settled, squared with position (extra coin →
+buys that were working, nearest price first; missing → sells that were
+working, lowest first); unknown-id fills ignored; unsquarable → refused →
+fresh start gives held coin to gaps above price. Bets on oscillation in
+range; loses to trends both ways (bags all levels falling, sells out
+rising). Edge unverified.
+
 ## Layout
 ```
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (buy_and_hold, donchian_breakout, dual_ma_cross,
-               momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
+               grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report

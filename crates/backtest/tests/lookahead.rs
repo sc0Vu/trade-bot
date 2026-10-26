@@ -241,6 +241,24 @@ async fn buy_and_hold_never_lets_the_future_change_the_past() {
     .await;
 }
 
+#[tokio::test]
+async fn grid_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "sma_trend",
+        7,
+        "grid",
+        r#"coin = "binance:BTCUSDT"
+           lower = "95"
+           upper = "115"
+           grids = 4
+           spacing = "arithmetic"
+           quote_per_grid = "100"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}
+
 /// The same property for momentum_rotation on its two-coin fixture (8
 /// bars): BTC halved and ETH doubled after t must leave every fill and
 /// rejection up to t's close unchanged.
