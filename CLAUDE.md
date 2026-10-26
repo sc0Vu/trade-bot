@@ -137,6 +137,10 @@ trait Strategy: Send {
     fn on_event(&mut self, ctx: &mut Context, e: &MarketEvent) -> Vec<Signal> { .. }
     fn on_candle(&mut self, _ctx: &mut Context, _c: &Candle) -> Vec<Signal> { vec![] }
     fn on_fill(&mut self, _ctx: &mut Context, _f: &Fill) {}  // signals via ctx.submit
+    fn on_order(&mut self, _ctx: &mut Context, _o: &Order) {}  // accepted: learn its id
+    fn on_rejected(&mut self, _ctx: &mut Context, _s: &Signal, _reason: &str) {}
+    // both at routing, end of the emitting event: before any fill of it (an
+    // order can fill before it's ever in open_orders); hook signals → next event
 }
 // Context: now, instrument(s) (universe = resolved whitelist), position,
 // open_orders (ids for Signal::Cancel; as of last settle), cancelling_orders
@@ -177,7 +181,7 @@ at t+1. Prevents deciding on close and trading at it.
 (2) `broker.settle(event)`; (3) each fill → ctx position from broker →
 `on_fill`, *before* event joins history (fill at open must not see that
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
-broker, `created_at` = event ts. Risk v1: whitelist, sizing (quote → base
+broker, `created_at` = event ts → `on_order` / `on_rejected`. Risk v1: whitelist, sizing (quote → base
 at order price, except market buy keeps quote budget; market reference =
 last close rounded to tick against trader, buy up / sell down: market order
 sends no price, history under today's filters can be off tick), lot/tick

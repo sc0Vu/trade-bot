@@ -16,7 +16,7 @@ pub use error::StrategyError;
 pub use params::{Params, exact_decimal};
 pub use registry::{StrategyRegistration, build, names};
 
-use bot_core::{Candle, Fill, MarketEvent, Signal};
+use bot_core::{Candle, Fill, MarketEvent, Order, Signal};
 
 /// A trading strategy: a pure decision function from market events to
 /// signals.
@@ -79,4 +79,19 @@ pub trait Strategy: Send {
     /// history: a fill at a candle's open must not see that candle's close.
     /// Signals go through [`Context::submit`].
     fn on_fill(&mut self, _ctx: &mut Context, _f: &Fill) {}
+
+    /// Called when the broker accepts an order from one of this strategy's
+    /// signals, in signal order, at the end of the event that emitted it:
+    /// before any fill of it can arrive (fills come from later settles), so
+    /// a strategy keeping several orders can learn each one's id and know
+    /// whose a fill is. An order can fill before it is ever seen in
+    /// `open_orders`. Signals submitted here are routed with the next
+    /// event's.
+    fn on_order(&mut self, _ctx: &mut Context, _order: &Order) {}
+
+    /// Called when a signal (submit or cancel) is refused, by risk or by
+    /// the venue refusing that one order (`-2010` insufficient balance, a
+    /// filter), with the reason. Not called for errors that stop the run.
+    /// Signals submitted here are routed with the next event's.
+    fn on_rejected(&mut self, _ctx: &mut Context, _signal: &Signal, _reason: &str) {}
 }

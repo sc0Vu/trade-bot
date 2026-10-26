@@ -43,8 +43,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 const NAME: &str = "ratio_hop";
-/// Evaluations a leg may stay unfilled before the strategy stops. Strategies
-/// can't see rejections yet, so a refused leg would otherwise wait forever.
+/// Evaluations a leg may stay unfilled before the strategy stops, so a
+/// refused leg can't wait forever. (Predates `Strategy::on_rejected`,
+/// which ratio_hop doesn't use yet.)
 const MAX_WAIT: u32 = 2;
 
 /// How each leg is placed.

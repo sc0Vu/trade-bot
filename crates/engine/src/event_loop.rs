@@ -146,7 +146,7 @@ async fn run_inner<P: Provider + ?Sized>(
         }
     }
     let signals = driver::take_signals(&mut ctx);
-    run.route(&ctx, signals).await?;
+    run.route(&mut ctx, strategy, signals).await?;
     // Fills made while the bot was down reach `on_fill` with the first
     // event the strategy decides on, once its history has warmed up (a
     // follow-up order may need a last close).
@@ -204,7 +204,7 @@ async fn run_inner<P: Provider + ?Sized>(
         let returned = strategy.on_event(&mut ctx, &event);
         let mut signals = driver::take_signals(&mut ctx);
         signals.extend(returned);
-        run.route(&ctx, signals).await?;
+        run.route(&mut ctx, strategy, signals).await?;
 
         if let Some(o) = observer.as_deref_mut() {
             o.on_snapshot(&Snapshot {
@@ -255,7 +255,15 @@ impl Run<'_> {
     /// Sends each signal through risk to the broker. A refused order is
     /// recorded and the loop goes on; any other broker error stops the run
     /// (see [`ExchangeError::is_order_rejection`]).
-    async fn route(&mut self, ctx: &Context, signals: Vec<Signal>) -> Result<(), EngineError> {
+    /// Sends each signal through risk to the broker and tells the strategy
+    /// what became of it (`on_order` / `on_rejected`). Signals the strategy
+    /// submits from those hooks wait in `ctx` for the next event.
+    async fn route(
+        &mut self,
+        ctx: &mut Context,
+        strategy: &mut dyn Strategy,
+        signals: Vec<Signal>,
+    ) -> Result<(), EngineError> {
         for signal in signals {
             let outcome = match &signal {
                 Signal::Cancel(id) => match self.broker.cancel(id.clone()).await {
@@ -287,7 +295,7 @@ impl Run<'_> {
                         Ok(order) => {
                             let (id, instrument, side) =
                                 (order.id.clone(), order.instrument.clone(), order.side);
-                            match self.broker.submit(order).await {
+                            match self.broker.submit(order.clone()).await {
                                 Ok(_) => {
                                     metrics::counter!(
                                         m::ORDERS,
@@ -296,6 +304,7 @@ impl Run<'_> {
                                     )
                                     .increment(1);
                                     tracing::info!(order = %id, %instrument, ?side, "order submitted");
+                                    strategy.on_order(ctx, &order);
                                     Ok(())
                                 }
                                 Err(e) => Err(refusal(e)?),
@@ -311,6 +320,7 @@ impl Run<'_> {
             };
             if let Err(reason) = outcome {
                 tracing::info!(%reason, "signal rejected");
+                strategy.on_rejected(ctx, &signal, &reason);
                 self.report.rejections.push(Rejection {
                     at: ctx.now(),
                     signal,
@@ -886,6 +896,71 @@ mod tests {
         assert_eq!(s.seen, vec![vec![], vec!["o-1".to_owned()], vec![]]);
         assert!(r.rejections.is_empty());
         assert!(r.fills.is_empty());
+    }
+
+    /// The strategy hears what became of each signal before any fill of it:
+    /// c0 sends a 4 USDT buy (under the 5 USDT minimum: refused by risk)
+    /// and a 1 BTC market buy, which becomes `o-2` (ids are minted per
+    /// signal, refused ones included) and fills at c1's open under that id.
+    /// A venue refusal (`-2010`) is reported the same way.
+    #[tokio::test]
+    async fn strategy_hears_placed_orders_and_refusals() {
+        #[derive(Default)]
+        struct Listener {
+            log: Vec<String>,
+        }
+        impl Strategy for Listener {
+            fn name(&self) -> &str {
+                "listener"
+            }
+            fn on_candle(&mut self, _: &mut Context, c: &bot_core::Candle) -> Vec<Signal> {
+                if !self.log.is_empty() {
+                    return Vec::new();
+                }
+                self.log.push("decide".into());
+                let buy = |size| Signal::Submit {
+                    instrument: c.instrument.clone(),
+                    side: bot_core::Side::Buy,
+                    size,
+                    kind: bot_core::OrderKind::Market,
+                };
+                vec![
+                    buy(bot_core::Size::Quote(bot_core::Notional::new(dec!(4)))),
+                    buy(bot_core::Size::Base(Qty::new(dec!(1)))),
+                ]
+            }
+            fn on_order(&mut self, _: &mut Context, o: &Order) {
+                self.log.push(format!("placed {}", o.id));
+            }
+            fn on_rejected(&mut self, _: &mut Context, _: &Signal, reason: &str) {
+                self.log.push(format!("refused: {reason}"));
+            }
+            fn on_fill(&mut self, _: &mut Context, f: &Fill) {
+                self.log.push(format!("fill {}", f.order_id));
+            }
+        }
+        let provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        let mut s = Listener::default();
+        run(&provider, &mut s, Params::default(), &config())
+            .await
+            .unwrap();
+        assert_eq!(
+            s.log,
+            vec![
+                "decide",
+                "refused: notional below instrument minimum",
+                "placed o-2",
+                "fill o-2"
+            ]
+        );
+
+        let mut provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        provider.submit_error = Some(-2010);
+        let mut s = Listener::default();
+        run(&provider, &mut s, Params::default(), &config())
+            .await
+            .unwrap();
+        assert_eq!(s.log[2], "refused: venue error -2010: test");
     }
 
     /// An order the venue hasn't confirmed cancelled yet leaves
