@@ -237,8 +237,9 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    ignored. `run` db: `db.url`, default `sqlite://data/<network>.db`, migrated
    on open, network-stamped.
    Refusals identical to PaperBroker. Fee in third asset (BNB) → valued
-   (`binance::fees`) at close of 1m `{asset}{quote}` candle containing trade,
-   via that pair's `Instrument::notional`; approximation (myTrades omits
+   (`binance::fees`) at `close` of 1m `{asset}{quote}` kline containing trade
+   (REST includes minute in progress: valued during it = latest price then,
+   after = final close), via that pair's `Instrument::notional`; approximation (myTrades omits
    Binance's rate). Minute not yet published (REST lags ~5 s on demo) →
    retried every 2 s, ≤ 30 asks; no such pair/candle → error, never guess.
    Reconcile (`binance::reconcile`, Binance = truth, books = which are ours):

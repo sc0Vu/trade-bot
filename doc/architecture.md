@@ -301,9 +301,12 @@ orders them.
 trades add up to `executedQty`, since the two endpoints can lag each other.
 Fills are polled once per candle, the same timing as the paper broker.
 
-**BNB fees.** A fee in a third asset is valued at the close of the
-one-minute `{asset}{quote}` candle (e.g. BNBUSDT) containing the trade,
-using that pair's `Instrument::notional`. `myTrades` doesn't report
+**BNB fees.** A fee in a third asset is valued at the `close` of the
+one-minute `{asset}{quote}` kline (e.g. BNBUSDT) containing the trade,
+using that pair's `Instrument::notional`. REST klines include the minute
+in progress, so a fee valued during its minute (usual when live) gets the
+latest price then; one valued after (restart reconcile) gets the final
+close. `myTrades` doesn't report
 Binance's own rate, so this is an approximation of at most a minute's BNB
 price move on a fraction-of-a-percent fee. A missing pair or candle is an
 error, never a guess.

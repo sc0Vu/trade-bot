@@ -3,11 +3,15 @@
 //!
 //! Position accounting needs every fee in the instrument's quote asset
 //! (`Fee::Other::value`). `myTrades` reports only the BNB amount, not the
-//! rate Binance converted at, so the fee is valued at the close of the
-//! one-minute `{asset}{quote}` candle (e.g. BNBUSDT) that contains the
-//! trade. That is an approximation: at most a minute of BNB price movement
-//! on a fee of a fraction of a percent. The multiplication itself is that
-//! pair's `Instrument::notional` (invariant 4).
+//! rate Binance converted at, so the fee is valued at the `close` of the
+//! one-minute `{asset}{quote}` kline (e.g. BNBUSDT) that contains the
+//! trade. Binance's REST klines include the minute still in progress, so a
+//! fee valued during its minute (the usual live case) gets the latest price
+//! at that moment, and one valued later (a restart's reconcile) the
+//! minute's final close. Either way an approximation: at most a minute of
+//! BNB price movement on a fee of a fraction of a percent, and not
+//! reproducible to the digit. The multiplication itself is that pair's
+//! `Instrument::notional` (invariant 4).
 //!
 //! Binance publishes a minute's kline over REST a few seconds after the
 //! minute opens (about 5 s measured on demo trading, 2026-10-23), so a
