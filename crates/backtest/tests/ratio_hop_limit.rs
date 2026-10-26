@@ -107,10 +107,11 @@ async fn untraded_limit_is_cancelled_and_repriced_never_filled() {
     assert_eq!(r.min_cash, Notional::new(dec!(1000)));
 }
 
-/// BTC drifts up with no wicks (t0 100, t1 101, t2 102), so the first
-/// limit buy at 100 is never traded through. At t2 (limit_timeout 2) it is
-/// cancelled and re-placed at the new close 102; t3 (low 101 < 102) fills
-/// it there, maker. Only a re-priced order can fill at 102: qty
+/// BTC drifts up with no wicks (t0 100, t1 101, t2 102, t3 102), so the
+/// first limit buy at 100 is never traded through. At t2 (limit_timeout 2)
+/// it is cancelled; at t3, the cancel being final (no fill can still
+/// arrive), it is placed again at that close, 102. t4 (low 101 < 102)
+/// fills it there, maker. Only a re-priced order can fill at 102: qty
 /// lot(1000/102) = 9.80392, spend 999.99984 <= 1000.
 #[tokio::test]
 async fn stale_limit_is_repriced_to_the_new_close() {
@@ -145,9 +146,10 @@ async fn stale_limit_is_repriced_to_the_new_close() {
         bar(btc, 0, ["100", "100", "100", "100"]),
         bar(btc, 1, ["101", "101", "101", "101"]),
         bar(btc, 2, ["102", "102", "102", "102"]),
-        bar(btc, 3, ["102", "103", "101", "102"]),
+        bar(btc, 3, ["102", "102", "102", "102"]),
+        bar(btc, 4, ["102", "103", "101", "102"]),
     ];
-    candles.extend((0..4).map(|i| bar(eth, i, ["10", "10", "10", "10"])));
+    candles.extend((0..5).map(|i| bar(eth, i, ["10", "10", "10", "10"])));
     let provider = BacktestProvider::new(
         instruments,
         candles,

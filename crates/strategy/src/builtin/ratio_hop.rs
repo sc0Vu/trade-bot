@@ -12,7 +12,8 @@
 //! event (`save_state`), and a restart restores them, checked against the
 //! books: a sell cancelled by the restart's reconcile goes back to holding
 //! (or, if part of it sold, buys with what that raised),
-//! a cancelled buy is placed again with the same budget, and a sell that
+//! a cancelled buy is placed again with what's left of its budget, and a
+//! sell that
 //! filled while the bot was down arrives as a recovered fill and buys with
 //! its proceeds. Without saved state (first run, other params, refused
 //! state) it starts afresh: holding a sellable coin, it resumes on it (the
@@ -20,10 +21,13 @@
 //! holding none, it buys with `quote_amount`.
 //!
 //! A venue may fill one order in many parts (the paper broker never
-//! does), so a leg ends only when its order has filled and none of ours is
-//! left working on the coin: the buy then spends the whole sale's
-//! proceeds. A leg that has started filling is waited out, never cancelled
-//! as stale or given up on.
+//! does), and may report a fill that beat a cancel only after it. So a
+//! leg ends only once no order of ours on the coin is open or being
+//! cancelled: the buy then spends the whole sale's proceeds, and a stale
+//! buy is re-placed for its budget less what already filled. A leg that
+//! has started filling is waited out, never cancelled as stale or given
+//! up on: cancelling it would leave part of each coin, and the strategy
+//! holds one.
 //!
 //! Decisions use only closed candles and positions read through `Context`
 //! (invariants 2 and 5). Expected edge is unverified: rotation pays two
@@ -83,7 +87,7 @@ struct RatioHopParams {
     /// fill risk, so neither is a safe silent default.
     order_type: OrderType,
     /// Limit mode only: evaluations a leg may rest unfilled before it is
-    /// cancelled and re-priced at the new close.
+    /// cancelled and, once the cancel is final, re-priced at the close.
     limit_timeout: Option<u32>,
 }
 
@@ -99,6 +103,11 @@ enum Phase {
         /// Quote spent by the fills so far (the venue may split an order).
         #[serde(default)]
         spent: Notional,
+        /// The order was cancelled (stale, or by a restart's reconcile);
+        /// what's left of the budget is placed again once nothing on the
+        /// coin can still fill.
+        #[serde(default)]
+        cancelling: bool,
     },
     Holding(InstrumentId),
     Selling {
@@ -108,6 +117,11 @@ enum Phase {
         /// Quote raised by the fills so far, net of quote fees.
         #[serde(default)]
         proceeds: Notional,
+        /// The stale sell was cancelled; once nothing on the coin can
+        /// still fill, it holds again (or buys with what a late fill
+        /// raised).
+        #[serde(default)]
+        cancelling: bool,
     },
     /// Stopped: bad universe, or a leg never filled.
     Stopped,
@@ -120,10 +134,6 @@ pub struct RatioHop {
     /// Units of each coin a rotation into it must beat.
     baseline: HashMap<InstrumentId, Qty>,
     last_eval: Option<Timestamp>,
-    /// Restored mid-buy with the order gone (a restart's reconcile
-    /// cancelled it): place the buy again, same budget, at the next
-    /// evaluation.
-    resubmit: bool,
 }
 
 /// What `save_state` writes. Baselines as a sorted list, so the same state
@@ -177,7 +187,6 @@ impl RatioHop {
             phase: Phase::Start,
             baseline: HashMap::new(),
             last_eval: None,
-            resubmit: false,
         }))
     }
 
@@ -297,43 +306,38 @@ impl RatioHop {
                     budget,
                     waited: 0,
                     spent: Notional::ZERO,
+                    cancelling: false,
                 };
                 vec![buy]
             }
-            Phase::Buying { to, budget, .. } if self.resubmit => {
-                self.resubmit = false;
-                self.phase = Phase::Buying {
-                    to: to.clone(),
-                    budget,
-                    waited: 0,
-                    spent: Notional::ZERO,
-                };
-                self.order(ctx, &to, Side::Buy, Size::Quote(budget))
-                    .into_iter()
-                    .collect()
-            }
             // A leg that has started filling is waited out, never cancelled
-            // or given up on: a cancelled order's last fills can arrive
-            // after it leaves `open_orders`, so the strategy couldn't tell
-            // when the leg ended. `progress` finishes it.
+            // or given up on (see the module docs); `progress` finishes it,
+            // and ends a cancel in flight.
+            Phase::Buying {
+                cancelling: true, ..
+            }
+            | Phase::Selling {
+                cancelling: true, ..
+            } => Vec::new(),
             Phase::Buying {
                 to,
                 budget,
                 waited,
                 spent,
+                ..
             } => match self.p.order_type {
-                // A stale limit buy: cancel and re-price at the new close,
-                // same budget, so the leg follows the market.
+                // A stale limit buy: cancel; `progress` re-prices it at the
+                // close once the cancel is final, so a fill that beat the
+                // cancel can't be paid for twice.
                 OrderType::Limit if self.timed_out(waited) && spent.is_zero() => {
-                    let mut out = Self::cancels(ctx, &to);
-                    out.extend(self.order(ctx, &to, Side::Buy, Size::Quote(budget)));
                     self.phase = Phase::Buying {
-                        to,
+                        to: to.clone(),
                         budget,
                         waited: 0,
                         spent,
+                        cancelling: true,
                     };
-                    out
+                    Self::cancels(ctx, &to)
                 }
                 OrderType::Market if waited >= MAX_WAIT && spent.is_zero() => {
                     self.phase = Phase::Stopped;
@@ -345,6 +349,7 @@ impl RatioHop {
                         budget,
                         waited: waited + 1,
                         spent,
+                        cancelling: false,
                     };
                     Vec::new()
                 }
@@ -354,11 +359,18 @@ impl RatioHop {
                 to,
                 waited,
                 proceeds,
+                ..
             } => match self.p.order_type {
-                // A stale limit sell: cancel and keep holding; the next
-                // evaluation decides afresh at the new prices.
+                // A stale limit sell: cancel; once final, `progress` goes
+                // back to holding and the next evaluation decides afresh.
                 OrderType::Limit if self.timed_out(waited) && proceeds.is_zero() => {
-                    self.phase = Phase::Holding(from.clone());
+                    self.phase = Phase::Selling {
+                        from: from.clone(),
+                        to,
+                        waited: 0,
+                        proceeds,
+                        cancelling: true,
+                    };
                     Self::cancels(ctx, &from)
                 }
                 OrderType::Market if waited >= MAX_WAIT && proceeds.is_zero() => {
@@ -371,6 +383,7 @@ impl RatioHop {
                         to,
                         waited: waited + 1,
                         proceeds,
+                        cancelling: false,
                     };
                     Vec::new()
                 }
@@ -417,48 +430,69 @@ impl RatioHop {
             to: b,
             waited: 0,
             proceeds: Notional::ZERO,
+            cancelling: false,
         };
         self.order(ctx, a, Side::Sell, Size::Base(units))
             .into_iter()
             .collect()
     }
 
-    /// Ends a leg once its order has filled, run on every candle after the
-    /// event's fills. A venue may split one order into many fills, and one
-    /// settle may deliver all of them, so `on_fill` only adds them up: the
-    /// leg is done when something filled and no order of ours is left
-    /// working on the coin (the broker drops an order only once it is
-    /// terminal and every fill is delivered). A sold leg then buys the
-    /// target with the whole proceeds; a bought leg becomes the holding.
+    /// Ends a leg, run on every candle after the event's fills. A venue may split one order into many fills,
+    /// and one settle may deliver all of them, so `on_fill` only adds them
+    /// up; the leg ends once no order of ours on the coin is open or being
+    /// cancelled, i.e. no fill can still arrive (the broker drops an order
+    /// only once it is closed with every fill delivered). Then:
+    /// - sold something: buy the target with the whole proceeds;
+    /// - sell cancelled, nothing sold: hold again;
+    /// - buy cancelled: place what's left of the budget at the last close;
+    /// - bought something: that's the holding.
     fn progress(&mut self, ctx: &Context) -> Vec<Signal> {
-        let idle = |id: &InstrumentId| ctx.open_orders(id).next().is_none();
-        match self.phase.clone() {
+        let idle = |id: &InstrumentId| {
+            ctx.open_orders(id).next().is_none() && ctx.cancelling_orders(id).next().is_none()
+        };
+        let (to, budget, spent) = match self.phase.clone() {
             Phase::Selling {
-                from, to, proceeds, ..
-            } if proceeds.is_positive() && idle(&from) => {
-                // Spend exactly what the sell raised, never more.
-                match self.order(ctx, &to, Side::Buy, Size::Quote(proceeds)) {
-                    Some(buy) => {
-                        self.phase = Phase::Buying {
-                            to,
-                            budget: proceeds,
-                            waited: 0,
-                            spent: Notional::ZERO,
-                        };
-                        vec![buy]
+                from,
+                to,
+                proceeds,
+                cancelling,
+                ..
+            } if idle(&from) => {
+                if proceeds.is_positive() {
+                    // Spend exactly what the sell raised, never more.
+                    (to, proceeds, Notional::ZERO)
+                } else {
+                    if cancelling {
+                        self.phase = Phase::Holding(from);
                     }
-                    None => {
-                        self.phase = Phase::Stopped;
-                        Vec::new()
-                    }
+                    return Vec::new();
                 }
             }
+            Phase::Buying {
+                to,
+                budget,
+                spent,
+                cancelling: true,
+                ..
+            } if idle(&to) => (to, budget, spent),
             Phase::Buying { to, spent, .. } if spent.is_positive() && idle(&to) => {
                 self.phase = Phase::Holding(to);
-                Vec::new()
+                return Vec::new();
             }
-            _ => Vec::new(),
-        }
+            _ => return Vec::new(),
+        };
+        let Some(buy) = self.order(ctx, &to, Side::Buy, Size::Quote(budget - spent)) else {
+            self.phase = Phase::Stopped;
+            return Vec::new();
+        };
+        self.phase = Phase::Buying {
+            to,
+            budget,
+            waited: 0,
+            spent,
+            cancelling: false,
+        };
+        vec![buy]
     }
 }
 
@@ -508,7 +542,6 @@ impl Strategy for RatioHop {
             serde_json::from_value(state).map_err(|e| super::state_error(NAME, e))?;
         let held = |id: &InstrumentId| Self::sellable(ctx, id).is_some_and(|q| q.is_positive());
         let known = |id: &InstrumentId| self.p.coins.contains(id);
-        let mut resubmit = false;
         let phase = match saved.phase {
             Phase::Holding(a) if known(&a) && held(&a) => Phase::Holding(a),
             Phase::Holding(_) => {
@@ -524,20 +557,21 @@ impl Strategy for RatioHop {
             {
                 Phase::Holding(from)
             }
+            // The reconcile closed the order, reporting any fill it missed
+            // as recovered: `progress` places what's left of the budget.
             Phase::Buying {
                 to,
                 budget,
                 waited,
                 spent,
-            } if known(&to) => {
-                resubmit = !held(&to) && spent.is_zero();
-                Phase::Buying {
-                    to,
-                    budget,
-                    waited,
-                    spent,
-                }
-            }
+                ..
+            } if known(&to) => Phase::Buying {
+                to,
+                budget,
+                waited,
+                spent,
+                cancelling: true,
+            },
             Phase::Buying { .. } => {
                 return Err(super::state_error(
                     NAME,
@@ -554,7 +588,6 @@ impl Strategy for RatioHop {
         self.phase = phase;
         self.baseline = saved.baseline.into_iter().collect();
         self.last_eval = saved.last_eval;
-        self.resubmit = resubmit;
         Ok(())
     }
 
@@ -576,8 +609,8 @@ impl Strategy for RatioHop {
     /// Evaluates once per close time, when every coin's candle for it has
     /// arrived, so no coin is judged on a stale price.
     fn on_candle(&mut self, ctx: &mut Context, c: &Candle) -> Vec<Signal> {
-        let mut out = self.progress(ctx);
         let t = c.close_time;
+        let mut out = self.progress(ctx);
         if !self.p.coins.contains(&c.instrument) || self.last_eval == Some(t) {
             return out;
         }
@@ -1210,6 +1243,106 @@ mod tests {
             assert_eq!(
                 close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000)),
                 vec![buy_eth(dec!(239.52024), OrderKind::Market)]
+            );
+        }
+
+        fn limit_params(timeout: u32) -> Params {
+            Params::from_toml(&LIMIT.replace("3X", &timeout.to_string())).unwrap()
+        }
+
+        fn limit_at(px: Decimal) -> OrderKind {
+            OrderKind::Limit {
+                price: Price::new(px),
+                tif: TimeInForce::Gtc,
+            }
+        }
+
+        /// Limit mode, timeout 3: the t2 sell of 0.01 BTC at 60000 rests
+        /// unfilled and is cancelled at t5. A fill of 0.004 beat the cancel
+        /// and is reported at t6, while the venue hasn't confirmed the
+        /// cancel: nothing yet. At t7 the cancel is final: buy ETH at the
+        /// 2900 close with the late fill's 240 - 0.24 = 239.76, not drop it.
+        #[test]
+        fn a_fill_that_beats_a_sell_cancel_is_bought_with() {
+            let (mut s, mut ctx) =
+                start_with(limit_params(3), vec![held(&btc(), dec!(0.01), dec!(600))]);
+            close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(3000));
+            close(s.as_mut(), &mut ctx, 2, dec!(60000), dec!(2900));
+            let sell = working_sell(limit_at(dec!(60000)));
+            driver::set_open_orders(&mut ctx, vec![sell.clone()]);
+            for n in 3..5 {
+                assert!(close(s.as_mut(), &mut ctx, n, dec!(60000), dec!(2900)).is_empty());
+            }
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 5, dec!(60000), dec!(2900)),
+                vec![Signal::Cancel(sell.id.clone())]
+            );
+            driver::set_cancelling_orders(&mut ctx, vec![sell]);
+            let late = part(
+                &btc(),
+                Side::Sell,
+                dec!(0.004),
+                dec!(60000),
+                Liquidity::Maker,
+            );
+            settle(s.as_mut(), &mut ctx, vec![], &[late], dec!(0.006));
+            assert!(close(s.as_mut(), &mut ctx, 6, dec!(60000), dec!(2900)).is_empty());
+            driver::set_cancelling_orders(&mut ctx, vec![]);
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 7, dec!(60000), dec!(2900)),
+                vec![buy_eth(dec!(239.76), limit_at(dec!(2900)))]
+            );
+        }
+
+        /// Limit mode, timeout 3, flat start: t0 places a 1000 USDT limit
+        /// buy of BTC at 60000, cancelled as stale at t3. 0.005 BTC
+        /// (300 USDT) filled before the cancel landed. Once the cancel is
+        /// final the buy is placed again for the 700 left, not 1000.
+        #[test]
+        fn a_fill_that_beats_a_buy_cancel_is_not_paid_twice() {
+            let (mut s, mut ctx) = start_with(limit_params(3), vec![]);
+            let first = close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            let Some(Signal::Submit { kind, .. }) = first.first() else {
+                panic!("{first:?}");
+            };
+            // As risk sizes it: lot(1000 / 60000) = 0.01666 BTC.
+            let buy = Order::new(OrderSpec {
+                id: OrderId::new("o-1").unwrap(),
+                instrument: btc().id.clone(),
+                side: Side::Buy,
+                size: Size::Base(Qty::new(dec!(0.01666))),
+                kind: *kind,
+                created_at: Timestamp::from_millis(HOUR - 1),
+            })
+            .unwrap();
+            driver::set_open_orders(&mut ctx, vec![buy.clone()]);
+            assert!(close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(3000)).is_empty());
+            assert!(close(s.as_mut(), &mut ctx, 2, dec!(60000), dec!(3000)).is_empty());
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 3, dec!(60000), dec!(3000)),
+                vec![Signal::Cancel(buy.id.clone())]
+            );
+            driver::set_open_orders(&mut ctx, vec![]);
+            driver::set_cancelling_orders(&mut ctx, vec![buy]);
+            let late = part(
+                &btc(),
+                Side::Buy,
+                dec!(0.005),
+                dec!(60000),
+                Liquidity::Maker,
+            );
+            s.on_fill(&mut ctx, &late);
+            assert!(close(s.as_mut(), &mut ctx, 4, dec!(60000), dec!(3000)).is_empty());
+            driver::set_cancelling_orders(&mut ctx, vec![]);
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 5, dec!(60000), dec!(3000)),
+                vec![Signal::Submit {
+                    instrument: btc().id.clone(),
+                    side: Side::Buy,
+                    size: Size::Quote(Notional::new(dec!(700))),
+                    kind: limit_at(dec!(60000)),
+                }]
             );
         }
 

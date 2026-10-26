@@ -396,17 +396,19 @@ baseline[A] = units sold. Sell A, then buy B with exact proceeds
 (quote budget → never overspends) once sell done: venue may split order
 into many fills (paper never does; one settle may carry all), so `on_fill`
 only sums, leg ends when something filled + no order of ours working on
-coin (checked in `on_candle`, after event's fills). Leg that started
-filling never cancelled as stale / stopped (cancelled order's late fills
-arrive after it leaves `open_orders`). `order_type` required: `market` (taker,
+coin open or cancelling (checked in `on_candle`, after event's fills; a
+fill can beat a cancel and be reported after it). Leg that started
+filling never cancelled as stale / stopped (would split holding). `order_type` required: `market` (taker,
 next open + slippage; leg unfilled 2 evals → stops) or `limit` (GTC at last
 close, maker, estimate without slippage; needs `limit_timeout`: stale buy
-cancelled by id via `ctx.open_orders` + re-priced at new close, same budget;
-stale sell cancelled → keep holding). Limit may never fill: real cost.
+cancelled by id via `ctx.open_orders`, once cancel final re-priced at close
+for budget − spent; stale sell cancelled, once final → keep holding, or
+buy with what a late fill raised). Limit may never fill: real cost.
 State (phase, baselines, last eval) saved each event, restored on restart
 checked vs books: Holding needs coin held; Selling + coin held → Holding
 (reconcile cancelled sell; part sold → buy with its proceeds); Selling + coin gone → wait recovered fill → buy
-with proceeds; Buying + target not held → re-place buy same budget; Stopped →
+with proceeds; Buying → re-place buy for budget − spent (recovered fills
+counted) once nothing on coin can fill; Stopped →
 Start. No/refused state: resume on most valuable sellable held coin
 (baselines from that eval), else buy `quote_amount`. Flat start (every
 backtest) unchanged.
