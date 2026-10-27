@@ -20,6 +20,7 @@ tokio = { workspace = true, features = ["signal"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
 bot-core.workspace = true
 strategy.workspace = true
 exchange.workspace = true

@@ -5,7 +5,7 @@
 //! with every combination tested.
 
 use crate::config::Mode;
-use anyhow::bail;
+use anyhow::{Context, bail};
 use exchange::binance::Network;
 
 /// Binance hosts that trade fake balances although they sit under
@@ -15,26 +15,27 @@ const DEMO_HOSTS: [&str; 2] = ["demo-api.binance.com", "demo-stream.binance.com"
 
 /// True if `url`'s host is a Binance real-money host: `binance.com` or a
 /// subdomain, except the demo-trading hosts. Testnet lives on
-/// `binance.vision`.
-fn is_mainnet_host(url: &str) -> bool {
-    let host = url
-        .split("://")
-        .nth(1)
-        .unwrap_or(url)
-        .split(['/', ':', '?'])
-        .next()
+/// `binance.vision`. Parsed as a URL, as the HTTP client will, so
+/// credentials before the host, percent-encoding or a trailing dot can't
+/// disguise it; an override that doesn't parse is an error.
+fn is_mainnet_host(url: &str) -> anyhow::Result<bool> {
+    let parsed = url::Url::parse(url)
+        .with_context(|| format!("exchange URL override {url:?} is not a URL"))?;
+    let host = parsed
+        .host_str()
         .unwrap_or("")
+        .trim_end_matches('.')
         .to_ascii_lowercase();
-    (host == "binance.com" || host.ends_with(".binance.com")) && !DEMO_HOSTS.contains(&&*host)
+    Ok((host == "binance.com" || host.ends_with(".binance.com")) && !DEMO_HOSTS.contains(&&*host))
 }
 
 /// Refuses URL overrides that would send a fake-money run to mainnet
 /// hosts, which would bypass every lock below.
 pub fn check_overrides(network: Network, urls: &[Option<&str>]) -> anyhow::Result<()> {
-    if network.is_fake_money()
-        && let Some(u) = urls.iter().flatten().find(|u| is_mainnet_host(u))
-    {
-        bail!("exchange URL override {u} is a mainnet host but this run is {network:?}");
+    for u in urls.iter().flatten() {
+        if is_mainnet_host(u)? && network.is_fake_money() {
+            bail!("exchange URL override {u} is a mainnet host but this run is {network:?}");
+        }
     }
     Ok(())
 }
@@ -159,6 +160,34 @@ mod tests {
             assert!(check_overrides(n, &[Some("https://notbinance.com.evil")]).is_ok());
         }
         assert!(check_overrides(Network::Live, &[Some("https://api.binance.com")]).is_ok());
+    }
+
+    /// Spellings that reach the same mainnet host: credentials before the
+    /// host (`user:pass@`), the fully-qualified trailing dot, and a
+    /// percent-encoded dot all connect to api.binance.com.
+    #[test]
+    fn mainnet_spelled_differently_is_still_mainnet() {
+        for u in [
+            "https://user:pass@api.binance.com",
+            "https://key@api.binance.com/api",
+            "https://api.binance.com.",
+            "https://api.binance.com.:443/",
+            "wss://stream.binance.com.:9443",
+            "https://api%2Ebinance.com",
+        ] {
+            assert!(
+                check_overrides(Network::Testnet, &[Some(u)]).is_err(),
+                "{u}"
+            );
+        }
+        assert!(check_overrides(Network::Demo, &[Some("https://demo-api.binance.com.")]).is_ok());
+    }
+
+    /// No scheme means no host to check: refused at startup, not guessed.
+    #[test]
+    fn override_that_is_not_a_url_is_refused() {
+        let err = check_overrides(Network::Testnet, &[Some("api.binance.com")]).unwrap_err();
+        assert!(format!("{err:#}").contains("not a URL"), "{err:#}");
     }
 
     #[test]

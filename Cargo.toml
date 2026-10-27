@@ -55,6 +55,7 @@ tokio = { version = "1.54.0", features = ["macros", "rt-multi-thread"] }
 tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }
 toml = "1.1.8"
 tracing = "0.1.44"
+url = "2.5.8"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 # Dev builds sized for small disks (measured: default 1.2 GB target/).
