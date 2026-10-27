@@ -46,4 +46,7 @@ pub enum FilterError {
     PriceNotOnTick,
     #[error("notional below instrument minimum")]
     BelowMinNotional,
+    /// Binance `PERCENT_PRICE_BY_SIDE` (`-1013`): see [`crate::PriceBand`].
+    #[error("price outside the venue's band around its average price")]
+    OutsidePriceBand,
 }

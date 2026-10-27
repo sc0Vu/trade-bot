@@ -93,6 +93,11 @@ impl Instrument {
     fn check_market(&self, q: Qty, reference: Price, side: Side) -> Result<(), FilterError>;
     // market order sends no price: check at market_price, never raw close (history
     // under today's filters is off tick → raw check called every holding unsellable)
+    fn average_price(&self, history, now: Timestamp) -> Option<Price>; // band's avg, estimated:
+    // Σquote/Σbase of candles closing in last avg_minutes (venue averages trades)
+    fn check_band(&self, p: Price, side: Side, avg: Price) -> Result<(), FilterError>;
+    // price_band: Option<PriceBand> = Binance PERCENT_PRICE_BY_SIDE (buy ∈ avg·[bid_down,
+    // bid_up], sell ∈ avg·[ask_down, ask_up]); market-relative → not in check_order
 }
 ```
 

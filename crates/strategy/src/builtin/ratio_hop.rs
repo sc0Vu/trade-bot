@@ -783,6 +783,7 @@ mod tests {
                 lot_size: Qty::new(lot),
                 min_qty: Qty::new(lot),
                 min_notional: Notional::new(dec!(5)),
+                price_band: None,
             })
             .unwrap()
         }

@@ -1,4 +1,7 @@
-use crate::{Asset, Error, FilterError, InstrumentId, Notional, Price, Qty, Side};
+use crate::{
+    Asset, Candle, Error, FilterError, InstrumentId, Notional, Price, Qty, Side, Timestamp,
+};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 
@@ -43,6 +46,53 @@ pub struct InstrumentSpec {
     pub min_qty: Qty,
     /// Smallest `qty * price` the venue accepts.
     pub min_notional: Notional,
+    /// How far an order's price may stray from the recent average price.
+    /// `None`: the venue has no such rule, or the data predates it (an
+    /// older cache file); nothing is checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_band: Option<PriceBand>,
+}
+
+/// Binance `PERCENT_PRICE_BY_SIDE`: a buy's price must lie in
+/// `[avg·bid_down, avg·bid_up]` and a sell's in `[avg·ask_down, avg·ask_up]`,
+/// bounds included, where `avg` is the venue's average traded price over
+/// the last `avg_minutes`. A fat-finger guard, but it binds normal
+/// strategies too: a limit buy far above the market (BTCUSDT: more than
+/// 1.2× the average) is refused even though it would fill at once.
+///
+/// It depends on the market, not only on reference data, so
+/// [`Instrument::check_order`] can't apply it; callers pass the average
+/// ([`Instrument::average_price`]) to [`Instrument::check_band`].
+/// Multipliers serialize as strings, like money.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceBand {
+    #[serde(with = "decimal_str")]
+    pub bid_up: Decimal,
+    #[serde(with = "decimal_str")]
+    pub bid_down: Decimal,
+    #[serde(with = "decimal_str")]
+    pub ask_up: Decimal,
+    #[serde(with = "decimal_str")]
+    pub ask_down: Decimal,
+    /// Minutes of trading the venue averages over (`avgPriceMins`).
+    pub avg_minutes: u32,
+}
+
+/// Exact decimals as strings, never through a float (invariant 1's rule,
+/// applied to the band's multipliers).
+mod decimal_str {
+    use rust_decimal::Decimal;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(d: &Decimal, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(d)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Decimal, D::Error> {
+        let s = String::deserialize(d)?;
+        Decimal::from_str_exact(&s).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Tradable instrument plus all of its asset-class math (invariant 4).
@@ -76,6 +126,21 @@ impl Instrument {
         }
         if spec.base == spec.quote {
             return Err(Error::InvalidInstrument("base and quote must differ"));
+        }
+        if let Some(b) = &spec.price_band {
+            let positive = [b.bid_up, b.bid_down, b.ask_up, b.ask_down]
+                .iter()
+                .all(|m| m.is_sign_positive() && !m.is_zero());
+            if !positive || b.bid_down > b.bid_up || b.ask_down > b.ask_up {
+                return Err(Error::InvalidInstrument(
+                    "price_band multipliers must be positive, down <= up",
+                ));
+            }
+            if b.avg_minutes == 0 {
+                return Err(Error::InvalidInstrument(
+                    "price_band avg_minutes must be >= 1",
+                ));
+            }
         }
         Ok(Self(spec))
     }
@@ -178,8 +243,55 @@ impl Instrument {
         self.check_order(qty, self.market_price(reference, side))
     }
 
+    /// The venue's average price for the band, estimated from closed
+    /// candles (oldest first, ending at the current event `now`): total
+    /// quote volume over total base volume of the candles closing within
+    /// the last `avg_minutes`. `None` if there is no band, no candle in the
+    /// window, or no volume. An estimate: the venue averages trades, and a
+    /// candle longer than the window counts whole (1h bars vs a 5-minute
+    /// window), so a price near a bound can still be refused by the venue.
+    pub fn average_price<'a>(
+        &self,
+        history: impl DoubleEndedIterator<Item = &'a Candle>,
+        now: Timestamp,
+    ) -> Option<Price> {
+        let band = self.price_band.as_ref()?;
+        let window = i64::from(band.avg_minutes) * 60_000;
+        let cutoff = now.as_millis().saturating_sub(window);
+        let (mut base, mut quote) = (Qty::ZERO, Notional::ZERO);
+        for c in history
+            .rev()
+            .take_while(|c| c.close_time.as_millis() > cutoff)
+        {
+            base += c.volume;
+            quote += c.quote_volume;
+        }
+        self.price_for(quote, base).ok()
+    }
+
+    /// The prices the band allows on `side` around the venue's average
+    /// price `avg`, both bounds included. `None` without a band.
+    pub fn price_range(&self, side: Side, avg: Price) -> Option<(Price, Price)> {
+        let b = self.price_band.as_ref()?;
+        let (down, up) = match side {
+            Side::Buy => (b.bid_down, b.bid_up),
+            Side::Sell => (b.ask_down, b.ask_up),
+        };
+        Some((Price::new(avg.get() * down), Price::new(avg.get() * up)))
+    }
+
+    /// Checks a limit `price` on `side` against the band around `avg`.
+    /// Always passes without a band.
+    pub fn check_band(&self, price: Price, side: Side, avg: Price) -> Result<(), FilterError> {
+        match self.price_range(side, avg) {
+            Some((lo, hi)) if price < lo || price > hi => Err(FilterError::OutsidePriceBand),
+            _ => Ok(()),
+        }
+    }
+
     /// Checks `qty` at `price` against every venue filter. Run on the final,
-    /// rounded order; returns the first rule broken.
+    /// rounded order; returns the first rule broken. The price band is
+    /// market-relative: see [`check_band`](Self::check_band).
     pub fn check_order(&self, qty: Qty, price: Price) -> Result<(), FilterError> {
         if !qty.is_positive() {
             return Err(FilterError::NonPositiveQty);
@@ -239,6 +351,7 @@ mod tests {
             lot_size: Qty::new(dec!(0.00001)),
             min_qty: Qty::new(dec!(0.00001)),
             min_notional: Notional::new(dec!(5)),
+            price_band: None,
         }
     }
 
@@ -400,6 +513,7 @@ mod tests {
         assert!(Instrument::new(zero_lot).is_err());
         let neg_min = InstrumentSpec {
             min_notional: Notional::new(dec!(-1)),
+            price_band: None,
             ..btcusdt_spec()
         };
         assert!(Instrument::new(neg_min).is_err());
@@ -416,5 +530,148 @@ mod tests {
         assert_eq!(serde_json::from_str::<Instrument>(&ok).unwrap(), btcusdt());
         let bad = ok.replace(r#""tick_size":"0.01""#, r#""tick_size":"0""#);
         assert!(serde_json::from_str::<Instrument>(&bad).is_err());
+    }
+
+    /// Binance BTCUSDT's `PERCENT_PRICE_BY_SIDE` (mainnet and demo, Oct 2026).
+    fn banded() -> Instrument {
+        Instrument::new(InstrumentSpec {
+            price_band: Some(PriceBand {
+                bid_up: dec!(1.2),
+                bid_down: dec!(0.5),
+                ask_up: dec!(2),
+                ask_down: dec!(0.8),
+                avg_minutes: 5,
+            }),
+            ..btcusdt_spec()
+        })
+        .unwrap()
+    }
+
+    fn px(d: Decimal) -> Price {
+        Price::new(d)
+    }
+
+    #[test]
+    fn band_bounds_are_inclusive_per_side() {
+        let i = banded();
+        let avg = px(dec!(80000));
+        assert_eq!(
+            i.price_range(Side::Buy, avg),
+            Some((px(dec!(40000)), px(dec!(96000))))
+        );
+        assert_eq!(
+            i.price_range(Side::Sell, avg),
+            Some((px(dec!(64000)), px(dec!(160000))))
+        );
+        let ok = |p: Decimal, side| i.check_band(px(p), side, avg);
+        assert_eq!(ok(dec!(96000), Side::Buy), Ok(()));
+        assert_eq!(
+            ok(dec!(96000.01), Side::Buy),
+            Err(FilterError::OutsidePriceBand)
+        );
+        assert_eq!(ok(dec!(40000), Side::Buy), Ok(()));
+        assert_eq!(
+            ok(dec!(39999.99), Side::Buy),
+            Err(FilterError::OutsidePriceBand)
+        );
+        assert_eq!(ok(dec!(64000), Side::Sell), Ok(()));
+        assert_eq!(
+            ok(dec!(63999.99), Side::Sell),
+            Err(FilterError::OutsidePriceBand)
+        );
+        assert_eq!(
+            ok(dec!(160000.01), Side::Sell),
+            Err(FilterError::OutsidePriceBand)
+        );
+        // No band, no rule.
+        assert_eq!(btcusdt().price_range(Side::Buy, avg), None);
+        assert_eq!(
+            btcusdt().check_band(px(dec!(1000000)), Side::Buy, avg),
+            Ok(())
+        );
+    }
+
+    fn bar(close_min: i64, volume: Decimal, quote: Decimal) -> Candle {
+        let close = close_min * 60_000;
+        Candle::new(crate::CandleSpec {
+            instrument: "binance:BTCUSDT".parse().unwrap(),
+            interval: crate::Interval::M1,
+            open_time: Timestamp::from_millis(close - 60_000),
+            close_time: Timestamp::from_millis(close),
+            open: px(dec!(80000)),
+            high: px(dec!(90000)),
+            low: px(dec!(70000)),
+            close: px(dec!(80000)),
+            volume: Qty::new(volume),
+            quote_volume: Notional::new(quote),
+        })
+        .unwrap()
+    }
+
+    /// Bars closing within the last 5 minutes count; one closing exactly
+    /// 5 minutes ago is outside, as is anything older.
+    /// (80 000 + 243 000) / (1 + 3) = 80 750.
+    #[test]
+    fn average_price_is_window_vwap() {
+        let i = banded();
+        let bars = [
+            bar(3, dec!(1), dec!(100000)),
+            bar(5, dec!(10), dec!(1000000)),
+            bar(6, dec!(1), dec!(80000)),
+            bar(10, dec!(3), dec!(243000)),
+        ];
+        let now = Timestamp::from_millis(10 * 60_000);
+        assert_eq!(i.average_price(bars.iter(), now), Some(px(dec!(80750))));
+        assert_eq!(btcusdt().average_price(bars.iter(), now), None);
+        let quiet = [bar(10, dec!(0), dec!(0))];
+        assert_eq!(i.average_price(quiet.iter(), now), None);
+        assert_eq!(i.average_price([].iter(), now), None);
+    }
+
+    #[test]
+    fn bad_band_is_refused() {
+        let with = |b: PriceBand| {
+            Instrument::new(InstrumentSpec {
+                price_band: Some(b),
+                ..btcusdt_spec()
+            })
+        };
+        let good = banded().price_band.unwrap();
+        assert!(
+            with(PriceBand {
+                bid_down: dec!(1.3),
+                ..good
+            })
+            .is_err()
+        );
+        assert!(
+            with(PriceBand {
+                ask_down: dec!(0),
+                ..good
+            })
+            .is_err()
+        );
+        assert!(
+            with(PriceBand {
+                avg_minutes: 0,
+                ..good
+            })
+            .is_err()
+        );
+    }
+
+    /// The band rides along in the cache file as strings; a file written
+    /// before it existed still loads, with no band.
+    #[test]
+    fn band_serializes_as_strings_and_is_optional() {
+        let json = serde_json::to_string(&banded()).unwrap();
+        assert!(json.contains(r#""bid_up":"1.2""#), "{json}");
+        assert!(json.contains(r#""avg_minutes":5"#), "{json}");
+        assert_eq!(serde_json::from_str::<Instrument>(&json).unwrap(), banded());
+        let old = serde_json::to_string(&btcusdt()).unwrap();
+        assert!(!old.contains("price_band"), "{old}");
+        assert_eq!(serde_json::from_str::<Instrument>(&old).unwrap(), btcusdt());
+        let float = json.replace(r#""bid_up":"1.2""#, r#""bid_up":1.2"#);
+        assert!(serde_json::from_str::<Instrument>(&float).is_err());
     }
 }

@@ -24,7 +24,7 @@ mod time;
 pub use error::{Error, FilterError};
 pub use fill::{Fee, Fill, FillSpec, Liquidity};
 pub use ids::{Asset, InstrumentId, Symbol, VenueId};
-pub use instrument::{AssetClass, Instrument, InstrumentSpec, Settlement};
+pub use instrument::{AssetClass, Instrument, InstrumentSpec, PriceBand, Settlement};
 pub use market::{Candle, CandleSpec, CorpAction, Interval, MarketEvent, Quote, QuoteSpec};
 pub use money::{Notional, Price, Qty};
 pub use order::{Order, OrderId, OrderKind, OrderSpec, Side, Signal, Size, TimeInForce};
