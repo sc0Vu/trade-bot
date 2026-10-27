@@ -1,0 +1,60 @@
+# Definition-of-done gate on every push and pull request: the same
+# `make check` run locally before a commit, plus the deploy/ configs.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: make check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      # rust-toolchain.toml pins the exact toolchain (clippy's verdict
+      # changes between releases); rustup installs it on first use.
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: make check
+
+  # The monitoring stack can't be booted in a unit test; check each config
+  # with the tool that ships in its own pinned image.
+  deploy:
+    name: deploy configs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: compose file
+        run: docker compose -f deploy/docker-compose.yml config --quiet
+      - name: dashboard JSON
+        run: python3 -m json.tool deploy/grafana/dashboards/trade-bot.json > /dev/null
+      - name: Prometheus rules and their unit tests
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/p:ro" -w /p --entrypoint promtool \
+            prom/prometheus:v3.5.0 check rules alerts.yml
+          docker run --rm -v "$PWD/deploy/prometheus:/p:ro" -w /p --entrypoint promtool \
+            prom/prometheus:v3.5.0 test rules alerts_test.yml
+      - name: Alertmanager config
+        run: |
+          docker run --rm -v "$PWD/deploy/alertmanager:/a:ro" --entrypoint amtool \
+            prom/alertmanager:v0.28.1 check-config /a/alertmanager.yml
+      - name: Loki config
+        run: |
+          docker run --rm -v "$PWD/deploy/loki:/etc/loki:ro" \
+            grafana/loki:3.5.3 -config.file=/etc/loki/loki.yml -verify-config
+      - name: Alloy config
+        run: |
+          docker run --rm -v "$PWD/deploy/alloy:/etc/alloy:ro" \
+            grafana/alloy:v1.10.1 fmt /etc/alloy/config.alloy > /dev/null

@@ -283,6 +283,10 @@ Backtest P&L paths have regression tests with hand-worked expected values.
 Commits are one logical change each, with Conventional Commit subjects.
 `CLAUDE.md` holds the full project rules.
 
+CI (`.github/workflows/ci.yml`) runs `make check` and validates the
+`deploy/` configs with each tool's own image on every push and pull
+request.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

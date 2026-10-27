@@ -534,6 +534,7 @@ migration/     SeaORM migrations
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.
   examples/    one runnable config per built-in (`<strategy>.toml`, paper/testnet), README
 data/          downloaded klines, per-network run dbs (gitignored)
+.github/       ci.yml (`make check` + deploy configs via each tool's image)
 deploy/        Prometheus + Alertmanager + Loki/Alloy (tails `[log] file`) + Grafana
                compose, alerts.yml (+ promtool unit tests alerts_test.yml), dashboard;
                keep in sync with metric names and log keys (cli test pins alloy keys)
