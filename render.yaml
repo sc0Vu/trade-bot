@@ -1,0 +1,32 @@
+# Render Blueprint: the bot as a background worker (no inbound port).
+# Paper trading on Binance testnet by default; see README "Render".
+services:
+  - type: worker
+    name: trade-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Binance refuses API requests from US IP addresses (HTTP 451), and
+    # Render's other regions are in the US.
+    region: frankfurt
+    plan: starter
+    # The books must outlive every deploy and restart: without them the
+    # next start can't tell the bot's open orders from anyone else's. A
+    # disk also makes Render stop the old instance before starting the
+    # new one, so two bots never trade the same account at once.
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1
+    # SIGTERM starts the close-out (cancel open orders, record last
+    # fills); the default 30 s can cut it short on a slow Binance.
+    maxShutdownDelaySeconds: 120
+    envVars:
+      # Set in the dashboard; never committed (invariant 6). Testnet keys
+      # for a paper run.
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_API_SECRET
+        sync: false
+      # Upload config/config.toml as a Secret File named config.toml.
+      - key: BOT_CONFIG
+        value: /etc/secrets/config.toml

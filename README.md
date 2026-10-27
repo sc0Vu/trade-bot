@@ -24,6 +24,7 @@ that would be a bug.
 - [Strategies](#strategies)
 - [Backtesting](#backtesting)
 - [Paper and live trading](#paper-and-live-trading)
+- [Containers and Render](#containers-and-render)
 - [Commands](#commands)
 - [Project layout](#project-layout)
 - [Known limitations](#known-limitations)
@@ -234,6 +235,69 @@ Live trading:
 cargo run -p cli -- run --live --i-understand
 ```
 
+## Containers and Render
+
+`Dockerfile` builds the bot (`trade-bot run --paper` by default);
+`render.yaml` deploys it to Render as a background worker. Test in this
+order, on testnet keys, before anything touches real money.
+
+**1. Locally, with Docker.** Put testnet keys in `.env`
+(`BINANCE_API_KEY=…`, `BINANCE_API_SECRET=…`) and a paper config in
+`config/config.toml`, then:
+
+```sh
+docker build -t trade-bot .
+docker run -d --name tb --env-file .env -e BOT_LOG__FORMAT=json \
+  -v "$PWD/config/config.toml:/app/config/config.toml:ro" \
+  -v tb-data:/app/data trade-bot
+docker logs -f tb
+```
+
+| Check | How | Expect |
+|---|---|---|
+| Starts | `docker logs tb` | `reconciled with Binance`, then `starting` with the run tag |
+| Trades | Wait for the strategy to act | `order submitted` / `fill` lines with `tb…-o-N` ids |
+| Graceful stop | `docker stop -t 120 tb` | Close-out log, open orders cancelled on testnet |
+| Books survive | `docker start tb` | `resuming saved strategy state`, the same positions |
+| Crash | `docker kill tb`, then `docker start tb` | Startup reconcile picks up orders and fills from the downtime |
+
+A fresh volume with orders still open on the account makes the bot refuse
+to start (an unknown `tb…` order). That's the guard working: reuse the
+volume.
+
+**2. On Render, still testnet.** *New > Blueprint* with this repo reads
+`render.yaml`. Then, in the dashboard:
+- Set `BINANCE_API_KEY` and `BINANCE_API_SECRET` (testnet keys).
+- Upload your config as a *Secret File* named `config.toml`; `BOT_CONFIG`
+  points at `/etc/secrets/config.toml`.
+- Repeat the checks: **Logs** for startup, then **Manual Deploy** for the
+  graceful stop and restart. After a redeploy you should see
+  `resuming saved strategy state`: proof the disk kept the books.
+
+What the blueprint settles, and why:
+- **Background worker, not a web service.** The bot needs no inbound port,
+  and free web services sleep when idle, which would stop trading.
+- **Frankfurt region.** Binance refuses requests from US IP addresses
+  (HTTP 451), and Render's other regions are in the US. Check that
+  Binance serves your own jurisdiction too.
+- **Persistent disk at `/app/data`.** The books must survive deploys. A
+  disk also means Render stops the old instance before starting the new
+  one, so two bots never trade one account.
+- **`maxShutdownDelaySeconds: 120`.** Time for the close-out after
+  SIGTERM; Render's default is 30 s.
+- Render restarts a crashed container, so it acts as the supervisor.
+
+Monitoring: Render keeps stdout (`BOT_LOG__FORMAT=json` for log streams to
+Datadog or other services). A worker has no public address, so Prometheus
+can't scrape it from outside Render. Run the collector as another service
+in the same region, or ship metrics with Grafana Alloy or the Datadog
+agent.
+
+**3. Live.** Only after the testnet run behaves: live keys, a config with
+`mode = "live"` and `[exchange] network = "live"`, a new disk (one database
+per network), and the start command set to `run --live --i-understand` in
+Render's settings. It's never in the image (invariant 7).
+
 ## Commands
 
 `make` with no target lists them.
@@ -292,9 +356,9 @@ Backtest P&L paths have regression tests with hand-worked expected values.
 Commits are one logical change each, with Conventional Commit subjects.
 `CLAUDE.md` holds the full project rules.
 
-CI (`.github/workflows/ci.yml`) runs `make check` and validates the
-`deploy/` configs with each tool's own image on every push and pull
-request. Pushing a tag `vX.Y.Z` that matches the workspace version runs
+CI (`.github/workflows/ci.yml`) runs `make check`, validates the
+`deploy/` configs with each tool's own image, and builds the container
+image and starts it once, on every push and pull request. Pushing a tag `vX.Y.Z` that matches the workspace version runs
 `release.yml`: it builds every platform (Linux with OpenSSL linked
 statically through the `vendored-tls` feature), smoke-tests each binary,
 and publishes the archives with `SHA256SUMS` as a GitHub release. *Run

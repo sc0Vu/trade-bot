@@ -1,0 +1,18 @@
+# Build context: sources only. Never secrets, real configs or run data.
+target
+data
+.git
+.github
+.env
+**/*.local.toml
+config/config.toml
+**/*.db
+**/*.sqlite
+PROGRESS.md
+IMPORTANT
+# Scratch configs in the repo root; the build needs only these two.
+/*.toml
+!/Cargo.toml
+!/rust-toolchain.toml
+deploy
+doc

@@ -538,6 +538,10 @@ data/          downloaded klines, per-network run dbs (gitignored)
                (tag `v<workspace version>` → `trade-bot` for linux x86_64/arm64 gnu,
                macOS arm64/x86_64, windows x86_64; `cli --features vendored-tls` =
                static OpenSSL; archives + SHA256SUMS on a GitHub release)
+Dockerfile     debian + rustup (toolchain pin), system libssl; `run --paper` default,
+               books in volume /app/data; live only via typed command (invariant 7)
+render.yaml    worker, frankfurt (Binance 451s US IPs), disk /app/data (books survive;
+               no overlapping instances), maxShutdownDelaySeconds 120 (close-out)
 deploy/        Prometheus + Alertmanager + Loki/Alloy (tails `[log] file`) + Grafana
                compose, alerts.yml (+ promtool unit tests alerts_test.yml), dashboard;
                keep in sync with metric names and log keys (cli test pins alloy keys)

@@ -58,3 +58,18 @@ jobs:
         run: |
           docker run --rm -v "$PWD/deploy/alloy:/etc/alloy:ro" \
             grafana/alloy:v1.10.1 fmt /etc/alloy/config.alloy > /dev/null
+
+  # The image builds, its binary starts (shared libraries present), and a
+  # run gets as far as the credentials check with a bundled example config.
+  container:
+    name: container image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t trade-bot:ci .
+      - run: docker run --rm trade-bot:ci --version
+      - name: run stops at the missing key, not earlier
+        run: |
+          out=$(docker run --rm -e BOT_CONFIG=/app/config/examples/sma_trend.toml trade-bot:ci 2>&1) && exit 1
+          echo "$out"
+          grep -q "BINANCE_API_KEY is not set" <<< "$out"
