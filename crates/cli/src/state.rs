@@ -70,7 +70,8 @@ impl Saver {
     ) -> Self {
         let (tx, mut rx) = watch::channel(initial);
         rx.mark_unchanged();
-        let task = tokio::spawn(async move {
+        // In the run's span, so its warnings carry the run tag.
+        let task = tokio::spawn(tracing::Instrument::in_current_span(async move {
             // Ends once the sender is dropped and the last value is written.
             while rx.changed().await.is_ok() {
                 let Some(state) = rx.borrow_and_update().clone() else {
@@ -85,7 +86,7 @@ impl Saver {
                     tracing::warn!(error = %e, "strategy state not saved; a restart would start fresh");
                 }
             }
-        });
+        }));
         Self { tx, task }
     }
 

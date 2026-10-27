@@ -4,8 +4,10 @@
 //!
 //! A JSON line is one flat object: `timestamp` (RFC 3339, UTC), `level`
 //! (`INFO`, `WARN`, …), `target` (module path), `message`, then the
-//! event's own fields. `deploy/alloy/config.alloy` reads exactly these
-//! keys; keep them in step. Logging can never stop trading: a file that
+//! event's own fields, and inside `run` a `span` object whose `tag` is the
+//! run's tag. Engine order ids restart at `o-1` every run; the tag (also
+//! the prefix of Binance's `newClientOrderId`) tells runs apart.
+//! `deploy/alloy/config.alloy` reads exactly these keys; keep them in step. Logging can never stop trading: a file that
 //! can't be opened is a warning on the console, and the run goes on.
 
 use crate::config::{LogFormat, LogSection};
@@ -27,6 +29,7 @@ where
     tracing_subscriber::fmt::layer()
         .json()
         .flatten_event(true)
+        .with_span_list(false)
         .with_ansi(false)
         .with_writer(w)
         .boxed()
@@ -101,7 +104,9 @@ mod tests {
         let sub = tracing_subscriber::registry().with(vec![json(move || b.clone())]);
         tracing::subscriber::with_default(sub, || {
             tracing::info!(target: "engine", order = "o-1", "order submitted");
-            tracing::warn!(target: "exchange::binance", code = -2010, "order refused");
+            tracing::info_span!("run", tag = "tbmvqk2hzs").in_scope(|| {
+                tracing::warn!(target: "exchange::binance", code = -2010, "order refused");
+            });
         });
         let got = lines(&buf);
         assert_eq!(got.len(), 2);
@@ -110,10 +115,13 @@ mod tests {
         assert_eq!(got[0]["message"], "order submitted");
         assert_eq!(got[0]["order"], "o-1");
         assert!(got[0].get("fields").is_none(), "{}", got[0]);
+        assert!(got[0].get("span").is_none(), "{}", got[0]);
         let ts = got[0]["timestamp"].as_str().unwrap();
         assert!(ts.contains('T') && ts.ends_with('Z'), "{ts}");
         assert_eq!(got[1]["level"], "WARN");
         assert_eq!(got[1]["code"], -2010);
+        assert_eq!(got[1]["span"]["tag"], "tbmvqk2hzs");
+        assert!(got[1].get("spans").is_none(), "{}", got[1]);
     }
 
     #[test]

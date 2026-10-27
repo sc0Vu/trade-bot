@@ -92,6 +92,8 @@ pub struct BinanceSpotProvider {
     /// IP, whether the call comes from the broker, a lookup or the exit
     /// close-out.
     limiter: Arc<RateLimiter>,
+    /// Prefix of this run's client order ids ([`run_tag`]).
+    run_tag: String,
 }
 
 impl BinanceSpotProvider {
@@ -110,7 +112,22 @@ impl BinanceSpotProvider {
             universe,
             books,
             limiter: Arc::new(RateLimiter::new(limits::default_limits())),
+            run_tag: run_tag(SystemClock.now_millis()),
         }
+    }
+
+    /// Uses `tag` as this run's client order id prefix instead of one made
+    /// at construction: the caller made it first to label the run's logs,
+    /// so a log line's engine id (`o-2`) maps to the venue's
+    /// `newClientOrderId` (`<tag>-o-2`). One tag per run: never reuse one.
+    pub fn with_run_tag(mut self, tag: String) -> Self {
+        self.run_tag = tag;
+        self
+    }
+
+    /// This run's client order id prefix.
+    pub fn run_tag(&self) -> &str {
+        &self.run_tag
     }
 
     pub fn network(&self) -> Network {
@@ -203,11 +220,15 @@ impl Provider for BinanceSpotProvider {
             .into_iter()
             .filter(|i| self.universe.contains(&i.id))
             .collect();
-        let tag = run_tag(SystemClock.now_millis());
         Ok(Box::new(
-            BinanceBroker::open(client, instruments, tag, self.books.clone())
-                .await?
-                .with_recovered(r.fills),
+            BinanceBroker::open(
+                client,
+                instruments,
+                self.run_tag.clone(),
+                self.books.clone(),
+            )
+            .await?
+            .with_recovered(r.fills),
         ))
     }
 
@@ -278,5 +299,11 @@ mod tests {
         );
         assert_eq!(p.network(), Network::Demo);
         assert_eq!(p.id(), "binance-demo");
+        assert!(
+            p.run_tag().starts_with(crate::binance::CLIENT_ID_PREFIX),
+            "{}",
+            p.run_tag()
+        );
+        assert_eq!(p.with_run_tag("tbabc".into()).run_tag(), "tbabc");
     }
 }
