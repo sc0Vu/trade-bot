@@ -1,8 +1,10 @@
 # Scrapes the bot's /metrics (enable [metrics] in config/config.toml).
 #
-# The bot binds 127.0.0.1:9184 by default. From the compose stack the host
-# is reached as host.docker.internal: Docker Desktop (macOS, Windows) maps
-# that to the host's loopback. On Linux, run Prometheus on the host instead,
+# The target is TRADEBOT_METRICS_TARGET from deploy/.env, filled in when
+# the container starts; default host.docker.internal:9184, the bot's
+# default port. From the compose stack the host is reached as
+# host.docker.internal: Docker Desktop (macOS, Windows) maps that to the
+# host's loopback. On Linux, run Prometheus on the host instead,
 # or bind the bot to the docker bridge address with metrics.allow_public.
 global:
   scrape_interval: 15s
@@ -19,4 +21,5 @@ alerting:
 scrape_configs:
   - job_name: trade-bot
     static_configs:
-      - targets: ["host.docker.internal:9184"]
+      # Filled in at start from TRADEBOT_METRICS_TARGET (deploy/.env).
+      - targets: ["__TRADEBOT_METRICS_TARGET__"]

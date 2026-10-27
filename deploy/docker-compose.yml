@@ -3,24 +3,35 @@
 #   docker compose -f deploy/docker-compose.yml up -d
 # Grafana: http://localhost:3000 (admin / admin on first login).
 # All ports bind to 127.0.0.1: these UIs have no authentication by default.
+# Ports and the bot's metrics address come from deploy/.env (copy
+# .env.example); unset, the defaults below apply.
 services:
   prometheus:
     image: prom/prometheus:v3.5.0
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=30d
+    # Prometheus can't read env vars in a scrape config: fill the bot's
+    # address into a copy of the file, then start it.
+    environment:
+      TRADEBOT_METRICS_TARGET: ${TRADEBOT_METRICS_TARGET:-host.docker.internal:9184}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        sed "s|__TRADEBOT_METRICS_TARGET__|$$TRADEBOT_METRICS_TARGET|" /etc/prometheus/prometheus.yml
+        > /prometheus/prometheus.yml &&
+        exec /bin/prometheus --config.file=/prometheus/prometheus.yml
+        --storage.tsdb.retention.time=30d
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
-    ports: ["127.0.0.1:9090:9090"]
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"]
     extra_hosts: ["host.docker.internal:host-gateway"]
 
   alertmanager:
     image: prom/alertmanager:v0.28.1
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-    ports: ["127.0.0.1:9093:9093"]
+    ports: ["127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"]
 
   loki:
     image: grafana/loki:3.5.3
@@ -28,7 +39,7 @@ services:
     volumes:
       - ./loki/loki.yml:/etc/loki/loki.yml:ro
       - loki-data:/loki
-    ports: ["127.0.0.1:3100:3100"]
+    ports: ["127.0.0.1:${LOKI_PORT:-3100}:3100"]
 
   # Tails data/logs/*.jsonl (the bot's [log] file) into Loki.
   alloy:
@@ -46,7 +57,7 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
-    ports: ["127.0.0.1:3000:3000"]
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
 
 volumes:
   prometheus-data:

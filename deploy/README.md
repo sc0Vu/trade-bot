@@ -51,6 +51,13 @@ Alerts reach nobody until you give Alertmanager a receiver: edit
 | `RateLimiterWaiting` | The limiter held requests more than 5 times in 15 min |
 | `FeedReconnecting` | The market-data feed reconnected more than 3 times in an hour |
 
+Ports: copy `deploy/.env.example` to `deploy/.env` to change the stack's
+host ports (`GRAFANA_PORT`, `PROMETHEUS_PORT`, `ALERTMANAGER_PORT`,
+`LOKI_PORT`) or where Prometheus finds the bot
+(`TRADEBOT_METRICS_TARGET`). The bot's own ports are in its config:
+`[metrics] listen` and `[api] listen` (or `BOT_METRICS__LISTEN`,
+`BOT_API__LISTEN`). Change the metrics port in both places.
+
 Networking: the bot binds `127.0.0.1:9184`. The compose Prometheus reaches
 it as `host.docker.internal`, which Docker Desktop maps to the host's
 loopback. On Linux, run Prometheus on the host, or bind the bot to the

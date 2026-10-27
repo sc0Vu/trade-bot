@@ -46,6 +46,11 @@ jobs:
             prom/prometheus:v3.5.0 check rules alerts.yml
           docker run --rm -v "$PWD/deploy/prometheus:/p:ro" -w /p --entrypoint promtool \
             prom/prometheus:v3.5.0 test rules alerts_test.yml
+      - name: Prometheus config, target filled in as compose does
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" --entrypoint /bin/sh \
+            prom/prometheus:v3.5.0 -c \
+            'sed "s|__TRADEBOT_METRICS_TARGET__|host.docker.internal:9184|" /etc/prometheus/prometheus.yml > /tmp/p.yml && promtool check config /tmp/p.yml'
       - name: Alertmanager config
         run: |
           docker run --rm -v "$PWD/deploy/alertmanager:/a:ro" --entrypoint amtool \
