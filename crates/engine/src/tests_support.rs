@@ -64,6 +64,9 @@ pub struct TestProvider {
     /// When set, a cancelled order stays "cancelling" through the next
     /// settle, as a live venue confirms a cancel only on a later poll.
     pub slow_cancel: bool,
+    /// The one instrument served; [`btcusdt`] unless a test swaps in, say,
+    /// one with a price band.
+    pub instrument: Instrument,
 }
 
 impl TestProvider {
@@ -77,6 +80,7 @@ impl TestProvider {
             prior: None,
             recovered: Vec::new(),
             slow_cancel: false,
+            instrument: btcusdt(),
         }
     }
 }
@@ -213,7 +217,7 @@ impl Provider for TestProvider {
 
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
         let paper = PaperBroker::new(
-            vec![btcusdt()],
+            vec![self.instrument.clone()],
             Box::new(NextOpenFillModel),
             Box::new(BpsSlippage::new(self.slippage_bps).unwrap()),
             Box::new(RateFee::new(self.fee_rate, self.fee_rate, FeeAsset::Received).unwrap()),
@@ -236,8 +240,8 @@ impl Provider for TestProvider {
         let InstrumentQuery::Ids(ids) = q;
         ids.iter()
             .map(|id| {
-                if *id == btcusdt().id {
-                    Ok(btcusdt())
+                if *id == self.instrument.id {
+                    Ok(self.instrument.clone())
                 } else {
                     Err(ExchangeError::UnknownInstrument(id.clone()))
                 }

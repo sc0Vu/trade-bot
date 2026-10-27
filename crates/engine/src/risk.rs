@@ -1,8 +1,9 @@
 //! Turns a strategy's [`Signal`](bot_core::Signal) into an [`Order`] a broker will accept.
 //!
 //! v1 risk is sizing and venue filters only: whitelist membership, quote
-//! amount to base units, rounding to lot and tick, and
-//! `Instrument::check_order`. A quote-sized market buy stays a budget: the
+//! amount to base units, rounding to lot and tick,
+//! `Instrument::check_order`, and the venue's price band around its average
+//! price (`Instrument::check_band`) for limit prices. A quote-sized market buy stays a budget: the
 //! broker sizes it at the fill price, so it can't overspend when the price
 //! moves between decision and fill. Position limits and the freefall guard come
 //! later and slot in here.
@@ -34,6 +35,17 @@ impl fmt::Display for RiskRejection {
             Self::Invalid(e) => write!(f, "{e}"),
         }
     }
+}
+
+/// What risk knows of an instrument's market when a signal is decided.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MarketPrices {
+    /// The last close: a market order's sizing and check price.
+    pub last_close: Option<Price>,
+    /// The venue's average price for its price band, estimated from
+    /// history (`Instrument::average_price`). `None`: unknown, so limit
+    /// prices aren't checked against the band.
+    pub average: Option<Price>,
 }
 
 /// The price an order is sized and checked at: its own limit for resting
@@ -81,21 +93,27 @@ fn round_kind(i: &Instrument, side: Side, kind: OrderKind) -> OrderKind {
 
 /// Builds the order for one `Submit` signal.
 ///
-/// `reference` is the instrument's last close; `now` is the time of the
-/// event the signal was decided on, which becomes the order's `created_at`
-/// so the broker can't fill it on that same event.
+/// `market` holds the last close and the band's average price. `now` is
+/// the time of the event the signal was decided on, which becomes the
+/// order's `created_at` so the broker can't fill it on that same event.
+///
+/// The band applies to a limit price (limit, stop-limit): Binance refuses
+/// one outside it with `-1013 PERCENT_PRICE_BY_SIDE`, even a buy far above
+/// the market that would fill at once. Market and stop-market orders send
+/// no limit price and aren't checked.
 pub fn to_order(
     id: OrderId,
     instrument: Option<&Instrument>,
     side: Side,
     size: Size,
     kind: OrderKind,
-    reference: Option<Price>,
+    market: MarketPrices,
     now: Timestamp,
 ) -> Result<Order, RiskRejection> {
     let i = instrument.ok_or(RiskRejection::NotInUniverse)?;
     let kind = round_kind(i, side, kind);
-    let price = order_price(i, side, kind, reference).ok_or(RiskRejection::NoReferencePrice)?;
+    let price =
+        order_price(i, side, kind, market.last_close).ok_or(RiskRejection::NoReferencePrice)?;
     let raw = match size {
         Size::Base(q) => q,
         Size::Quote(n) => i.qty_for(n, price).map_err(RiskRejection::Filter)?,
@@ -104,6 +122,12 @@ pub fn to_order(
     // For a budget buy this checks the size it would have at the reference
     // price; the broker re-checks at the real fill price.
     i.check_order(qty, price).map_err(RiskRejection::Filter)?;
+    if let (Some(avg), OrderKind::Limit { price: limit, .. } | OrderKind::StopLimit { limit, .. }) =
+        (market.average, kind)
+    {
+        i.check_band(limit, side, avg)
+            .map_err(RiskRejection::Filter)?;
+    }
     let size = match (size, kind, side) {
         (Size::Quote(budget), OrderKind::Market, Side::Buy) => Size::Quote(budget),
         _ => Size::Base(qty),
@@ -133,7 +157,10 @@ mod tests {
             Side::Buy,
             size,
             kind,
-            reference,
+            MarketPrices {
+                last_close: reference,
+                average: None,
+            },
             Timestamp::from_millis(0),
         )
     }
@@ -158,7 +185,10 @@ mod tests {
             Side::Sell,
             Size::Quote(Notional::new(dec!(1000))),
             OrderKind::Market,
-            Some(Price::new(dec!(60000))),
+            MarketPrices {
+                last_close: Some(Price::new(dec!(60000))),
+                average: None,
+            },
             Timestamp::from_millis(0),
         )
         .unwrap();
@@ -196,7 +226,10 @@ mod tests {
                 side,
                 Size::Base(Qty::new(dec!(0.0001))),
                 OrderKind::Market,
-                Some(Price::new(dec!(49999.999))),
+                MarketPrices {
+                    last_close: Some(Price::new(dec!(49999.999))),
+                    average: None,
+                },
                 Timestamp::from_millis(0),
             )
         };
@@ -205,6 +238,72 @@ mod tests {
             at(Side::Sell).unwrap_err(),
             RiskRejection::Filter(FilterError::BelowMinNotional)
         );
+    }
+
+    fn banded() -> Instrument {
+        Instrument::new(bot_core::InstrumentSpec {
+            price_band: Some(bot_core::PriceBand {
+                bid_up: dec!(1.2),
+                bid_down: dec!(0.5),
+                ask_up: dec!(2),
+                ask_down: dec!(0.8),
+                avg_minutes: 5,
+            }),
+            ..(*btcusdt()).clone()
+        })
+        .unwrap()
+    }
+
+    /// Average 80 000: a buy may be priced 40 000..=96 000, a sell
+    /// 64 000..=160 000 (BTCUSDT's band). Checked on the rounded limit.
+    #[test]
+    fn limit_outside_the_price_band_is_refused() {
+        let i = banded();
+        let avg = Some(Price::new(dec!(80000)));
+        let order = |side, kind, avg| {
+            to_order(
+                OrderId::new("o-1").unwrap(),
+                Some(&i),
+                side,
+                Size::Base(Qty::new(dec!(0.001))),
+                kind,
+                MarketPrices {
+                    last_close: Some(Price::new(dec!(80000))),
+                    average: avg,
+                },
+                Timestamp::from_millis(0),
+            )
+        };
+        let limit = |p| OrderKind::Limit {
+            price: Price::new(p),
+            tif: TimeInForce::Gtc,
+        };
+        let band = Err(RiskRejection::Filter(FilterError::OutsidePriceBand));
+        assert!(order(Side::Buy, limit(dec!(96000)), avg).is_ok());
+        assert_eq!(
+            order(Side::Buy, limit(dec!(96000.01)), avg).map(|_| ()),
+            band
+        );
+        // 96000.009 rounds down to 96000.00: inside.
+        assert!(order(Side::Buy, limit(dec!(96000.009)), avg).is_ok());
+        assert_eq!(
+            order(Side::Buy, limit(dec!(39999.99)), avg).map(|_| ()),
+            band
+        );
+        assert_eq!(
+            order(Side::Sell, limit(dec!(63999.99)), avg).map(|_| ()),
+            band
+        );
+        assert!(order(Side::Sell, limit(dec!(160000)), avg).is_ok());
+        let stop_limit = OrderKind::StopLimit {
+            stop: Price::new(dec!(97000)),
+            limit: Price::new(dec!(97000)),
+            tif: TimeInForce::Gtc,
+        };
+        assert_eq!(order(Side::Buy, stop_limit, avg).map(|_| ()), band);
+        // No limit price, or no average known: nothing to check.
+        assert!(order(Side::Buy, OrderKind::Market, avg).is_ok());
+        assert!(order(Side::Buy, limit(dec!(200000)), None).is_ok());
     }
 
     #[test]
@@ -230,7 +329,10 @@ mod tests {
             Side::Buy,
             q,
             OrderKind::Market,
-            Some(Price::new(dec!(100))),
+            MarketPrices {
+                last_close: Some(Price::new(dec!(100))),
+                average: None,
+            },
             Timestamp::from_millis(0),
         );
         assert_eq!(none.unwrap_err(), RiskRejection::NotInUniverse);

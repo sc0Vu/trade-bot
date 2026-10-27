@@ -282,6 +282,12 @@ impl Run<'_> {
                 } => {
                     let reference = ctx.last_candle(instrument).map(|c| c.close);
                     let now = ctx.now().unwrap_or(Timestamp::from_millis(i64::MIN));
+                    let market = risk::MarketPrices {
+                        last_close: reference,
+                        average: ctx
+                            .instrument(instrument)
+                            .and_then(|i| i.average_price(ctx.history(instrument), now)),
+                    };
                     let id = self.mint_id();
                     match risk::to_order(
                         id,
@@ -289,7 +295,7 @@ impl Run<'_> {
                         *side,
                         *size,
                         *kind,
-                        reference,
+                        market,
                         now,
                     ) {
                         Ok(order) => {
@@ -574,6 +580,58 @@ mod tests {
             gauge(&snap, m::LAST_CANDLE, &[("instrument", &btc)]),
             Some(10_799.999)
         );
+    }
+
+    /// Bids a limit at twice the last close.
+    struct Overbid;
+    impl Strategy for Overbid {
+        fn name(&self) -> &str {
+            "overbid"
+        }
+        fn on_candle(&mut self, _: &mut Context, c: &bot_core::Candle) -> Vec<Signal> {
+            vec![Signal::Submit {
+                instrument: c.instrument.clone(),
+                side: bot_core::Side::Buy,
+                size: bot_core::Size::Base(Qty::new(dec!(1))),
+                kind: bot_core::OrderKind::Limit {
+                    price: Price::new(c.close.get() * dec!(2)),
+                    tif: bot_core::TimeInForce::Gtc,
+                },
+            }]
+        }
+    }
+
+    /// With BTCUSDT's band (buys up to 1.2x the average) a limit at 2x the
+    /// close is refused before the broker, each bar, as Binance would with
+    /// -1013. The test candles' average is their close (quote volume =
+    /// close, volume 1). Without a band the same bids are accepted.
+    #[tokio::test]
+    async fn limit_beyond_the_price_band_is_refused_by_risk() {
+        let mut provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        provider.instrument = bot_core::Instrument::new(bot_core::InstrumentSpec {
+            price_band: Some(bot_core::PriceBand {
+                bid_up: dec!(1.2),
+                bid_down: dec!(0.5),
+                ask_up: dec!(2),
+                ask_down: dec!(0.8),
+                avg_minutes: 5,
+            }),
+            ..(*btcusdt()).clone()
+        })
+        .unwrap();
+        let r = run(&provider, &mut Overbid, Params::default(), &config())
+            .await
+            .unwrap();
+        assert_eq!(r.rejections.len(), 3);
+        assert_eq!(
+            r.rejections[0].reason,
+            "price outside the venue's band around its average price"
+        );
+        let plain = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        let r = run(&plain, &mut Overbid, Params::default(), &config())
+            .await
+            .unwrap();
+        assert!(r.rejections.is_empty(), "{:?}", r.rejections);
     }
 
     #[tokio::test]

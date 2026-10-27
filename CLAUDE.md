@@ -190,7 +190,10 @@ broker, `created_at` = event ts → `on_order` / `on_rejected`. Risk v1: whiteli
 at order price, except market buy keeps quote budget; market reference =
 last close rounded to tick against trader, buy up / sell down: market order
 sends no price, history under today's filters can be off tick), lot/tick
-rounding (never more aggressive), `check_order`. Strategy state: `save_state() -> Option<Value>` (versioned, money as strings)
+rounding (never more aggressive), `check_order`, then limit price
+(limit, stop-limit) vs `price_band` around `average_price(history, now)`
+(Binance `-1013 PERCENT_PRICE_BY_SIDE` caught before submit, same in
+backtest; no band / no avg → unchecked). Strategy state: `save_state() -> Option<Value>` (versioned, money as strings)
 in `Snapshot.strategy_state` after each event; `run_observed(.., resume)`
 calls `restore_state(state, &ctx)` after `on_start`, all-or-nothing, must
 refuse state contradicting books; refused → fresh + warning.
