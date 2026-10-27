@@ -77,7 +77,7 @@ async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<
     Ok(Arc::new(store))
 }
 
-async fn run_bot(a: RunArgs, cfg: config::Config, run_tag: String) -> anyhow::Result<()> {
+async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
     gate::check_overrides(
         network,
@@ -103,8 +103,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config, run_tag: String) -> anyhow::Re
         creds,
         cfg.whitelist.clone(),
         books.clone(),
-    )
-    .with_run_tag(run_tag);
+    );
     let state_hash = state::params_hash(&cfg.strategy.name, &cfg.strategy.params);
     let resume = state::load(&*books, &cfg.strategy.name, &state_hash).await?;
     if resume.is_some() {
@@ -155,7 +154,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config, run_tag: String) -> anyhow::Re
         live,
         state: Some(saver),
     };
-    tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, "starting");
+    tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, run_tag = provider.run_tag(), "starting");
     let outcome = tokio::select! {
         r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, resume) => r.map(Some),
         s = shutdown::signal() => {
@@ -358,25 +357,13 @@ async fn main() -> anyhow::Result<()> {
                 &config::log_filter(rust_log, cfg.log.level.as_deref(), "info,sqlx=warn"),
                 &cfg.log,
             );
-            // Every line of the run carries its tag: engine order ids
-            // restart at o-1 each run, the tag (also the client order id
-            // prefix on Binance) tells runs apart.
-            let tag = exchange::binance::run_tag(now().as_millis());
-            let span = tracing::info_span!("run", tag = %tag);
-            tracing::Instrument::instrument(
-                async {
-                    let ran = run_bot(a, cfg, tag).await;
-                    // Also as a log line, so the log file (and whatever
-                    // ships it) says why the bot stopped, not only the
-                    // terminal.
-                    if let Err(e) = &ran {
-                        tracing::error!(error = format!("{e:#}"), "run stopped");
-                    }
-                    ran
-                },
-                span,
-            )
-            .await
+            let ran = run_bot(a, cfg).await;
+            // Also as a log line, so the log file (and whatever ships it)
+            // says why the bot stopped, not only the terminal.
+            if let Err(e) = &ran {
+                tracing::error!(error = format!("{e:#}"), "run stopped");
+            }
+            ran
         }
         // A backtest logging every simulated order would bury its report.
         Command::FetchData(a) => {

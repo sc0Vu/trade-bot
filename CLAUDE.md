@@ -590,11 +590,10 @@ Layered; each source overrides one above:
   logs nothing). backtest / fetch-data: `RUST_LOG` else `warn`.
   `[log] format` `text` (default) | `json` (console); `[log] file` = also
   append JSON lines (`cli::logging`: flat `timestamp`, `level`, `target`,
-  `message`, fields, `span.tag` — keys `deploy/alloy` parses) for a
-  shipper; open failure = warning. Fatal run error also logged (`run
-  stopped`). Whole run inside span `run{tag}`: tag = run tag
-  (`BinanceSpotProvider::with_run_tag`, made by cli first) → log `o-2` ↔
-  venue `<tag>-o-2`.
+  `message`, fields — keys `deploy/alloy` parses) for a shipper; open
+  failure = warning. Fatal run error also logged (`run stopped`). Engine
+  order/cancel/fill lines log `Broker::client_order_id` (log only, never
+  a decision): Binance `<run tag>-o-N`, paper the engine id.
 
 ## Definition of done (every change)
 Not finished until all hold — per task, not at end:

@@ -116,16 +116,8 @@ impl BinanceSpotProvider {
         }
     }
 
-    /// Uses `tag` as this run's client order id prefix instead of one made
-    /// at construction: the caller made it first to label the run's logs,
-    /// so a log line's engine id (`o-2`) maps to the venue's
-    /// `newClientOrderId` (`<tag>-o-2`). One tag per run: never reuse one.
-    pub fn with_run_tag(mut self, tag: String) -> Self {
-        self.run_tag = tag;
-        self
-    }
-
-    /// This run's client order id prefix.
+    /// This run's client order id prefix: order lines log the full
+    /// `<tag>-o-N` the venue holds.
     pub fn run_tag(&self) -> &str {
         &self.run_tag
     }
@@ -304,6 +296,5 @@ mod tests {
             "{}",
             p.run_tag()
         );
-        assert_eq!(p.with_run_tag("tbabc".into()).run_tag(), "tbabc");
     }
 }

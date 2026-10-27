@@ -115,9 +115,9 @@ allow_public = false
 format = "text"
 # Also append every line as JSON to this file, for a log shipper to tail
 # (deploy/ ships Grafana Alloy into Loki; Vector or the Datadog agent read
-# it too). Keys: timestamp, level, target, message, the event's fields,
-# and span.tag: the run's tag. Engine order ids (o-1, o-2, ...) restart
-# every run; the tag, also the prefix of the client order id Binance sees
-# (<tag>-o-2), tells runs apart. Not rotated by the bot: rotate with copytruncate. Unset: no file.
+# it too). Keys: timestamp, level, target, message, then the event's
+# fields; order lines' `order` is the client order id Binance holds
+# (<run tag>-o-N). Not rotated by the bot: rotate with copytruncate.
+# Unset: no file.
 # A file that can't be opened is a warning; the run goes on.
 # file = "data/logs/run.jsonl"

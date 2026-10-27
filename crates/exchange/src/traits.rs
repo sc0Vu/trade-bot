@@ -88,4 +88,13 @@ pub trait Broker: Send {
     fn take_recovered_fills(&mut self) -> Vec<Fill> {
         Vec::new()
     }
+
+    /// The id the venue knows order `id` by, for log lines only: never a
+    /// decision input, so backtest and live stay identical. A live broker
+    /// returns the client order id it sent; a fill recovered from an
+    /// earlier run already carries that id. Default: `id` itself (the
+    /// paper broker has no venue).
+    fn client_order_id(&self, id: &OrderId) -> String {
+        id.to_string()
+    }
 }

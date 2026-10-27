@@ -189,7 +189,7 @@ async fn run_inner<P: Provider + ?Sized>(
                 },
             )
             .increment(1);
-            tracing::info!(order = %fill.order_id, instrument = %fill.instrument, side = ?fill.side, "fill");
+            tracing::info!(order = %run.broker.client_order_id(&fill.order_id), instrument = %fill.instrument, side = ?fill.side, "fill");
             driver::set_position(&mut ctx, run.broker.position(&fill.instrument));
             strategy.on_fill(&mut ctx, &fill);
             run.report.fills.push(fill);
@@ -269,7 +269,7 @@ impl Run<'_> {
                 Signal::Cancel(id) => match self.broker.cancel(id.clone()).await {
                     Ok(()) => {
                         metrics::counter!(m::CANCELS).increment(1);
-                        tracing::info!(order = %id, "cancel requested");
+                        tracing::info!(order = %self.broker.client_order_id(id), "cancel requested");
                         Ok(())
                     }
                     Err(e) => Err(refusal(e)?),
@@ -303,7 +303,7 @@ impl Run<'_> {
                                         "side" => side_label(side),
                                     )
                                     .increment(1);
-                                    tracing::info!(order = %id, %instrument, ?side, "order submitted");
+                                    tracing::info!(order = %self.broker.client_order_id(&id), %instrument, ?side, "order submitted");
                                     strategy.on_order(ctx, &order);
                                     Ok(())
                                 }

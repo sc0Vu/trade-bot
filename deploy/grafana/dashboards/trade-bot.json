@@ -561,7 +561,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "sum by (level) (count_over_time({job=\"trade-bot\", level=~\"WARN|ERROR\"} | run=~\"$run\" [5m]))",
+          "expr": "sum by (level) (count_over_time({job=\"trade-bot\", level=~\"WARN|ERROR\"} |= \"$search\" [5m]))",
           "legendFormat": "{{level}}"
         }
       ]
@@ -570,7 +570,7 @@
       "id": 17,
       "type": "logs",
       "title": "Logs",
-      "description": "From Loki. Order ids (o-1, o-2, …) restart every run; the run tag tells runs apart and prefixes the client order id on Binance (<tag>-o-2). Filter with the run box above.",
+      "description": "From Loki. Order lines show the client order id Binance and the order journal hold (<run tag>-o-N). Narrow with the search box above.",
       "datasource": {
         "type": "loki",
         "uid": "loki"
@@ -594,7 +594,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{job=\"trade-bot\"} | run=~\"$run\""
+          "expr": "{job=\"trade-bot\"} |= \"$search\""
         }
       ]
     }
@@ -602,15 +602,15 @@
   "templating": {
     "list": [
       {
-        "name": "run",
-        "label": "run tag (regex)",
+        "name": "search",
+        "label": "log search",
         "type": "textbox",
-        "query": ".*",
+        "query": "",
         "current": {
-          "text": ".*",
-          "value": ".*"
+          "text": "",
+          "value": ""
         },
-        "description": "Limits the log panels to one run, e.g. tbmvqk2hzs. .* = every run."
+        "description": "Text the log lines must contain, e.g. a client order id like tbmvqk2hzs-o-2. Empty = all lines."
       }
     ]
   },

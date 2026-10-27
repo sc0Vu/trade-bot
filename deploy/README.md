@@ -22,15 +22,14 @@ and Grafana for a running bot.
    http://localhost:9090, with alerts under *Alerts*.
 
 The dashboard's last panels come from Loki: warnings and errors over
-time, and the log lines themselves. Every line of a run carries its run
-tag (`span.tag` in the file, `run` in Loki). Engine order ids (`o-1`,
-`o-2`, …) restart every run; the tag tells runs apart and is the prefix
-of the client order id Binance and the order journal hold, so log `o-2`
-is `<tag>-o-2` there. Type a tag into the dashboard's *run tag* box, or
-query Loki directly:
+time, and the log lines themselves. Order, cancel and fill lines show the
+client order id Binance and the order journal hold (`tbmvqk2hzs-o-2`:
+run tag, then the engine's per-run id), so one search finds an order in
+the logs, in `/orders` and on Binance. Type it into the dashboard's *log
+search* box, or query Loki directly:
 ```
 {job="trade-bot", level="WARN"}
-{job="trade-bot"} | run="tbmvqk2hzs" |= "fill"
+{job="trade-bot"} |= "tbmvqk2hzs-o-2"
 ```
 The bot doesn't rotate the file; rotate with `copytruncate` (logrotate
 or newsyslog), which Alloy follows.

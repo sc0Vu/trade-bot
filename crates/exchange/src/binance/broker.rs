@@ -362,7 +362,7 @@ impl Broker for BinanceBroker {
                 return Err(ExchangeError::Rejected("sell exceeds holding"));
             }
         }
-        let client_id = format!("{}-{}", self.run_tag, order.id);
+        let client_id = self.client_order_id(&order.id);
         if client_id.len() > CLIENT_ID_MAX {
             return Err(ExchangeError::Rejected(
                 "client order id longer than 36 chars",
@@ -465,6 +465,17 @@ impl Broker for BinanceBroker {
             .filter(|o| o.cancelling)
             .map(|o| o.order.clone())
             .collect()
+    }
+
+    /// `<run tag>-<id>`, as sent in `newClientOrderId`. Reconcile hands
+    /// recovered fills over with the client id already in `order_id`, so
+    /// an id carrying [`CLIENT_ID_PREFIX`] is returned as it is.
+    fn client_order_id(&self, id: &OrderId) -> String {
+        if id.as_str().starts_with(CLIENT_ID_PREFIX) {
+            id.to_string()
+        } else {
+            format!("{}-{}", self.run_tag, id)
+        }
     }
 
     fn take_recovered_fills(&mut self) -> Vec<Fill> {
@@ -927,6 +938,16 @@ mod tests {
         let mut b = b.with_recovered(vec![fill.clone()]);
         assert_eq!(b.take_recovered_fills(), vec![fill]);
         assert!(b.take_recovered_fills().is_empty());
+    }
+
+    /// Log ids are what Binance and the journal hold: this run's orders
+    /// get the run tag, a fill recovered from an earlier run keeps its own.
+    #[tokio::test]
+    async fn client_order_id_is_the_one_sent() {
+        let (b, _t, _db) = broker().await;
+        let id = |s: &str| OrderId::new(s).unwrap();
+        assert_eq!(b.client_order_id(&id("o-2")), "tbrun-o-2");
+        assert_eq!(b.client_order_id(&id("tbold-o-3")), "tbold-o-3");
     }
 
     #[test]
