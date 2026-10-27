@@ -246,8 +246,17 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    traits for no-network tests). Orders carry run tag + our `OrderId`
    as `newClientOrderId` (`tb<start-ms base36>-o-N`: unique across runs);
    status/cancel by Binance `orderId` from submit ack, never client id; quote budget → `quoteOrderQty` (rounded toward zero,
-   8 dp). `settle` polls each open/cancelling order's status + `myTrades`;
+   8 dp). `settle` polls open/cancelling orders' status + `myTrades`;
    order dropped only when terminal AND trades sum to `executedQty`.
+   Which: `binance::user_stream` (WebSocket API
+   `userDataStream.subscribe.signature`, HMAC ok; listenKey = HTTP 410)
+   names orders with an `executionReport` = hint only, fills still REST.
+   Polled: named, submitted/cancelled since last settle, trades lagged
+   status last poll; ALL before first subscribe, after reconnect, while
+   down, after unreadable message, every `FULL_POLL_EVERY` (60s). Never
+   connects → all every event (old behaviour); failure = warning, retry
+   1s→300s, 60s silence = dead. `exchange.user_stream` (default true);
+   off while `rest_url` overridden (would watch real host).
    Books (`exchange::Books` = `Ledger + OrderJournal + HoldingRepository`,
    `SqlStore`): order journaled before submit, fills recorded by Binance trade
    id, position = stored holding → survives restart (engine seeds ctx

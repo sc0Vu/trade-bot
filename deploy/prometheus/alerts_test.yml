@@ -103,3 +103,20 @@ tests:
           - exp_labels: { severity: warning }
             exp_annotations:
               summary: "Market-data feed reconnected 4 times in the last hour"
+
+  # Down from 5m on: pending at 10m, firing once down for 10 min (15m).
+  - interval: 5m
+    input_series:
+      - series: 'tradebot_user_stream_up'
+        values: '1 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: UserStreamDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: UserStreamDown
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "User data stream down for 10 min"
+              description: "Every open order is being polled each event; check the bot's warnings for why the stream won't subscribe."

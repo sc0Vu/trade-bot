@@ -221,6 +221,11 @@ pub struct ExchangeSection {
     /// stops, in seconds. Default 600.
     #[serde(default = "six_hundred")]
     pub max_outage_secs: u64,
+    /// Watch the user data stream so only orders that changed are polled
+    /// (all are still polled every minute). Default true; off, or with
+    /// `rest_url` set, every open order is polled every event.
+    #[serde(default = "yes")]
+    pub user_stream: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,6 +257,9 @@ fn one_minute() -> Interval {
 }
 fn five_hundred() -> usize {
     500
+}
+fn yes() -> bool {
+    true
 }
 fn ten() -> u64 {
     10
@@ -350,6 +358,7 @@ mod tests {
             assert_eq!(c.engine.history_len, 500);
             assert_eq!(c.exchange.http_timeout_secs, 10);
             assert_eq!(c.exchange.max_outage_secs, 600);
+            assert!(c.exchange.user_stream);
             assert_eq!(c.strategy.params["quote_amount"].as_str(), Some("100"));
             Ok(())
         });

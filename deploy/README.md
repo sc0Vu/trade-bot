@@ -50,6 +50,7 @@ Alerts reach nobody until you give Alertmanager a receiver: edit
 | `BinanceWeightHigh` | Over 4000 of the 4800 weight budget for 5 min |
 | `RateLimiterWaiting` | The limiter held requests more than 5 times in 15 min |
 | `FeedReconnecting` | The market-data feed reconnected more than 3 times in an hour |
+| `UserStreamDown` | The user data stream has been down 10 min (every order polled each event) |
 
 Ports: copy `deploy/.env.example` to `deploy/.env` to change the stack's
 host ports (`GRAFANA_PORT`, `PROMETHEUS_PORT`, `ALERTMANAGER_PORT`,

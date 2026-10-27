@@ -23,8 +23,8 @@ pub const API_SECRET_VAR: &str = "BINANCE_API_SECRET";
 /// API key and secret. `Debug` prints neither.
 #[derive(Clone)]
 pub struct Credentials {
-    key: String,
-    secret: String,
+    pub(super) key: String,
+    pub(super) secret: String,
 }
 
 impl fmt::Debug for Credentials {
@@ -327,6 +327,12 @@ impl SignedClient {
         let after = self.clock.now_millis();
         self.offset_ms = server - (before + after) / 2;
         Ok(())
+    }
+
+    /// Server time minus local time, as [`sync_time`](Self::sync_time) last
+    /// measured it: for signing requests sent outside this client.
+    pub(crate) fn offset_ms(&self) -> i64 {
+        self.offset_ms
     }
 
     /// Proves the key works before trading: a signed, read-only

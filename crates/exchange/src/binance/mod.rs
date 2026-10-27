@@ -1,6 +1,7 @@
 //! Binance spot. [`public`] reads market data that needs no API key;
 //! [`signed`] holds credentials, request signing and the HTTP transport
-//! used for account endpoints; [`ws`] streams closed klines.
+//! used for account endpoints; [`ws`] streams closed klines;
+//! [`user_stream`] says which of the account's orders changed.
 
 mod broker;
 pub mod feed;
@@ -10,6 +11,7 @@ mod provider;
 pub mod public;
 pub mod reconcile;
 pub mod signed;
+pub mod user_stream;
 pub mod ws;
 
 pub use broker::{BinanceBroker, CLIENT_ID_PREFIX, run_tag};
@@ -19,6 +21,7 @@ pub use signed::{
     Clock, Credentials, HttpRequest, HttpResponse, Method, ReqwestTransport, SignedClient,
     SystemClock, Transport,
 };
+pub use user_stream::{DEMO_WS_API_URL, LIVE_WS_API_URL, TESTNET_WS_API_URL, UserStream};
 pub use ws::KlineStream;
 
 /// Binance's market-data-only host: public endpoints, no key, separate

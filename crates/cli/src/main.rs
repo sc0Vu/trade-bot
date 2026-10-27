@@ -99,6 +99,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
             http_timeout: std::time::Duration::from_secs(cfg.exchange.http_timeout_secs),
             warmup: cfg.engine.history_len,
             max_outage: std::time::Duration::from_secs(cfg.exchange.max_outage_secs),
+            user_stream: cfg.exchange.user_stream,
         },
         creds,
         cfg.whitelist.clone(),

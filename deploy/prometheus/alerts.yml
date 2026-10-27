@@ -86,3 +86,13 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Market-data feed reconnected {{ $value }} times in the last hour"
+
+      - alert: UserStreamDown
+        # Nothing is missed while it's down (every order is polled each
+        # event), but that costs two requests per open order per event.
+        expr: tradebot_user_stream_up == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "User data stream down for 10 min"
+          description: "Every open order is being polled each event; check the bot's warnings for why the stream won't subscribe."

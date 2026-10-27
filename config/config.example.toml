@@ -36,9 +36,9 @@ network = "testnet"
 # rest_url = "https://testnet.binance.vision"
 # ws_url = "wss://stream.testnet.binance.vision"
 # Kline interval the strategy trades on: 1s, 1m, 5m, 15m, 1h, 4h, 1d.
-# At 1s, strategy periods are in seconds, and every open order is polled
-# each second (about 9 request weight per order per second; the rate
-# limiter keeps it within Binance's limits).
+# At 1s, strategy periods are in seconds. Without the user stream (below)
+# every open order is polled each second (about 9 request weight per order
+# per second; the rate limiter keeps it within Binance's limits).
 interval = "1m"
 # Longest one Binance REST request may take, in seconds (default 10). A
 # request that runs out stops the run; orders it may have placed are found
@@ -48,6 +48,12 @@ http_timeout_secs = 10
 # seconds (backoff 1 s doubling to 60 s), backfilling the missed bars; past
 # that the run stops and its open orders are cancelled. Default 600.
 max_outage_secs = 600
+# Subscribe to Binance's user data stream (WebSocket API) so only orders
+# that changed are polled, plus every order once a minute; without it every
+# open order is polled every event. A stream that fails to connect is a
+# warning and falls back to polling everything. Off while rest_url is set.
+# Default true.
+user_stream = true
 
 [strategy]
 # A registered strategy: avwap, buy_and_hold, donchian_breakout,

@@ -1,5 +1,6 @@
 use super::fees::FeeValuer;
 use super::signed::{Method, SignedClient};
+use super::user_stream::{Changes, FULL_POLL_EVERY, UserStream};
 use crate::{Books, Broker, ExchangeError};
 use async_trait::async_trait;
 use bot_core::{
@@ -60,11 +61,19 @@ struct LiveOrder {
 ///
 /// `submit` places the order with `newClientOrderId` = run tag + our
 /// `OrderId` ([`run_tag`]) and keeps Binance's `orderId` from the reply;
-/// `settle` polls each open order's trades (`myTrades?orderId=`) and
-/// status, turning new trades into fills (partial fills included) and
-/// dropping orders Binance reports closed. Polling per event keeps the
-/// `Broker` contract identical to the paper broker's: fills surface at the
-/// next event, never mid-strategy.
+/// `settle` polls open orders' trades (`myTrades?orderId=`) and status,
+/// turning new trades into fills (partial fills included) and dropping
+/// orders Binance reports closed. Polling at settle keeps the `Broker`
+/// contract identical to the paper broker's: fills surface at the next
+/// event, never mid-strategy.
+///
+/// Which orders `settle` polls: all of them, unless a [`UserStream`] is
+/// attached ([`with_user_stream`](Self::with_user_stream)) and vouches
+/// for the time since the last settle. Then only the orders it saw change,
+/// plus ones submitted or cancelled since, plus ones whose trades lagged
+/// their status at the last poll; and all of them again every
+/// [`FULL_POLL_EVERY`]. The stream decides only *when* an order is read,
+/// never what its fills are.
 ///
 /// Every order and fill goes through [`Books`]: an order is journaled
 /// `pending` before the request is sent and `open` on the ack, each trade
@@ -86,6 +95,23 @@ pub struct BinanceBroker {
     fees: FeeValuer,
     /// Fills the startup reconcile recovered, until the engine takes them.
     recovered: Vec<Fill>,
+    stream: Option<UserStream>,
+    /// Binance ids to poll at the next settle whatever the stream says.
+    repoll: HashSet<i64>,
+    last_full_poll: Option<std::time::Instant>,
+    full_poll_every: std::time::Duration,
+}
+
+/// What one poll found.
+enum Polled {
+    /// Closed, every trade recorded: drop it.
+    Done,
+    /// Working, every executed unit seen as a trade: nothing to do until
+    /// it changes.
+    Quiet,
+    /// Status ahead of trades (or unreadable), or closed with trades
+    /// still to come: poll again next settle, change or not.
+    Lagging,
 }
 
 impl BinanceBroker {
@@ -114,7 +140,18 @@ impl BinanceBroker {
             books,
             fees: FeeValuer::default(),
             recovered: Vec::new(),
+            stream: None,
+            repoll: HashSet::new(),
+            last_full_poll: None,
+            full_poll_every: FULL_POLL_EVERY,
         })
+    }
+
+    /// Polls only the orders `stream` reports changed, between full polls
+    /// every [`FULL_POLL_EVERY`] (see the type's docs).
+    pub fn with_user_stream(mut self, stream: UserStream) -> Self {
+        self.stream = Some(stream);
+        self
     }
 
     /// Fills a startup reconcile recovered (made while the bot was down),
@@ -135,7 +172,7 @@ impl BinanceBroker {
             .sum()
     }
 
-    async fn poll(&mut self, idx: usize) -> Result<(Vec<Fill>, bool), ExchangeError> {
+    async fn poll(&mut self, idx: usize) -> Result<(Vec<Fill>, Polled), ExchangeError> {
         let (symbol, exchange_id) = {
             let o = &self.open[idx];
             (o.order.instrument.symbol().to_string(), o.venue_id)
@@ -192,11 +229,39 @@ impl BinanceBroker {
         // Closed only when Binance says nothing more will fill AND every
         // executed unit has shown up as a trade: the two endpoints can lag
         // each other, and dropping the order early would lose a fill.
-        let done = is_terminal(&status) && self.open[idx].seen_qty.get() == executed_qty(&status)?;
-        if done {
-            self.books.mark_closed(&self.open[idx].client_id).await?;
+        let seen = self.open[idx].seen_qty.get();
+        let state = if is_terminal(&status) {
+            if seen == executed_qty(&status)? {
+                self.books.mark_closed(&self.open[idx].client_id).await?;
+                Polled::Done
+            } else {
+                Polled::Lagging
+            }
+        } else if executed_qty(&status).is_ok_and(|e| e == seen) {
+            Polled::Quiet
+        } else {
+            Polled::Lagging
+        };
+        Ok((fills, state))
+    }
+
+    /// Binance ids to poll this settle; `None` = every order.
+    fn take_poll_set(&mut self) -> Option<HashSet<i64>> {
+        let changes = self
+            .stream
+            .as_mut()
+            .map_or(Changes::Unknown, UserStream::take);
+        let repoll = std::mem::take(&mut self.repoll);
+        let full_due = self
+            .last_full_poll
+            .is_none_or(|t| t.elapsed() >= self.full_poll_every);
+        match changes {
+            Changes::Orders(ids) if !full_due => Some(ids.into_iter().chain(repoll).collect()),
+            _ => {
+                self.last_full_poll = Some(std::time::Instant::now());
+                None
+            }
         }
-        Ok((fills, done))
     }
 }
 
@@ -396,6 +461,9 @@ impl Broker for BinanceBroker {
             .as_i64()
             .ok_or_else(|| ExchangeError::Decode("order ack orderId".into()))?;
         self.books.mark_open(&client_id, venue_id).await?;
+        // A marketable order fills at once; read it at the next settle
+        // even if its stream event comes late.
+        self.repoll.insert(venue_id);
         let id = order.id.clone();
         self.open.push(LiveOrder {
             order,
@@ -425,19 +493,31 @@ impl Broker for BinanceBroker {
             )
             .await?;
         o.cancelling = true;
+        self.repoll.insert(o.venue_id);
         Ok(())
     }
 
     async fn settle(&mut self, _event: &MarketEvent) -> Result<Vec<Fill>, ExchangeError> {
+        let wanted = self.take_poll_set();
         let mut fills = Vec::new();
         let mut idx = 0;
         while idx < self.open.len() {
-            let (new, done) = self.poll(idx).await?;
-            fills.extend(new);
-            if done {
-                self.open.remove(idx);
-            } else {
+            let venue_id = self.open[idx].venue_id;
+            if wanted.as_ref().is_some_and(|w| !w.contains(&venue_id)) {
                 idx += 1;
+                continue;
+            }
+            let (new, state) = self.poll(idx).await?;
+            fills.extend(new);
+            match state {
+                Polled::Done => {
+                    self.open.remove(idx);
+                }
+                Polled::Quiet => idx += 1,
+                Polled::Lagging => {
+                    self.repoll.insert(venue_id);
+                    idx += 1;
+                }
             }
         }
         fills.sort_by_key(|f| f.ts);
@@ -489,6 +569,7 @@ mod tests {
     use crate::binance::fees::tests::{BNBUSDT_INFO, bnb_kline};
     use crate::binance::signed::fake::{FakeTransport, FixedClock, param};
     use crate::binance::signed::{Credentials, sign};
+    use crate::binance::user_stream::ManualStream;
     use crate::test_db::TempDb;
     use bot_core::{Asset, AssetClass, InstrumentSpec, OrderSpec};
     use rust_decimal_macros::dec;
@@ -990,5 +1071,162 @@ mod tests {
             "quoteOrderQty",
             "1239.72642300".trim_end_matches('0').to_owned()
         )));
+    }
+
+    fn limit_buy(id: &str) -> Order {
+        Order::new(OrderSpec {
+            kind: OrderKind::Limit {
+                price: Price::new(dec!(100)),
+                tif: TimeInForce::Gtc,
+            },
+            ..order(
+                id,
+                Side::Buy,
+                Size::Base(Qty::new(dec!(1))),
+                OrderKind::Market,
+            )
+            .into()
+        })
+        .unwrap()
+    }
+
+    /// Status + trades replies for a working order nothing has filled.
+    fn reply_untouched(t: &FakeTransport, venue_id: i64) {
+        t.reply(
+            200,
+            &format!(r#"{{"orderId":{venue_id},"status":"NEW","executedQty":"0"}}"#),
+        );
+        t.reply(200, "[]");
+    }
+
+    /// Requests settle sent, as the venue ids they asked about.
+    async fn settle_polls(b: &mut BinanceBroker, t: &FakeTransport) -> (Vec<Fill>, Vec<String>) {
+        let before = t.sent().len();
+        let fills = b.settle(&any_event()).await.unwrap();
+        let ids = t.sent()[before..]
+            .iter()
+            .map(|r| param(&r.query, "orderId").unwrap_or_default().to_owned())
+            .collect();
+        (fills, ids)
+    }
+
+    /// Two working orders, the stream subscribed and one full poll behind
+    /// them: venue ids 28 and 29.
+    async fn streamed_broker() -> (BinanceBroker, FakeTransport, TempDb, ManualStream) {
+        let (b, t, db) = broker().await;
+        let (stream, binance) = UserStream::manual();
+        let mut b = b.with_user_stream(stream);
+        t.reply(200, r#"{"orderId":28}"#);
+        b.submit(limit_buy("o-1")).await.unwrap();
+        t.reply(200, r#"{"orderId":29}"#);
+        b.submit(limit_buy("o-2")).await.unwrap();
+        binance.subscribed();
+        // New subscription: the stream vouches for nothing yet.
+        reply_untouched(&t, 28);
+        reply_untouched(&t, 29);
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert_eq!(polled, ["28", "28", "29", "29"]);
+        (b, t, db, binance)
+    }
+
+    #[tokio::test]
+    async fn stream_limits_polling_to_orders_that_changed() {
+        let (mut b, t, _db, binance) = streamed_broker().await;
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert!(polled.is_empty(), "nothing changed: {polled:?}");
+
+        binance.order_event(29);
+        t.reply(200, r#"{"orderId":29,"status":"FILLED","executedQty":"1"}"#);
+        t.reply(
+            200,
+            &format!("[{}]", trade(7, "100", "1", "0.001", "BTC", true)),
+        );
+        let (fills, polled) = settle_polls(&mut b, &t).await;
+        assert_eq!(polled, ["29", "29"]);
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].order_id.as_str(), "o-2");
+        assert_eq!(b.open_orders().len(), 1);
+
+        // An event for an order that isn't ours polls nothing.
+        binance.order_event(99);
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert!(polled.is_empty(), "{polled:?}");
+    }
+
+    #[tokio::test]
+    async fn new_and_cancelled_orders_are_polled_without_an_event() {
+        let (mut b, t, _db, _binance) = streamed_broker().await;
+        t.reply(200, r#"{"orderId":30}"#);
+        b.submit(limit_buy("o-3")).await.unwrap();
+        reply_untouched(&t, 30);
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert_eq!(polled, ["30", "30"]);
+
+        t.reply(200, r#"{"orderId":28,"status":"CANCELED"}"#);
+        b.cancel(OrderId::new("o-1").unwrap()).await.unwrap();
+        t.reply(
+            200,
+            r#"{"orderId":28,"status":"CANCELED","executedQty":"0"}"#,
+        );
+        t.reply(200, "[]");
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert_eq!(polled, ["28", "28"]);
+        assert!(b.cancelling_orders().is_empty());
+    }
+
+    /// Status says filled before the trade shows up: polled again next
+    /// settle though the stream says nothing more, so the fill isn't lost.
+    #[tokio::test]
+    async fn trades_lagging_status_are_polled_again() {
+        let (mut b, t, _db, binance) = streamed_broker().await;
+        binance.order_event(28);
+        t.reply(200, r#"{"orderId":28,"status":"FILLED","executedQty":"1"}"#);
+        t.reply(200, "[]");
+        let (fills, polled) = settle_polls(&mut b, &t).await;
+        assert!(fills.is_empty());
+        assert_eq!(polled, ["28", "28"]);
+
+        t.reply(200, r#"{"orderId":28,"status":"FILLED","executedQty":"1"}"#);
+        t.reply(
+            200,
+            &format!("[{}]", trade(7, "100", "1", "0.001", "BTC", true)),
+        );
+        let (fills, polled) = settle_polls(&mut b, &t).await;
+        assert_eq!(polled, ["28", "28"]);
+        assert_eq!(fills.len(), 1);
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert!(polled.is_empty(), "{polled:?}");
+    }
+
+    #[tokio::test]
+    async fn stream_outage_polls_every_order() {
+        let (mut b, t, _db, binance) = streamed_broker().await;
+        binance.down();
+        reply_untouched(&t, 28);
+        reply_untouched(&t, 29);
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert_eq!(polled, ["28", "28", "29", "29"], "down");
+
+        // Back up: events during the gap are lost, so one more full poll.
+        binance.subscribed();
+        reply_untouched(&t, 28);
+        reply_untouched(&t, 29);
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert_eq!(polled, ["28", "28", "29", "29"], "resubscribed");
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert!(polled.is_empty(), "{polled:?}");
+    }
+
+    #[tokio::test]
+    async fn every_order_is_polled_once_the_full_poll_is_due() {
+        let (b, t, _db, _binance) = streamed_broker().await;
+        let mut b = BinanceBroker {
+            full_poll_every: std::time::Duration::ZERO,
+            ..b
+        };
+        reply_untouched(&t, 28);
+        reply_untouched(&t, 29);
+        let (_, polled) = settle_polls(&mut b, &t).await;
+        assert_eq!(polled, ["28", "28", "29", "29"]);
     }
 }

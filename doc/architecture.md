@@ -303,6 +303,24 @@ orders them.
 trades add up to `executedQty`, since the two endpoints can lag each other.
 Fills are polled once per candle, the same timing as the paper broker.
 
+**Which orders are polled.** Polling every open order each event costs two
+signed requests per order per event: a 20-level grid at 1s bars spends
+most of the weight budget re-reading orders that haven't changed. So the
+broker also holds a user data stream (`binance::user_stream`): one
+WebSocket API connection, subscribed with `userDataStream.subscribe.signature`
+(the listenKey stream is gone, HTTP 410 since 2026), on which Binance pushes
+an `executionReport` for every order change. The stream only names the
+orders that changed. Their status and trades are still read over REST, so
+fills have one code path. An order is polled at a settle if the stream
+named it, it was submitted or cancelled since the last settle, or its
+trades lagged its status at the last poll. Every order is polled before the
+first subscription, after every reconnect (events in the gap are lost),
+while the stream is down, after an unreadable message, and once a minute
+regardless. A stream that never connects leaves the old behaviour: every
+order, every event. Stream failure is a warning, never a stop. It's off
+with `exchange.user_stream = false`, and while `rest_url` is overridden,
+since it would watch the network's real host, not the override's orders.
+
 **BNB fees.** A fee in a third asset is valued at the `close` of the
 one-minute `{asset}{quote}` kline (e.g. BNBUSDT) containing the trade,
 using that pair's `Instrument::notional`. REST klines include the minute

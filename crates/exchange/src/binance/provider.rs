@@ -2,9 +2,9 @@ use super::feed::{ReconnectingFeed, RestKlines, WsConnector};
 use super::limits;
 use super::reconcile::{Phase, Reconciled, reconcile};
 use super::{
-    BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_URL, LIVE_REST_URL, LIVE_WS_URL,
-    PublicClient, ReqwestTransport, SignedClient, SystemClock, TESTNET_REST_URL, TESTNET_WS_URL,
-    run_tag,
+    BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_API_URL, DEMO_WS_URL, LIVE_REST_URL,
+    LIVE_WS_API_URL, LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock,
+    TESTNET_REST_URL, TESTNET_WS_API_URL, TESTNET_WS_URL, UserStream, run_tag,
 };
 use crate::rate_limit::RateLimiter;
 use crate::{Books, Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
@@ -55,6 +55,11 @@ pub struct BinanceConfig {
     pub warmup: usize,
     /// How long the feed keeps reconnecting before the run stops.
     pub max_outage: std::time::Duration,
+    /// Subscribe to the user data stream so the broker polls only orders
+    /// that changed ([`super::user_stream`]). Ignored while `rest_url` is
+    /// overridden: the stream would watch the network's real host, not
+    /// the override's orders.
+    pub user_stream: bool,
 }
 
 impl BinanceConfig {
@@ -71,6 +76,16 @@ impl BinanceConfig {
             Network::Testnet => TESTNET_WS_URL,
             Network::Demo => DEMO_WS_URL,
             Network::Live => LIVE_WS_URL,
+        })
+    }
+
+    /// The WebSocket API host the user data stream connects to, or `None`
+    /// when the stream is off (see [`user_stream`](Self::user_stream)).
+    pub fn ws_api_url(&self) -> Option<&str> {
+        (self.user_stream && self.rest_url.is_none()).then_some(match self.network {
+            Network::Testnet => TESTNET_WS_API_URL,
+            Network::Demo => DEMO_WS_API_URL,
+            Network::Live => LIVE_WS_API_URL,
         })
     }
 }
@@ -212,16 +227,25 @@ impl Provider for BinanceSpotProvider {
             .into_iter()
             .filter(|i| self.universe.contains(&i.id))
             .collect();
-        Ok(Box::new(
-            BinanceBroker::open(
-                client,
-                instruments,
-                self.run_tag.clone(),
-                self.books.clone(),
-            )
-            .await?
-            .with_recovered(r.fills),
-        ))
+        let offset_ms = client.offset_ms();
+        let broker = BinanceBroker::open(
+            client,
+            instruments,
+            self.run_tag.clone(),
+            self.books.clone(),
+        )
+        .await?
+        .with_recovered(r.fills);
+        Ok(Box::new(match self.config.ws_api_url() {
+            Some(url) => broker.with_user_stream(UserStream::spawn(
+                url.to_owned(),
+                self.creds.clone(),
+                Box::new(SystemClock),
+                offset_ms,
+                Default::default(),
+            )),
+            None => broker,
+        }))
     }
 
     async fn resolve(&self, query: &InstrumentQuery) -> Result<Vec<Instrument>, ExchangeError> {
@@ -252,6 +276,7 @@ mod tests {
             http_timeout: crate::binance::DEFAULT_HTTP_TIMEOUT,
             warmup: 0,
             max_outage: std::time::Duration::from_secs(600),
+            user_stream: true,
         }
     }
 
@@ -266,6 +291,18 @@ mod tests {
         let l = cfg(Network::Live);
         assert_eq!(l.rest_url(), "https://api.binance.com");
         assert_eq!(l.ws_url(), "wss://stream.binance.com:9443");
+        assert_eq!(
+            t.ws_api_url(),
+            Some("wss://ws-api.testnet.binance.vision/ws-api/v3")
+        );
+        assert_eq!(
+            d.ws_api_url(),
+            Some("wss://demo-ws-api.binance.com/ws-api/v3")
+        );
+        assert_eq!(
+            l.ws_api_url(),
+            Some("wss://ws-api.binance.com:443/ws-api/v3")
+        );
         assert!(Network::Testnet.is_fake_money() && Network::Demo.is_fake_money());
         assert!(!Network::Live.is_fake_money());
     }
@@ -278,6 +315,13 @@ mod tests {
         };
         assert_eq!(c.rest_url(), "http://localhost:1");
         assert_eq!(c.ws_url(), "wss://stream.testnet.binance.vision");
+        // The stream would watch testnet, not the override's orders.
+        assert_eq!(c.ws_api_url(), None);
+        let off = BinanceConfig {
+            user_stream: false,
+            ..cfg(Network::Testnet)
+        };
+        assert_eq!(off.ws_api_url(), None);
     }
 
     #[tokio::test]
