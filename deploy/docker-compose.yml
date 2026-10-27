@@ -1,4 +1,5 @@
-# Prometheus, Alertmanager and Grafana for watching a running bot.
+# Prometheus, Alertmanager, Loki (with Alloy shipping the bot's log file)
+# and Grafana for watching a running bot.
 #   docker compose -f deploy/docker-compose.yml up -d
 # Grafana: http://localhost:3000 (admin / admin on first login).
 # All ports bind to 127.0.0.1: these UIs have no authentication by default.
@@ -21,6 +22,24 @@ services:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     ports: ["127.0.0.1:9093:9093"]
 
+  loki:
+    image: grafana/loki:3.5.3
+    command: [-config.file=/etc/loki/loki.yml]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    ports: ["127.0.0.1:3100:3100"]
+
+  # Tails data/logs/*.jsonl (the bot's [log] file) into Loki.
+  alloy:
+    image: grafana/alloy:v1.10.1
+    command: [run, /etc/alloy/config.alloy, --storage.path=/var/lib/alloy/data]
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ../data/logs:/var/log/trade-bot:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on: [loki]
+
   grafana:
     image: grafana/grafana:12.1.0
     volumes:
@@ -32,3 +51,5 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  loki-data:
+  alloy-data:

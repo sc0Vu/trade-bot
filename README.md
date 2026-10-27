@@ -207,9 +207,12 @@ decimal strings). A trade's `client_order_id` matches its order in
 `/orders`; its `order_id` is per run (`o-1`, `o-2`, … every run). It is read-only by design: nothing over HTTP can place or
 cancel an order or switch networks.
 
-To watch it, enable `[metrics]` and start the Prometheus, Alertmanager and
-Grafana stack in [`deploy/`](deploy/README.md): a dashboard, plus alerts for
-a stalled feed, a stuck strategy, Binance errors and the bot being down.
+To watch it, enable `[metrics]` (and `[log] file` for logs) and start the
+Prometheus, Alertmanager, Loki and Grafana stack in
+[`deploy/`](deploy/README.md): a dashboard with the bot's logs, plus alerts
+for a stalled feed, a stuck strategy, Binance errors and the bot being
+down. Datadog, Grafana Cloud and other backends read the same `/metrics`
+and JSON log lines.
 
 For a long-running bot, run it under a supervisor (for example systemd with
 `Restart=always`). A crash or `kill -9` can't be handled in-process, and
@@ -251,7 +254,7 @@ crates/
 migration/    SeaORM schema migrations
 config/       config.example.toml and examples/ (committed); real configs are gitignored
 doc/          architecture notes
-deploy/       Prometheus, Alertmanager, Grafana (compose) and alert rules
+deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and alert rules
 ```
 
 ## Known limitations

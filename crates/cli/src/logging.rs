@@ -124,6 +124,21 @@ mod tests {
         assert!(got[1].get("spans").is_none(), "{}", got[1]);
     }
 
+    /// The shipper parses the keys the JSON test above pins; a renamed key
+    /// would silently drop the level label or the run tag in Loki.
+    #[test]
+    fn alloy_config_reads_the_keys_written() {
+        let alloy = include_str!("../../../deploy/alloy/config.alloy");
+        for key in [
+            r#"level = "level""#,
+            r#"ts    = "timestamp""#,
+            r#"run   = "span.tag""#,
+            r#"format = "RFC3339Nano""#,
+        ] {
+            assert!(alloy.contains(key), "deploy/alloy/config.alloy lacks {key}");
+        }
+    }
+
     #[test]
     fn open_creates_the_directory_and_appends() {
         let dir = std::env::temp_dir().join(format!("tradebot-log-{}", std::process::id()));

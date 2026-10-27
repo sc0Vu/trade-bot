@@ -1,0 +1,50 @@
+// Tails the bot's JSON log file into Loki.
+//
+// The bot writes it when config/config.toml has
+//   [log]
+//   file = "data/logs/run.jsonl"
+// and compose mounts the repo's data/logs here. Keys parsed below are the
+// ones crates/cli/src/logging.rs writes; keep them in step.
+
+local.file_match "trade_bot" {
+  path_targets = [{"__path__" = "/var/log/trade-bot/*.jsonl", "job" = "trade-bot"}]
+}
+
+loki.source.file "trade_bot" {
+  targets    = local.file_match.trade_bot.targets
+  forward_to = [loki.process.trade_bot.receiver]
+}
+
+loki.process "trade_bot" {
+  stage.json {
+    expressions = {
+      level = "level",
+      ts    = "timestamp",
+      run   = "span.tag",
+    }
+  }
+
+  // The bot's own time, not when Alloy read the line.
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
+  }
+
+  // level is a label (five values); the run tag changes every run, so it
+  // is structured metadata, not a label: {job="trade-bot"} | run="tb…".
+  stage.labels {
+    values = { level = "" }
+  }
+
+  stage.structured_metadata {
+    values = { run = "" }
+  }
+
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
