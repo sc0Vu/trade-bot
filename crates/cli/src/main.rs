@@ -6,6 +6,7 @@
 mod config;
 mod date;
 mod gate;
+mod logging;
 mod shutdown;
 mod state;
 mod telemetry;
@@ -352,12 +353,17 @@ async fn main() -> anyhow::Result<()> {
             // show its orders and fills by default; sqlx logs every SQL
             // statement at info.
             let cfg = config::Config::load(a.config.as_deref())?;
-            init_logging(&config::log_filter(
-                rust_log,
-                cfg.log.level.as_deref(),
-                "info,sqlx=warn",
-            ));
-            run_bot(a, cfg).await
+            logging::init(
+                &config::log_filter(rust_log, cfg.log.level.as_deref(), "info,sqlx=warn"),
+                &cfg.log,
+            );
+            let ran = run_bot(a, cfg).await;
+            // Also as a log line, so the log file (and whatever ships it)
+            // says why the bot stopped, not only the terminal.
+            if let Err(e) = &ran {
+                tracing::error!(error = format!("{e:#}"), "run stopped");
+            }
+            ran
         }
         // A backtest logging every simulated order would bury its report.
         Command::FetchData(a) => {
@@ -371,9 +377,8 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Installs the log subscriber with `filter` (already validated).
+/// Text logs on the console with `filter` (already validated): for the
+/// commands without a config file.
 fn init_logging(filter: &str) {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-        .init();
+    logging::init(filter, &config::LogSection::default());
 }

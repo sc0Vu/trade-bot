@@ -110,3 +110,12 @@ allow_public = false
 # doesn't parse fails at startup.
 # level = "info,sqlx=error"      # also hide slow-statement warnings
 # level = "info,exchange=debug"  # more detail from the exchange layer
+# Console format: "text" (default) or "json", one object per line, for a
+# container or supervisor that collects stdout.
+format = "text"
+# Also append every line as JSON to this file, for a log shipper to tail
+# (deploy/ ships Grafana Alloy into Loki; Vector or the Datadog agent read
+# it too). Keys: timestamp, level, target, message, then the event's
+# fields. Not rotated by the bot: rotate with copytruncate. Unset: no file.
+# A file that can't be opened is a warning; the run goes on.
+# file = "data/logs/run.jsonl"

@@ -115,6 +115,8 @@ are errors, so a typo fails loudly instead of falling back to a default.
 | `[metrics]` | `enabled`, `listen`, `include_money`, `allow_public` | Prometheus `/metrics` during `run`; off, loopback-only and money-free by default |
 | `[api]` | `enabled`, `listen`, `allow_public` | Read-only JSON API during `run` (default `127.0.0.1:9185`); a public address needs a token in `TRADEBOT_API_TOKEN` |
 | `[log]` | `level` | What `run` logs, as a `RUST_LOG`-style filter (default `info,sqlx=warn`); `RUST_LOG`, when set, overrides it |
+| `[log]` | `format` | Console lines as `text` (default) or `json` |
+| `[log]` | `file` | Also append JSON lines here for a log shipper (Loki via `deploy/`, Datadog, Vector); unset = no file |
 
 ## Strategies
 

@@ -587,6 +587,10 @@ Layered; each source overrides one above:
   precedence `RUST_LOG` > config (`BOT_LOG__LEVEL` > file) > default
   `info,sqlx=warn`. `run` loads config before logging starts (loading
   logs nothing). backtest / fetch-data: `RUST_LOG` else `warn`.
+  `[log] format` `text` (default) | `json` (console); `[log] file` = also
+  append JSON lines (`cli::logging`: flat `timestamp`, `level`, `target`,
+  `message`, fields — keys `deploy/alloy` parses) for a shipper; open
+  failure = warning. Fatal run error also logged (`run stopped`).
 
 ## Definition of done (every change)
 Not finished until all hold — per task, not at end:

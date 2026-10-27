@@ -57,6 +57,25 @@ pub struct LogSection {
     /// `"info,exchange=debug"`). Unset: `info,sqlx=warn`. `RUST_LOG`, when
     /// set, overrides it.
     pub level: Option<String>,
+    /// How the console shows log lines. Default `text`.
+    #[serde(default)]
+    pub format: LogFormat,
+    /// Also append every log line, as JSON, to this file: the one a log
+    /// shipper (Grafana Alloy, Vector, the Datadog agent) tails. Unset: no
+    /// file. Not rotated by the bot; rotate with `copytruncate`.
+    pub file: Option<PathBuf>,
+}
+
+/// Console log format.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// Human-readable lines.
+    #[default]
+    Text,
+    /// One JSON object per line, the same shape as `log.file`'s: for a
+    /// container or supervisor that collects stdout.
+    Json,
 }
 
 /// The log filter for `run`: `RUST_LOG` if set and valid, else the
@@ -353,6 +372,25 @@ mod tests {
         Jail::expect_with(|j| {
             j.set_env("BOT_LOG__LEVEL", "warn");
             assert_eq!(parse(MIN).unwrap().log.level.as_deref(), Some("warn"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn log_format_and_file_load() {
+        Jail::expect_with(|j| {
+            let c = parse(MIN).unwrap();
+            assert_eq!((c.log.format, c.log.file), (LogFormat::Text, None));
+            let c = parse(&format!(
+                "{MIN}\n[log]\nformat = \"json\"\nfile = \"data/logs/run.jsonl\""
+            ))
+            .unwrap();
+            assert_eq!(c.log.format, LogFormat::Json);
+            assert_eq!(c.log.file, Some(PathBuf::from("data/logs/run.jsonl")));
+            let err = parse(&format!("{MIN}\n[log]\nformat = \"xml\"")).unwrap_err();
+            assert!(format!("{err:#}").contains("xml"), "{err:#}");
+            j.set_env("BOT_LOG__FORMAT", "json");
+            assert_eq!(parse(MIN).unwrap().log.format, LogFormat::Json);
             Ok(())
         });
     }
