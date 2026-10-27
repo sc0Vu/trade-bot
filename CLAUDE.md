@@ -255,7 +255,9 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    status last poll; ALL before first subscribe, after reconnect, while
    down, after unreadable message, every `FULL_POLL_EVERY` (60s). Never
    connects → all every event (old behaviour); failure = warning, retry
-   1s→300s, 60s silence = dead. `exchange.user_stream` (default true);
+   1s→300s, 60s silence = dead. No listenKey/keepalive: subscription
+   lives with connection; Binance cuts at 24h + sends `serverShutdown` →
+   renewed at 23h (`Timing::max_age`) or on that event, no backoff. `exchange.user_stream` (default true);
    off while `rest_url` overridden (would watch real host).
    Books (`exchange::Books` = `Ledger + OrderJournal + HoldingRepository`,
    `SqlStore`): order journaled before submit, fills recorded by Binance trade

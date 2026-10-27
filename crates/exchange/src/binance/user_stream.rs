@@ -14,6 +14,14 @@
 //! stream or no stream. What the stream buys is request weight: an idle
 //! order costs nothing instead of two signed requests per event.
 //!
+//! A signature subscription has no key to keep alive and no expiry of its
+//! own; it lives as long as its connection. Binance ends a WebSocket API
+//! connection at 24 hours and announces maintenance with `serverShutdown`,
+//! so the task renews ahead of both: a new connection and subscription at
+//! [`Timing::max_age`] (23 h) or on `serverShutdown`, straight away, without
+//! the failure backoff. Renewing is a reconnect like any other, so the
+//! broker polls every order once after it.
+//!
 //! Nothing depends on the stream being complete. Before the first
 //! subscription, after every reconnect, while it is down, after a message
 //! that can't be read, and every [`FULL_POLL_EVERY`] regardless, the broker
@@ -82,6 +90,9 @@ pub struct Timing {
     pub silence: Duration,
     /// Longest connect + subscribe may take.
     pub handshake: Duration,
+    /// Age at which a subscribed connection is replaced, ahead of
+    /// Binance's 24-hour cut-off.
+    pub max_age: Duration,
 }
 
 impl Default for Timing {
@@ -91,6 +102,7 @@ impl Default for Timing {
             retry_max: Duration::from_secs(300),
             silence: Duration::from_secs(60),
             handshake: Duration::from_secs(10),
+            max_age: Duration::from_secs(23 * 3600),
         }
     }
 }
@@ -192,6 +204,8 @@ enum Incoming {
     Order(i64),
     /// `eventStreamTerminated`: the subscription ended, the socket may not.
     Terminated,
+    /// `serverShutdown`: Binance is about to drop the connection.
+    ServerShutdown,
     /// Balance and account events, replies to other requests.
     Other,
     /// Not JSON, or an `executionReport` without an order id.
@@ -219,6 +233,7 @@ fn parse(text: &str) -> Incoming {
             .as_i64()
             .map_or(Incoming::Garbled, Incoming::Order),
         Some("eventStreamTerminated") => Incoming::Terminated,
+        Some("serverShutdown") => Incoming::ServerShutdown,
         _ => Incoming::Other,
     }
 }
@@ -250,32 +265,53 @@ async fn run(
     let mut delay = timing.retry_min;
     loop {
         let timestamp = clock.now_millis() + offset_ms;
-        let (subscribed, reason) = session(&url, &creds, timestamp, timing, &news).await;
+        let end = session(&url, &creds, timestamp, timing, &news).await;
         lock(&news).live = false;
         metrics::gauge!(crate::metrics::USER_STREAM_UP).set(0.0);
-        if subscribed {
-            metrics::counter!(crate::metrics::USER_STREAM_DROPS).increment(1);
-            delay = timing.retry_min;
+        match end {
+            End::Renew(reason) => {
+                tracing::info!(reason, "renewing user data stream");
+                delay = timing.retry_min;
+                continue;
+            }
+            End::Dropped(reason) => {
+                metrics::counter!(crate::metrics::USER_STREAM_DROPS).increment(1);
+                delay = timing.retry_min;
+                tracing::warn!(
+                    reason,
+                    retry_in_secs = delay.as_secs_f64(),
+                    "user data stream down; polling every order until it is back"
+                );
+            }
+            End::Failed(reason) => tracing::warn!(
+                reason,
+                retry_in_secs = delay.as_secs_f64(),
+                "user data stream down; polling every order until it is back"
+            ),
         }
-        tracing::warn!(
-            reason,
-            retry_in_secs = delay.as_secs_f64(),
-            "user data stream down; polling every order until it is back"
-        );
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(timing.retry_max);
     }
 }
 
-/// One connection, from connect to its end. Returns whether it subscribed,
-/// and why it ended.
+/// How a connection ended.
+enum End {
+    /// Never subscribed: retry with backoff.
+    Failed(String),
+    /// Subscribed, then lost: retry from the shortest delay.
+    Dropped(String),
+    /// Replaced on purpose (age limit, `serverShutdown`): reconnect now.
+    Renew(&'static str),
+}
+
+/// One connection, from connect to its end.
 async fn session(
     url: &str,
     creds: &Credentials,
     timestamp: i64,
     timing: Timing,
     news: &Mutex<News>,
-) -> (bool, String) {
+) -> End {
     let handshake = async {
         let (mut socket, _) = tokio_tungstenite::connect_async(url)
             .await
@@ -299,9 +335,10 @@ async fn session(
     };
     let mut socket = match tokio::time::timeout(timing.handshake, handshake).await {
         Ok(Ok(s)) => s,
-        Ok(Err(why)) => return (false, why),
-        Err(_) => return (false, "connect and subscribe timed out".to_owned()),
+        Ok(Err(why)) => return End::Failed(why),
+        Err(_) => return End::Failed("connect and subscribe timed out".to_owned()),
     };
+    let renew_at = tokio::time::Instant::now() + timing.max_age;
     {
         let mut n = lock(news);
         n.epoch += 1;
@@ -310,10 +347,16 @@ async fn session(
     metrics::gauge!(crate::metrics::USER_STREAM_UP).set(1.0);
     tracing::info!("user data stream subscribed");
     loop {
-        let msg = match tokio::time::timeout(timing.silence, socket.next()).await {
-            Err(_) => return (true, format!("silent for {}s", timing.silence.as_secs())),
-            Ok(None) => return (true, "closed".to_owned()),
-            Ok(Some(Err(e))) => return (true, e.to_string()),
+        let silent_at = tokio::time::Instant::now() + timing.silence;
+        let msg = match tokio::time::timeout_at(silent_at.min(renew_at), socket.next()).await {
+            Err(_) if tokio::time::Instant::now() >= renew_at => {
+                return End::Renew("connection age limit");
+            }
+            Err(_) => {
+                return End::Dropped(format!("silent for {}s", timing.silence.as_secs()));
+            }
+            Ok(None) => return End::Dropped("closed".to_owned()),
+            Ok(Some(Err(e))) => return End::Dropped(e.to_string()),
             Ok(Some(Ok(m))) => m,
         };
         match msg {
@@ -325,10 +368,11 @@ async fn session(
                     tracing::warn!(message = %t, "unreadable user data stream message");
                     lock(news).garbled = true;
                 }
-                Incoming::Terminated => return (true, "subscription terminated".to_owned()),
+                Incoming::Terminated => return End::Dropped("subscription terminated".to_owned()),
+                Incoming::ServerShutdown => return End::Renew("server shutdown announced"),
                 Incoming::Subscribed | Incoming::Refused(_) | Incoming::Other => {}
             },
-            Message::Close(frame) => return (true, format!("closed by server: {frame:?}")),
+            Message::Close(frame) => return End::Dropped(format!("closed by server: {frame:?}")),
             // tungstenite answers pings itself.
             Message::Ping(_) | Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
         }
@@ -378,6 +422,11 @@ mod tests {
         assert_eq!(
             parse(r#"{"subscriptionId":0,"event":{"e":"eventStreamTerminated","E":1}}"#),
             Incoming::Terminated
+        );
+        // Binance's WebSocket API docs, "Server Shutdown".
+        assert_eq!(
+            parse(r#"{"event":{"e":"serverShutdown","E":1770123456789}}"#),
+            Incoming::ServerShutdown
         );
         assert_eq!(
             parse(
@@ -432,6 +481,7 @@ mod tests {
             retry_max: Duration::from_millis(10),
             silence: Duration::from_secs(5),
             handshake: Duration::from_secs(5),
+            max_age: Duration::from_secs(3600),
         }
     }
 
@@ -520,5 +570,86 @@ mod tests {
         drop(n);
         assert_eq!(s.take(), Changes::Unknown);
         server.abort();
+    }
+
+    /// Accepts connections forever, subscribing each; `after` runs on the
+    /// subscribed socket. Returns how many subscribes it has answered.
+    fn binance_server<F, Fut>(listener: TcpListener, after: F) -> Arc<Mutex<u32>>
+    where
+        F: Fn(tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let count = Arc::new(Mutex::new(0));
+        let seen = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let _ = ws.next().await;
+                let ok = r#"{"id":"subscribe","status":200,"result":{"subscriptionId":0}}"#;
+                ws.send(Message::Text(ok.into())).await.unwrap();
+                *seen.lock().unwrap() += 1;
+                tokio::spawn(after(ws));
+            }
+        });
+        count
+    }
+
+    /// Renewal skips the backoff: with a 30 s retry delay, a second
+    /// subscription within seconds can only be the renewal path.
+    fn slow_retry() -> Timing {
+        Timing {
+            retry_min: Duration::from_secs(30),
+            retry_max: Duration::from_secs(30),
+            ..fast()
+        }
+    }
+
+    #[tokio::test]
+    async fn renews_before_the_connection_age_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let subscribes = binance_server(listener, |mut ws| async move {
+            // Hold the socket open; Binance would ping it.
+            while ws.next().await.is_some() {}
+        });
+        let s = UserStream::spawn(
+            format!("ws://{addr}"),
+            Credentials::new("k", "s"),
+            Box::new(FixedClock(0)),
+            0,
+            Timing {
+                max_age: Duration::from_millis(200),
+                ..slow_retry()
+            },
+        );
+        wait_for(&s, |n| n.epoch >= 3 && n.live).await;
+        assert!(*subscribes.lock().unwrap() >= 3);
+    }
+
+    #[tokio::test]
+    async fn server_shutdown_renews_at_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let first = Arc::new(Mutex::new(true));
+        binance_server(listener, move |mut ws| {
+            let first = std::mem::replace(&mut *first.lock().unwrap(), false);
+            async move {
+                if first {
+                    let bye = r#"{"event":{"e":"serverShutdown","E":1770123456789}}"#;
+                    ws.send(Message::Text(bye.into())).await.unwrap();
+                }
+                while ws.next().await.is_some() {}
+            }
+        });
+        let mut s = UserStream::spawn(
+            format!("ws://{addr}"),
+            Credentials::new("k", "s"),
+            Box::new(FixedClock(0)),
+            0,
+            slow_retry(),
+        );
+        wait_for(&s, |n| n.epoch == 2 && n.live).await;
+        assert_eq!(s.take(), Changes::Unknown, "new connection: full poll");
     }
 }

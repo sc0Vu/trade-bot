@@ -317,7 +317,11 @@ trades lagged its status at the last poll. Every order is polled before the
 first subscription, after every reconnect (events in the gap are lost),
 while the stream is down, after an unreadable message, and once a minute
 regardless. A stream that never connects leaves the old behaviour: every
-order, every event. Stream failure is a warning, never a stop. It's off
+order, every event. There's no key to keep alive: a signature subscription
+lasts as long as its connection, and Binance ends connections at 24 hours
+and announces maintenance with a `serverShutdown` event. The bot renews
+ahead of both, with a new connection at 23 hours or on that event, without
+backoff, followed by the usual full poll. Stream failure is a warning, never a stop. It's off
 with `exchange.user_stream = false`, and while `rest_url` is overridden,
 since it would watch the network's real host, not the override's orders.
 
