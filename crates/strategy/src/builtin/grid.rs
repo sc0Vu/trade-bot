@@ -9,6 +9,14 @@
 //! the next open, the usual "neutral" opening that holds a lot for every
 //! level above the price.
 //!
+//! Venue price band (Binance `PERCENT_PRICE_BY_SIDE`, a buy at most 1.2×
+//! the average price on BTCUSDT): a buy above the band's top is placed at
+//! the top instead, and a sell below its bottom at the bottom. Both are
+//! marketable either way and fill at the market, so the opening is the
+//! same, without the venue's `-1013`. A buy below the bottom or a sell
+//! above the top would be refused outright: its gap waits, unplaced, until
+//! the price comes near.
+//!
 //! What it bets on: a price that oscillates inside the range. It loses to
 //! a trend either way: falling, it buys every level and ends holding all
 //! of them below cost (`stop_price`, if set, sells everything at market and
@@ -306,6 +314,29 @@ impl Grid {
         }
     }
 
+    /// The price to place a gap's order at, given the venue's price band
+    /// around `avg`: its `level`, or the band's edge for a level past the
+    /// marketable edge (a buy above the top, a sell below the bottom: it
+    /// fills at the market either way). `None` for a level past the passive
+    /// edge, which the venue would refuse. No band or no average: `level`.
+    fn band_price(
+        inst: &Instrument,
+        avg: Option<Price>,
+        side: Side,
+        level: Price,
+    ) -> Option<Price> {
+        let Some((lo, hi)) = avg.and_then(|a| inst.price_range(side, a)) else {
+            return Some(level);
+        };
+        match side {
+            Side::Buy if level > hi => Some(inst.round_price(hi, Side::Buy)),
+            Side::Sell if level < lo => Some(inst.round_price(lo, Side::Sell)),
+            Side::Buy if level < lo => None,
+            Side::Sell if level > hi => None,
+            _ => Some(level),
+        }
+    }
+
     fn evaluate(&mut self, ctx: &Context, inst: &Instrument, close: Price) -> Vec<Signal> {
         match self.stage {
             Stage::Stopped(_) => return Vec::new(),
@@ -346,27 +377,33 @@ impl Grid {
         if self.blocked {
             return Vec::new();
         }
+        let avg = ctx
+            .now()
+            .and_then(|now| inst.average_price(ctx.history(&self.p.coin), now));
         let mut out = Vec::new();
         for i in 0..self.gaps.len() {
             match self.gaps[i].clone() {
                 Gap::Empty => {
-                    out.push(self.limit(
-                        Side::Buy,
-                        Size::Quote(self.p.quote_per_grid),
-                        self.levels[i],
-                    ));
+                    let Some(price) = Self::band_price(inst, avg, Side::Buy, self.levels[i]) else {
+                        continue;
+                    };
+                    out.push(self.limit(Side::Buy, Size::Quote(self.p.quote_per_grid), price));
                     self.gaps[i] = Gap::Buying { got: Qty::ZERO };
                     self.routing.push_back(Some(i));
                 }
                 Gap::Held { qty } => {
+                    let Some(price) = Self::band_price(inst, avg, Side::Sell, self.levels[i + 1])
+                    else {
+                        continue;
+                    };
                     let lot = inst.round_qty(qty);
-                    if inst.check_order(lot, self.levels[i + 1]).is_err() {
+                    if inst.check_order(lot, price).is_err() {
                         self.dust += qty;
                         self.gaps[i] = Gap::Empty;
                         continue;
                     }
                     self.dust += qty - lot;
-                    out.push(self.limit(Side::Sell, Size::Base(lot), self.levels[i + 1]));
+                    out.push(self.limit(Side::Sell, Size::Base(lot), price));
                     self.gaps[i] = Gap::Selling {
                         qty: lot,
                         sold: Qty::ZERO,
@@ -793,6 +830,77 @@ mod tests {
         assert_eq!(
             bar(s.as_mut(), &mut ctx, 0, "100"),
             vec![buy("90"), buy("95"), buy("100"), buy("105")]
+        );
+    }
+
+    /// 40..160 in 4 gaps (levels 40, 70, 100, 130, 160) on BTCUSDT with
+    /// Binance's band: buys within 0.5..=1.2x the average, sells within
+    /// 0.8..=2x. A test candle's average is its close.
+    fn start_banded() -> (Box<dyn Strategy>, Context) {
+        let p = Params::from_toml(
+            r#"coin = "binance:BTCUSDT"
+               lower = "40"
+               upper = "160"
+               grids = 4
+               spacing = "arithmetic"
+               quote_per_grid = "100"
+               fee = "0.001"
+               slippage_bps = "5""#,
+        )
+        .unwrap();
+        let inst = Instrument::new(bot_core::InstrumentSpec {
+            price_band: Some(bot_core::PriceBand {
+                bid_up: dec!(1.2),
+                bid_down: dec!(0.5),
+                ask_up: dec!(2),
+                ask_down: dec!(0.8),
+                avg_minutes: 5,
+            }),
+            ..(*btcusdt()).clone()
+        })
+        .unwrap();
+        let mut ctx = driver::new(vec![inst], p.clone(), 10);
+        let mut s = build(NAME, &p).unwrap();
+        s.on_start(&mut ctx);
+        (s, ctx)
+    }
+
+    /// Opening at 100 (buys allowed 50..=120): 40 waits, 70 and 100 go as
+    /// usual, 130 goes at the band's top, 120 (still marketable). At 60
+    /// (30..=72) the 40 buy can go.
+    #[test]
+    fn buys_stay_inside_the_venue_price_band() {
+        let (mut s, mut ctx) = start_banded();
+        assert_eq!(
+            bar(s.as_mut(), &mut ctx, 0, "100"),
+            vec![buy("70"), buy("100"), buy("120")]
+        );
+        assert_eq!(bar(s.as_mut(), &mut ctx, 1, "60"), vec![buy("40")]);
+    }
+
+    /// The 70 buy fills (100/70 → 1.42857 BTC, 1.42714143 net, lot
+    /// 1.42714). At 130 (sells allowed 104..=260) its 100 sell goes at the
+    /// band's bottom, 104 (still marketable). The 120 buy fills (100/120 →
+    /// 0.83333, 0.83249667 net, lot 0.83249); its sell at 160 is above
+    /// the band at 70 (56..=140), so it waits, and goes at 90 (72..=180).
+    #[test]
+    fn sells_stay_inside_the_venue_price_band() {
+        let (mut s, mut ctx) = start_banded();
+        let opening = bar(s.as_mut(), &mut ctx, 0, "100");
+        let o = accept(s.as_mut(), &mut ctx, &opening, 1);
+        driver::set_open_orders(&mut ctx, vec![o[1].clone(), o[2].clone()]);
+        s.on_fill(&mut ctx, &fill("o-1", Side::Buy, dec!(1.42857), "70"));
+        let up = bar(s.as_mut(), &mut ctx, 1, "130");
+        assert_eq!(up, vec![sell("104", dec!(1.42714))]);
+
+        let o4 = accept(s.as_mut(), &mut ctx, &up, 4);
+        driver::set_open_orders(&mut ctx, vec![o[1].clone(), o4[0].clone()]);
+        s.on_fill(&mut ctx, &fill("o-3", Side::Buy, dec!(0.83333), "120"));
+        // At 70 the 40 buy is inside (35..=84) and goes; the 160 sell waits.
+        assert_eq!(bar(s.as_mut(), &mut ctx, 2, "70"), vec![buy("40")]);
+        assert_eq!(
+            bar(s.as_mut(), &mut ctx, 3, "90"),
+            vec![sell("160", dec!(0.83249))]
         );
     }
 

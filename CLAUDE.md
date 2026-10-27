@@ -516,7 +516,10 @@ else Stopped. First eval: every gap buys, those above price marketable
 (neutral opening). Order ↔ gap via `on_order` ids (paper order can fill
 before visible); fills sum, gap settles when its order neither open nor
 cancelling (split fills); refusal (`on_rejected`) → gap back, no new orders
-until next fill (no `-2010` loop). Lot remainders → `dust`. Optional
+until next fill (no `-2010` loop). Lot remainders → `dust`. Venue price band (`price_band`, avg from
+history): buy above top → placed at top, sell below bottom → at bottom
+(marketable either way); buy below bottom / sell above top → gap waits
+unplaced. Optional
 `stop_price` < `lower`: close below → cancel all, once idle market-sell
 all, Stopped. Restart (reconcile cancelled all; position already has
 downtime fills): working gaps settled, squared with position (extra coin →
