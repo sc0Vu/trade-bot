@@ -8,8 +8,8 @@ use super::signed::{HttpResponse, Method, admit, observe};
 use crate::ExchangeError;
 use crate::rate_limit::RateLimiter;
 use bot_core::{
-    Asset, AssetClass, Candle, CandleSpec, Instrument, InstrumentId, InstrumentSpec, Interval,
-    Notional, Price, Qty, Symbol, Timestamp, VenueId,
+    Asset, AssetClass, Candle, CandleSpec, Decimal, Instrument, InstrumentId, InstrumentSpec,
+    Interval, Notional, Price, PriceBand, Qty, Symbol, Timestamp, VenueId,
 };
 use serde_json::Value;
 use std::str::FromStr;
@@ -225,6 +225,7 @@ pub(crate) fn parse_exchange_info(
         .or_else(|| filter("MIN_NOTIONAL"))
         .ok_or_else(|| decode("NOTIONAL"))?;
     let symbol: Symbol = str_field(&s["symbol"], "symbol")?;
+    let price_band = parse_price_band(filter("PERCENT_PRICE_BY_SIDE"), filter("PERCENT_PRICE"))?;
     Instrument::new(InstrumentSpec {
         id: InstrumentId::new(venue.clone(), symbol),
         class: AssetClass::Spot,
@@ -240,9 +241,50 @@ pub(crate) fn parse_exchange_info(
         lot_size: str_field(&lot["stepSize"], "stepSize")?,
         min_qty: str_field(&lot["minQty"], "minQty")?,
         min_notional: str_field(&notional["minNotional"], "minNotional")?,
-        price_band: None,
+        price_band,
     })
     .map_err(|e| ExchangeError::Decode(e.to_string()))
+}
+
+/// The price band from `PERCENT_PRICE_BY_SIDE`, or from the older
+/// `PERCENT_PRICE` (one pair of multipliers for both sides). Neither: no
+/// band. Present but malformed: an error, never a guess.
+fn parse_price_band(
+    by_side: Option<&Value>,
+    legacy: Option<&Value>,
+) -> Result<Option<PriceBand>, ExchangeError> {
+    let mult = |f: &Value, key: &str| {
+        f[key]
+            .as_str()
+            .and_then(|s| Decimal::from_str_exact(s).ok())
+            .ok_or_else(|| decode(key))
+    };
+    let minutes = |f: &Value| {
+        f["avgPriceMins"]
+            .as_u64()
+            .and_then(|m| u32::try_from(m).ok())
+            .ok_or_else(|| decode("avgPriceMins"))
+    };
+    Ok(match (by_side, legacy) {
+        (Some(f), _) => Some(PriceBand {
+            bid_up: mult(f, "bidMultiplierUp")?,
+            bid_down: mult(f, "bidMultiplierDown")?,
+            ask_up: mult(f, "askMultiplierUp")?,
+            ask_down: mult(f, "askMultiplierDown")?,
+            avg_minutes: minutes(f)?,
+        }),
+        (None, Some(f)) => {
+            let (up, down) = (mult(f, "multiplierUp")?, mult(f, "multiplierDown")?);
+            Some(PriceBand {
+                bid_up: up,
+                bid_down: down,
+                ask_up: up,
+                ask_down: down,
+                avg_minutes: minutes(f)?,
+            })
+        }
+        (None, None) => None,
+    })
 }
 
 #[cfg(test)]
@@ -294,6 +336,44 @@ mod tests {
         {"filterType":"PRICE_FILTER","minPrice":"0.01000000","maxPrice":"1000000.00000000","tickSize":"0.01000000"},
         {"filterType":"LOT_SIZE","minQty":"0.00001000","maxQty":"9000.00000000","stepSize":"0.00001000"},
         {"filterType":"NOTIONAL","minNotional":"5.00000000","applyMinToMarket":true}]}]}"#;
+
+    /// BTCUSDT's band as Binance publishes it (mainnet and demo, Oct 2026).
+    #[test]
+    fn parses_price_band() {
+        let with = EXCHANGE_INFO.replace(
+            r#""applyMinToMarket":true}"#,
+            r#""applyMinToMarket":true},
+            {"filterType":"PERCENT_PRICE_BY_SIDE","bidMultiplierUp":"1.2","bidMultiplierDown":"0.5",
+             "askMultiplierUp":"2","askMultiplierDown":"0.8","avgPriceMins":5}"#,
+        );
+        let venue = VenueId::new("binance").unwrap();
+        let i = parse_exchange_info(&serde_json::from_str(&with).unwrap(), &venue).unwrap();
+        assert_eq!(
+            i.price_band,
+            Some(PriceBand {
+                bid_up: dec!(1.2),
+                bid_down: dec!(0.5),
+                ask_up: dec!(2),
+                ask_down: dec!(0.8),
+                avg_minutes: 5,
+            })
+        );
+        let legacy = EXCHANGE_INFO.replace(
+            r#""applyMinToMarket":true}"#,
+            r#""applyMinToMarket":true},
+            {"filterType":"PERCENT_PRICE","multiplierUp":"5","multiplierDown":"0.2","avgPriceMins":5}"#,
+        );
+        let i = parse_exchange_info(&serde_json::from_str(&legacy).unwrap(), &venue).unwrap();
+        let b = i.price_band.unwrap();
+        assert_eq!(
+            (b.bid_up, b.ask_up, b.bid_down, b.ask_down),
+            (dec!(5), dec!(5), dec!(0.2), dec!(0.2))
+        );
+        let none = parse_exchange_info(&serde_json::from_str(EXCHANGE_INFO).unwrap(), &venue);
+        assert_eq!(none.unwrap().price_band, None);
+        let float = with.replace(r#""bidMultiplierUp":"1.2""#, r#""bidMultiplierUp":1.2"#);
+        assert!(parse_exchange_info(&serde_json::from_str(&float).unwrap(), &venue).is_err());
+    }
 
     #[test]
     fn parses_instrument_filters() {

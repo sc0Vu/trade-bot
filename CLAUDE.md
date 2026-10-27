@@ -333,6 +333,8 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    into `data/klines/<venue>/<SYMBOL>-<interval>.jsonl` and
    `data/instruments/<venue>/<SYMBOL>.json`; only missing head/tail ranges
    downloaded, then offline. Reads re-validate (corrupt cache → error).
+   Instrument file rewritten every fetch (incl. `price_band` from
+   `PERCENT_PRICE_BY_SIDE`, else legacy `PERCENT_PRICE`; older files: none).
    Filters are today's, not historical — approximation (older, finer-tick
    prices: slipped fills rounded to today's coarser tick, e.g. SOL 2021 at
    ~1.84 with tick 0.01 ≈ 0.5% worse per taker fill). `KlineFeed` merges
