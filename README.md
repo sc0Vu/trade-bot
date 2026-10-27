@@ -55,8 +55,17 @@ These rules are invariants in the code, not just conventions:
 
 ## Quick start
 
-Requirements: Rust (the toolchain is pinned in `rust-toolchain.toml` and
-installed by `rustup` automatically) and about 1 GB of disk for the build.
+Prebuilt binaries for Linux (x86_64, arm64; glibc 2.35+), macOS (Apple
+silicon, Intel) and Windows (x86_64) are on the
+[releases page](https://github.com/sc0Vu/trade-bot/releases). Each archive
+holds `trade-bot`, which is the same program as `cargo run -p cli --`
+below, plus `config/config.example.toml` and the examples. Check it
+against `SHA256SUMS`. Then `trade-bot run --paper` replaces
+`make run-paper`.
+
+To build from source you need Rust (the toolchain is pinned in
+`rust-toolchain.toml` and `rustup` installs it automatically) and about
+1 GB of disk for the build.
 
 ```sh
 git clone <this repo> && cd trade-bot
@@ -285,7 +294,11 @@ Commits are one logical change each, with Conventional Commit subjects.
 
 CI (`.github/workflows/ci.yml`) runs `make check` and validates the
 `deploy/` configs with each tool's own image on every push and pull
-request.
+request. Pushing a tag `vX.Y.Z` that matches the workspace version runs
+`release.yml`: it builds every platform (Linux with OpenSSL linked
+statically through the `vendored-tls` feature), smoke-tests each binary,
+and publishes the archives with `SHA256SUMS` as a GitHub release. *Run
+workflow* on the Release action builds the archives without publishing.
 
 ## License
 

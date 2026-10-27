@@ -31,6 +31,10 @@ backtest.workspace = true
 storage.workspace = true
 migration.workspace = true
 
+[features]
+# Statically linked OpenSSL; release builds turn it on (see exchange).
+vendored-tls = ["exchange/vendored-tls"]
+
 [dev-dependencies]
 rust_decimal_macros.workspace = true
 figment = { workspace = true, features = ["test"] }

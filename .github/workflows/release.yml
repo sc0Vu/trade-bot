@@ -1,0 +1,123 @@
+# Builds the `trade-bot` binary for each platform and, on a version tag,
+# publishes them as a GitHub release.
+#
+#   git tag v0.1.0 && git push origin v0.1.0   # build + release
+#   Actions > Release > Run workflow           # build only (artifacts)
+#
+# The tag must match the workspace version in Cargo.toml.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds run on 22.04 for an older glibc (2.35): the binary
+          # runs on that and anything newer. OpenSSL is linked statically
+          # (vendored-tls), so the host's libssl version doesn't matter.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          # Both macOS builds on Apple silicon; Intel is a cross-compile
+          # (macOS TLS is the system's, nothing native to cross).
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15 }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} != v${version} (workspace version in Cargo.toml)" >&2
+            exit 1
+          fi
+
+      - name: Toolchain and target
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked -p cli --features vendored-tls --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          name="trade-bot-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name/config"
+          exe=""
+          [[ "${{ matrix.target }}" == *windows* ]] && exe=".exe"
+          cp "target/${{ matrix.target }}/release/cli$exe" "dist/$name/trade-bot$exe"
+          cp README.md LICENSE "dist/$name/"
+          cp config/config.example.toml "dist/$name/config/"
+          cp -r config/examples "dist/$name/config/"
+          cd dist
+          if [[ -n "$exe" ]]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+            echo "file=$name.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar czf "$name.tar.gz" "$name"
+            echo "file=$name.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Catches a binary that built but can't start on its own platform
+      # (missing dynamic library, wrong arch). Intel macOS runs under Rosetta.
+      - name: Smoke test
+        shell: bash
+        run: |
+          exe=""
+          [[ "${{ matrix.target }}" == *windows* ]] && exe=".exe"
+          "target/${{ matrix.target }}/release/cli$exe" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/${{ steps.package.outputs.file }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          [[ "${GITHUB_REF_NAME}" == *-* ]] && pre="--prerelease"
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" \
+            --generate-notes --verify-tag $pre

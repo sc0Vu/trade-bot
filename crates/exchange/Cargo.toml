@@ -24,6 +24,12 @@ tokio = { workspace = true, features = ["time", "net"] }
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 
+[features]
+# Build OpenSSL from source and link it statically (Linux; macOS and
+# Windows use the system TLS either way), so a release binary doesn't
+# depend on the host's libssl version.
+vendored-tls = ["reqwest/native-tls-vendored", "tokio-tungstenite/native-tls-vendored"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 metrics-util.workspace = true
