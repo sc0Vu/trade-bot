@@ -6,6 +6,17 @@ use bot_core::{
     Order, OrderId, OrderKind, Position, Price, Qty, Side, Size,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
+
+/// What a venue currently lets an account do on a market, consulted by the
+/// paper broker at submit and cancel. Live venues refuse orders on a halted
+/// market; a paper run on that venue's data must too (invariant 3).
+pub trait OrderGate: Send + Sync {
+    /// `Err(reason)` if the venue would refuse a new order on `id` now.
+    fn check_submit(&self, id: &InstrumentId) -> Result<(), &'static str>;
+    /// `Err(reason)` if the venue would refuse cancelling an order on `id`.
+    fn check_cancel(&self, id: &InstrumentId) -> Result<(), &'static str>;
+}
 
 struct Pending {
     order: Order,
@@ -52,6 +63,10 @@ struct Cash {
 /// no longer fits, so cash never goes negative. Orders on an instrument
 /// quoted in another asset are refused. Without a balance nothing is
 /// refused for lack of quote.
+///
+/// Given an [`OrderGate`] ([`PaperBroker::with_gate`]) it also refuses what
+/// the gate says the venue would (a halted market). The gate decides only
+/// submit and cancel: orders already resting keep settling.
 pub struct PaperBroker {
     instruments: HashMap<InstrumentId, Instrument>,
     fill_model: Box<dyn FillModel>,
@@ -63,6 +78,7 @@ pub struct PaperBroker {
     /// Latest close per instrument: prices market orders for the balance
     /// check.
     last_close: HashMap<InstrumentId, Price>,
+    gate: Option<Arc<dyn OrderGate>>,
 }
 
 impl PaperBroker {
@@ -83,7 +99,14 @@ impl PaperBroker {
             positions: HashMap::new(),
             cash: None,
             last_close: HashMap::new(),
+            gate: None,
         }
+    }
+
+    /// Also refuses submits and cancels `gate` says the venue would.
+    pub fn with_gate(mut self, gate: Arc<dyn OrderGate>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// Trades from a balance of `balance` in `asset` (the quote of the
@@ -331,6 +354,10 @@ impl Broker for PaperBroker {
         if self.pending.iter().any(|p| p.order.id == order.id) {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
+        if let Some(g) = &self.gate {
+            g.check_submit(&order.instrument)
+                .map_err(ExchangeError::Rejected)?;
+        }
         crate::check_open_count(
             self.instruments
                 .get(&order.instrument)
@@ -361,6 +388,10 @@ impl Broker for PaperBroker {
     }
 
     async fn cancel(&mut self, id: OrderId) -> Result<(), ExchangeError> {
+        if let (Some(g), Some(p)) = (&self.gate, self.pending.iter().find(|p| p.order.id == id)) {
+            g.check_cancel(&p.order.instrument)
+                .map_err(ExchangeError::Rejected)?;
+        }
         let before = self.pending.len();
         self.pending.retain(|p| p.order.id != id);
         if self.pending.len() == before {
@@ -941,5 +972,33 @@ mod tests {
         // The stop cap leaves room for a plain order.
         b.submit(limit("o-5")).await.unwrap();
         assert_eq!(b.open_orders().len(), 3);
+    }
+
+    /// A market halted for new orders, cancels still allowed.
+    struct CancelOnly;
+
+    impl OrderGate for CancelOnly {
+        fn check_submit(&self, _: &InstrumentId) -> Result<(), &'static str> {
+            Err("market is cancel-only")
+        }
+        fn check_cancel(&self, _: &InstrumentId) -> Result<(), &'static str> {
+            Ok(())
+        }
+    }
+
+    /// Placed before the halt, the order can still be cancelled; nothing new
+    /// is accepted, and the refusal is a non-fatal rejection.
+    #[tokio::test]
+    async fn gate_refuses_what_the_venue_would() {
+        let mut b = broker(dec!(0));
+        b.submit(market("o-1", Side::Buy, dec!(1), 0))
+            .await
+            .unwrap();
+        let mut b = b.with_gate(Arc::new(CancelOnly));
+        let r = b.submit(market("o-2", Side::Buy, dec!(1), 0)).await;
+        assert_rejected(r, "market is cancel-only");
+        assert!(ExchangeError::Rejected("market is cancel-only").is_order_rejection());
+        b.cancel(OrderId::new("o-1").unwrap()).await.unwrap();
+        assert!(b.open_orders().is_empty());
     }
 }

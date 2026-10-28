@@ -435,7 +435,10 @@ Candle = four prices, can't tell whether high or low first. So:
   fills never slipped: limit can't fill worse than itself.
 - PaperBroker refuses sells > holding − pending sells, and an order past
   the instrument's open-order caps (`exchange::check_open_count`, own
-  working orders; BinanceBroker same, cancelling ones excluded). With balance
+  working orders; BinanceBroker same, cancelling ones excluded), and what an
+  optional `OrderGate` (`with_gate`: venue's live market status) says the
+  venue would refuse (submit / cancel only; resting orders keep settling;
+  backtest has no gate = always open). With balance
   (`with_cash`; backtest always) refuses unaffordable buy at submit like
   Binance `-2010` (→ `RunReport` rejection). Pending buy reserves max
   spend: quote budget = budget; limit/stop-limit = notional at limit +
