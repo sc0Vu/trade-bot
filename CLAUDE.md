@@ -351,7 +351,8 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `data/instruments/<venue>/<SYMBOL>.json`; only missing head/tail ranges
    downloaded, then offline. Reads re-validate (corrupt cache → error).
    Instrument file rewritten every fetch (incl. `price_band` from
-   `PERCENT_PRICE_BY_SIDE`, else legacy `PERCENT_PRICE`; older files: none).
+   `PERCENT_PRICE_BY_SIDE`, else legacy `PERCENT_PRICE`; caps from
+   `MAX_NUM_ORDERS` / `MAX_NUM_ALGO_ORDERS`; older files: none).
    Filters are today's, not historical — approximation (older, finer-tick
    prices: slipped fills rounded to today's coarser tick, e.g. SOL 2021 at
    ~1.84 with tick 0.01 ≈ 0.5% worse per taker fill). `KlineFeed` merges
@@ -401,7 +402,9 @@ Candle = four prices, can't tell whether high or low first. So:
 - fee (taker/maker rate, received asset like Binance or quote) every fill;
   slippage (bps) taker fills only, rounded to tick against trader. Maker
   fills never slipped: limit can't fill worse than itself.
-- PaperBroker refuses sells > holding − pending sells. With balance
+- PaperBroker refuses sells > holding − pending sells, and an order past
+  the instrument's open-order caps (`exchange::check_open_count`, own
+  working orders; BinanceBroker same, cancelling ones excluded). With balance
   (`with_cash`; backtest always) refuses unaffordable buy at submit like
   Binance `-2010` (→ `RunReport` rejection). Pending buy reserves max
   spend: quote budget = budget; limit/stop-limit = notional at limit +

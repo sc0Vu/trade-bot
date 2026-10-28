@@ -421,6 +421,13 @@ impl Broker for BinanceBroker {
         if self.open.iter().any(|o| o.order.id == order.id) {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
+        crate::check_open_count(
+            self.instruments
+                .get(&order.instrument)
+                .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?,
+            self.open.iter().filter(|o| !o.cancelling).map(|o| &o.order),
+            &order,
+        )?;
         if let (Side::Sell, Size::Base(q)) = (order.side, order.size) {
             let held = self.position(&order.instrument).qty();
             if self.pending_sell_qty(&order.instrument) + q > held {
@@ -1230,5 +1237,47 @@ mod tests {
         reply_untouched(&t, 29);
         let (_, polled) = settle_polls(&mut b, &t).await;
         assert_eq!(polled, ["28", "28", "29", "29"]);
+    }
+
+    #[track_caller]
+    fn assert_rejected(r: Result<OrderId, ExchangeError>, why: &str) {
+        match r {
+            Err(ExchangeError::Rejected(m)) => assert_eq!(m, why),
+            other => panic!("expected refusal {why:?}, got {other:?}"),
+        }
+    }
+
+    /// Refused without calling Binance, like the paper broker; an order
+    /// being cancelled no longer counts (Binance acknowledged the cancel).
+    #[tokio::test]
+    async fn refuses_past_the_open_order_cap_without_calling_binance() {
+        let t = FakeTransport::default();
+        let db = TempDb::new().await;
+        let client = SignedClient::new(
+            "https://testnet.binance.vision",
+            Box::new(t.clone()),
+            Credentials::new("test-key", SECRET),
+            Box::new(FixedClock(1_700_000_000_000)),
+        );
+        let capped = Instrument::new(InstrumentSpec {
+            max_open_orders: Some(1),
+            ..btcusdt().into()
+        })
+        .unwrap();
+        let mut b = BinanceBroker::open(client, vec![capped], "tbrun".into(), db.store.clone())
+            .await
+            .unwrap();
+        t.reply(200, r#"{"orderId":28}"#);
+        b.submit(limit_buy("o-1")).await.unwrap();
+        assert_rejected(
+            b.submit(limit_buy("o-2")).await,
+            "too many open orders on the instrument",
+        );
+        assert_eq!(t.sent().len(), 1, "refused before any request");
+
+        t.reply(200, r#"{"orderId":28,"status":"CANCELED"}"#);
+        b.cancel(OrderId::new("o-1").unwrap()).await.unwrap();
+        t.reply(200, r#"{"orderId":29}"#);
+        b.submit(limit_buy("o-2")).await.unwrap();
     }
 }

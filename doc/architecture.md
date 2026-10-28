@@ -208,7 +208,10 @@ every time:
 - If a stop and a target fall in one candle, the model can't know which came
   first, and it assumes the worse.
 
-The paper broker refuses sells beyond the holding minus pending sells. In
+The paper broker refuses sells beyond the holding minus pending sells, and
+an order that would pass the instrument's open-order caps (Binance
+`MAX_NUM_ORDERS`, 200 on BTCUSDT counting stops, and `MAX_NUM_ALGO_ORDERS`,
+5 stops); the Binance broker refuses the same before sending. In
 a backtest it also trades from the initial cash and refuses, at submit, a
 buy it can't cover, as Binance does. Each pending buy reserves the most it
 can spend (its quote budget, its notional at the limit, or a market buy's

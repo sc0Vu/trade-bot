@@ -331,6 +331,13 @@ impl Broker for PaperBroker {
         if self.pending.iter().any(|p| p.order.id == order.id) {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
+        crate::check_open_count(
+            self.instruments
+                .get(&order.instrument)
+                .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?,
+            self.pending.iter().map(|p| &p.order),
+            &order,
+        )?;
         if let (Side::Sell, Size::Base(qty)) = (order.side, order.size) {
             let held = self.position(&order.instrument).qty();
             if self.pending_sell_qty(&order.instrument) + qty > held {
@@ -421,7 +428,9 @@ mod tests {
     use super::*;
     use crate::paper::test_support::{HOUR, btcusdt, candle};
     use crate::paper::{BpsSlippage, FeeAsset, NextOpenFillModel, RateFee};
-    use bot_core::{Fee, Liquidity, Notional, OrderKind, OrderSpec, Price, Timestamp};
+    use bot_core::{
+        Fee, InstrumentSpec, Liquidity, Notional, OrderKind, OrderSpec, Price, Timestamp,
+    };
     use rust_decimal_macros::dec;
 
     fn broker(slippage_bps: rust_decimal::Decimal) -> PaperBroker {
@@ -861,5 +870,76 @@ mod tests {
             Notional::new(dec!(1000)),
         );
         assert!(rejected(b.submit(buy_with("o-1", dec!(10), 0)).await));
+    }
+
+    #[track_caller]
+    fn assert_rejected(r: Result<OrderId, ExchangeError>, why: &str) {
+        match r {
+            Err(ExchangeError::Rejected(m)) => assert_eq!(m, why),
+            other => panic!("expected refusal {why:?}, got {other:?}"),
+        }
+    }
+
+    /// Caps of 3 open orders, 1 of them a stop. Buys at a limit far below
+    /// the market and stops far above it never fill, so only submit and
+    /// cancel move the counts.
+    #[tokio::test]
+    async fn refuses_past_the_open_order_caps() {
+        let capped = Instrument::new(InstrumentSpec {
+            max_open_orders: Some(3),
+            max_open_stops: Some(1),
+            ..btcusdt().into()
+        })
+        .unwrap();
+        let mut b = PaperBroker::new(
+            vec![capped],
+            Box::new(NextOpenFillModel),
+            Box::new(BpsSlippage::new(dec!(0)).unwrap()),
+            Box::new(RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap()),
+        );
+        let with_kind = |id: &str, kind: OrderKind| {
+            Order::new(OrderSpec {
+                kind,
+                ..market(id, Side::Buy, dec!(0.001), 0).into()
+            })
+            .unwrap()
+        };
+        let limit = |id: &str| {
+            with_kind(
+                id,
+                OrderKind::Limit {
+                    price: Price::new(dec!(10)),
+                    tif: bot_core::TimeInForce::Gtc,
+                },
+            )
+        };
+        let stop = |id: &str| {
+            with_kind(
+                id,
+                OrderKind::StopMarket {
+                    stop: Price::new(dec!(1000000)),
+                },
+            )
+        };
+        for id in ["o-1", "o-2", "o-3"] {
+            b.submit(limit(id)).await.unwrap();
+        }
+        assert_rejected(
+            b.submit(limit("o-4")).await,
+            "too many open orders on the instrument",
+        );
+        b.cancel(OrderId::new("o-1").unwrap()).await.unwrap();
+        b.submit(limit("o-4")).await.unwrap();
+
+        b.cancel(OrderId::new("o-2").unwrap()).await.unwrap();
+        b.submit(stop("s-1")).await.unwrap();
+        b.cancel(OrderId::new("o-3").unwrap()).await.unwrap();
+        assert_rejected(
+            b.submit(stop("s-2")).await,
+            "too many open stop orders on the instrument",
+        );
+        // The stop cap leaves room for a plain order.
+        b.submit(limit("o-5")).await.unwrap();
+        assert_eq!(b.open_orders().len(), 3);
     }
 }

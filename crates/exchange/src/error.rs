@@ -72,6 +72,36 @@ impl ExchangeError {
     }
 }
 
+/// Refuses `new` if one more open order on its instrument would pass the
+/// venue's caps (`Instrument::check_open_count`). `open` is the broker's own
+/// working orders, any instrument; ones it is cancelling don't count (the
+/// cancel has been acknowledged). Both brokers call it, so paper and live
+/// refuse alike (invariant 3).
+pub(crate) fn check_open_count<'a>(
+    inst: &bot_core::Instrument,
+    open: impl Iterator<Item = &'a bot_core::Order>,
+    new: &bot_core::Order,
+) -> Result<(), ExchangeError> {
+    let is_stop = |o: &bot_core::Order| {
+        matches!(
+            o.kind,
+            bot_core::OrderKind::StopMarket { .. } | bot_core::OrderKind::StopLimit { .. }
+        )
+    };
+    let (mut n, mut stops) = (0, 0);
+    for o in open.filter(|o| o.instrument == new.instrument) {
+        n += 1;
+        stops += usize::from(is_stop(o));
+    }
+    inst.check_open_count(n, stops, is_stop(new))
+        .map_err(|e| match e {
+            bot_core::FilterError::TooManyOpenStops => {
+                ExchangeError::Rejected("too many open stop orders on the instrument")
+            }
+            _ => ExchangeError::Rejected("too many open orders on the instrument"),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

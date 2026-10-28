@@ -242,10 +242,24 @@ pub(crate) fn parse_exchange_info(
         min_qty: str_field(&lot["minQty"], "minQty")?,
         min_notional: str_field(&notional["minNotional"], "minNotional")?,
         price_band,
-        max_open_orders: None,
-        max_open_stops: None,
+        max_open_orders: cap(filter("MAX_NUM_ORDERS"), "maxNumOrders")?,
+        max_open_stops: cap(filter("MAX_NUM_ALGO_ORDERS"), "maxNumAlgoOrders")?,
     })
     .map_err(|e| ExchangeError::Decode(e.to_string()))
+}
+
+/// An open-order cap from its filter (`MAX_NUM_ORDERS`,
+/// `MAX_NUM_ALGO_ORDERS`). No filter: no cap. Present but malformed: an
+/// error.
+fn cap(filter: Option<&Value>, key: &str) -> Result<Option<u32>, ExchangeError> {
+    filter
+        .map(|f| {
+            f[key]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| decode(key))
+        })
+        .transpose()
 }
 
 /// The price band from `PERCENT_PRICE_BY_SIDE`, or from the older
@@ -375,6 +389,25 @@ mod tests {
         assert_eq!(none.unwrap().price_band, None);
         let float = with.replace(r#""bidMultiplierUp":"1.2""#, r#""bidMultiplierUp":1.2"#);
         assert!(parse_exchange_info(&serde_json::from_str(&float).unwrap(), &venue).is_err());
+    }
+
+    /// BTCUSDT's caps as Binance publishes them (demo, Oct 2026).
+    #[test]
+    fn parses_open_order_caps() {
+        let venue = VenueId::new("binance").unwrap();
+        let with = EXCHANGE_INFO.replace(
+            r#""applyMinToMarket":true}"#,
+            r#""applyMinToMarket":true},
+            {"filterType":"MAX_NUM_ORDERS","maxNumOrders":200},
+            {"filterType":"MAX_NUM_ALGO_ORDERS","maxNumAlgoOrders":5}"#,
+        );
+        let i = parse_exchange_info(&serde_json::from_str(&with).unwrap(), &venue).unwrap();
+        assert_eq!((i.max_open_orders, i.max_open_stops), (Some(200), Some(5)));
+        let none = parse_exchange_info(&serde_json::from_str(EXCHANGE_INFO).unwrap(), &venue);
+        let none = none.unwrap();
+        assert_eq!((none.max_open_orders, none.max_open_stops), (None, None));
+        let text = with.replace(r#""maxNumOrders":200"#, r#""maxNumOrders":"200""#);
+        assert!(parse_exchange_info(&serde_json::from_str(&text).unwrap(), &venue).is_err());
     }
 
     #[test]
