@@ -92,11 +92,17 @@ impl MaxPublicClient {
         Ok(body)
     }
 
+    /// Every MAX market, with its filters and status.
+    pub async fn markets(&self) -> Result<Vec<Market>, ExchangeError> {
+        let body = self.get("/api/v3/markets", &[]).await?;
+        parse_markets(&body, &self.venue)
+    }
+
     /// `symbol`'s filters (`BTCUSDT` = market `btcusdt`). An unknown market
     /// is [`ExchangeError::UnknownInstrument`].
     pub async fn instrument(&self, symbol: &Symbol) -> Result<Instrument, ExchangeError> {
-        let body = self.get("/api/v3/markets", &[]).await?;
-        parse_markets(&body, &self.venue)?
+        self.markets()
+            .await?
             .into_iter()
             .find(|m| m.instrument.id.symbol() == symbol)
             .map(|m| m.instrument)

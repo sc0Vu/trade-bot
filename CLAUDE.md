@@ -331,7 +331,12 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `MaxPaperProvider` (`max::paper`) = MAX feed + PaperBroker
    (NextOpenFillModel, `fees`/`slippage`/`initial_cash` in first
    instrument's quote): paper on MAX = backtest model on live bars; no key,
-   in-memory books (every run starts flat).
+   in-memory books (every run starts flat). Gated by `max::status::
+   MarketStatus` (REST statuses, then public `market_status` channel;
+   cancel-only → no submit, suspended → no submit/cancel, undocumented → no
+   submit; channel down → last known kept, reconnect 1s→60s; status and
+   filter changes logged, filters apply on restart; REST and ws filters
+   agree, checked live 2026-10-28).
    Config `exchange.venue = binance|max` (default binance; whitelist must
    match venue). MAX: `[paper]` {initial_cash, fee, slippage_bps — strings,
    slippage required} required, no 1s, no rest/ws_url, `mode = "live"` /

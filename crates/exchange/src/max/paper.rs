@@ -10,9 +10,11 @@
 //! data requests.
 //!
 //! The broker holds its balance and positions in memory: every run starts
-//! from `initial_cash` and flat.
+//! from `initial_cash` and flat. It refuses orders MAX would refuse on a
+//! halted market: [`MarketStatus`] follows MAX's market status channel.
 
 use super::public::MaxPublicClient;
+use super::status::MarketStatus;
 use super::ws::{MaxRestKlines, MaxWsConnector};
 use crate::binance::feed::ReconnectingFeed;
 use crate::paper::{BpsSlippage, NextOpenFillModel, PaperBroker, RateFee};
@@ -94,11 +96,23 @@ impl Provider for MaxPaperProvider {
     }
 
     /// A fresh [`PaperBroker`] over the universe's MAX filters, trading
-    /// from `initial_cash` in the first instrument's quote.
+    /// from `initial_cash` in the first instrument's quote, gated by MAX's
+    /// live market status.
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
-        let instruments: Vec<Instrument> = self
-            .resolve(&InstrumentQuery::Ids(self.universe.clone()))
-            .await?;
+        let markets = self.client().markets().await?;
+        let mut instruments: Vec<Instrument> = Vec::with_capacity(self.universe.len());
+        for id in &self.universe {
+            let m = markets
+                .iter()
+                .find(|m| m.instrument.id == *id)
+                .ok_or_else(|| ExchangeError::UnknownInstrument(id.clone()))?;
+            if m.status != "active" {
+                tracing::warn!(instrument = %id, status = m.status, "MAX market is not active; orders on it are refused");
+            }
+            instruments.push(m.instrument.clone());
+        }
+        let status =
+            Arc::new(MarketStatus::from_markets(&markets).follow(super::WS_URL.to_owned()));
         let quote = instruments
             .first()
             .map(|i| i.quote.clone())
@@ -110,7 +124,8 @@ impl Provider for MaxPaperProvider {
                 Box::new(self.config.slippage),
                 Box::new(self.config.fees),
             )
-            .with_cash(quote, self.config.initial_cash),
+            .with_cash(quote, self.config.initial_cash)
+            .with_gate(status),
         ))
     }
 
