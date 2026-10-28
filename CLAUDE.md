@@ -321,6 +321,13 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    published. Limits 1200 req/min (`max::default_limits`, 80%).
    `fetch-data` / `backtest` `--venue binance|max` (`backtest::HistorySource`
    per venue); cache under `data/{klines,instruments}/max/`.
+   Live feed (`max::ws`): `MaxKlineStream` on `wss://max-stream.maicoin.com/ws`
+   (`kline` channel, closed = `"x": true`, empty bars still close, `qv`
+   exact; missing → estimated), CLIENT must ping (MAX drops after 130 s
+   silent → ping every 30 s), stall = `binance::ws::stale_after`.
+   `MaxWsConnector` + `MaxRestKlines` plug into `ReconnectingFeed` (same
+   warm-up/backfill/reconnect rules). Ignored live test:
+   `cargo test -p exchange live_feed -- --ignored`.
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety
@@ -577,7 +584,7 @@ crates/
   strategy/    Strategy trait, Context, inventory registry, built-ins (avwap, buy_and_hold, dca, donchian_breakout,
                dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws;
-               max (MaiCoin: public data so far)
+               max (MaiCoin: public data + kline ws so far)
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report
   storage/     SeaORM entities + repositories

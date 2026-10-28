@@ -1,5 +1,5 @@
 //! MAX (MaiCoin, Taiwan) spot. [`public`] reads market data that needs no
-//! API key.
+//! API key; [`ws`] streams closed klines.
 //!
 //! MAX has no testnet or sandbox: its only host trades real balances. So a
 //! fake-money run on MAX can't send orders anywhere; it pairs MAX's live
@@ -11,6 +11,7 @@
 //! precision of -3 steps by 1000), see [`public::step`].
 
 pub mod public;
+pub mod ws;
 
 use crate::rate_limit::{Kind, Limit};
 use std::time::Duration;
