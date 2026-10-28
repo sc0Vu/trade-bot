@@ -1,7 +1,7 @@
 //! Venue boundary: the [`Provider`], [`MarketData`], and [`Broker`] traits,
 //! and [`paper::PaperBroker`], the simulated broker used by backtest and
-//! paper trading, and [`binance`], the Binance spot client (public
-//! market data so far; the live provider will follow).
+//! paper trading, [`binance`], the Binance spot client and provider, and
+//! [`max`], the MAX (MaiCoin) spot client.
 //!
 //! A broker submits orders and reports fills; it never values an instrument
 //! (invariant 4). How a simulated order fills is a pluggable
@@ -10,6 +10,7 @@
 
 pub mod binance;
 mod error;
+pub mod max;
 pub mod metrics;
 pub mod paper;
 pub mod rate_limit;

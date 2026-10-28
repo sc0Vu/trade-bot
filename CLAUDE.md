@@ -307,6 +307,18 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    ≥ 1; `DEFAULT_HTTP_TIMEOUT` for clients built without config): stalled
    Binance → `Http` error → run stops, reconcile finds what a timed-out
    submit placed.
+1b. **MAX (MaiCoin) spot** — `exchange::max`. NO testnet/sandbox: one
+   production host, real balances → fake-money MAX = live MAX data + local
+   PaperBroker, never orders. Built: `MaxPublicClient` (keyless):
+   `/api/v3/markets` → `Instrument` (`max:BTCUSDT` = market `btcusdt`).
+   Precision per MARKET not coin (BTC 8 dp on btctwd, 6 on btcusdt): lot =
+   10^-`base_unit_precision`, tick = 10^-`quote_unit_precision`, may be
+   negative (-3 → 1000) → `max::public::step`. Minimums + kline prices are
+   bare JSON numbers → read as raw text (`serde_json` `raw_value`) →
+   exact `Decimal` (invariant 1), never f64. REST klines `/api/v3/k`
+   (`[open s, o, h, l, c, v]`, ≤ 10,000/page, no 1s) carry NO quote volume →
+   estimated v × (o+h+l+c)/4 (avwap on MAX approximate). No band/caps
+   published. Limits 1200 req/min (`max::default_limits`, 80%).
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety
@@ -562,7 +574,8 @@ crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (avwap, buy_and_hold, dca, donchian_breakout,
                dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
-  exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
+  exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws;
+               max (MaiCoin: public data so far)
   engine/      shared event loop (backtest + live)
   backtest/    kline loader, BacktestProvider, runner, report
   storage/     SeaORM entities + repositories
