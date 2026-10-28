@@ -341,8 +341,8 @@ Render's settings. It's never in the image (invariant 7).
 | Target | Does |
 |---|---|
 | `make check` | Format check, clippy with warnings as errors, docs, tests. Run before every commit. |
-| `make fetch-data` | Cache klines (`SYMBOL`, `INTERVAL`, `FROM`) |
-| `make backtest` | Backtest (`STRATEGY`, `SYMBOL`, `FROM`, `TO`, `PARAMS`, `SLIPPAGE_BPS` required) |
+| `make fetch-data` | Cache klines (`VENUE`, `SYMBOL`, `INTERVAL`, `FROM`) |
+| `make backtest` | Backtest (`VENUE`, `STRATEGY`, `SYMBOL`, `FROM`, `TO`, `PARAMS`, `FEE`, `INITIAL_CASH`; `SLIPPAGE_BPS` required) |
 | `make run-paper` | Paper trade on the configured fake-money network |
 | `make migrate-up` / `-down` / `-status` / `-fresh` | Database migrations (`DATABASE_URL`) |
 

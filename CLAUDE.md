@@ -626,7 +626,7 @@ README.md      user-facing overview, quick start, config, limitations
 ## Commands
 `make` lists targets (`check` = fmt-check + lint + doc + test, run before commit;
 `migrate-*`, `fetch-data`, `backtest`, `run-paper`; vars `DATABASE_URL`,
-`SYMBOL`, `FROM`, …). No live target on purpose: `--i-understand` must be
+`VENUE` (binance|max), `SYMBOL`, `FROM`, `FEE`, `INITIAL_CASH`, …). No live target on purpose: `--i-understand` must be
 typed per run (invariant 7). Raw equivalents:
 ```
 cargo run -p cli -- fetch-data --symbol BTCUSDT --interval 1h --from 2024-01-01   # cache history

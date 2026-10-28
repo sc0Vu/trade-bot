@@ -5,6 +5,7 @@
 # and a make target would bake that lock away. Run live with cargo directly.
 
 DATABASE_URL ?= sqlite://bot.db?mode=rwc
+VENUE        ?= binance
 SYMBOL       ?= BTCUSDT
 INTERVAL     ?= 1h
 FROM         ?= 2024-01-01
@@ -12,6 +13,10 @@ TO           ?= 2024-06-01
 STRATEGY     ?= ratio_hop
 # Taker slippage for backtests, in bps. No default on purpose: set it.
 SLIPPAGE_BPS ?=
+# Optional backtest overrides: fee rate (default 0.001) and starting cash
+# (default 1000, in the symbol's quote asset).
+FEE          ?=
+INITIAL_CASH ?=
 
 CLI := cargo run -p cli --
 
@@ -62,13 +67,14 @@ migrate-fresh: ## DROP ALL TABLES, then re-apply every migration (dev only)
 
 ## --- Bot (override SYMBOL, INTERVAL, FROM, TO, STRATEGY, PARAMS, SLIPPAGE_BPS)
 
-fetch-data: ## Cache klines into data/
-	$(CLI) fetch-data --symbol $(SYMBOL) --interval $(INTERVAL) --from $(FROM)
+fetch-data: ## Cache klines into data/ (VENUE=binance|max)
+	$(CLI) fetch-data --venue $(VENUE) --symbol $(SYMBOL) --interval $(INTERVAL) --from $(FROM)
 
-backtest: ## Backtest STRATEGY on SYMBOL over FROM..TO (SLIPPAGE_BPS required, PARAMS=file.toml)
+backtest: ## Backtest STRATEGY on VENUE's SYMBOL over FROM..TO (SLIPPAGE_BPS required; PARAMS, FEE, INITIAL_CASH)
 	@test -n "$(SLIPPAGE_BPS)" || { echo "set SLIPPAGE_BPS, e.g. make backtest SLIPPAGE_BPS=5"; exit 2; }
-	$(CLI) backtest --strategy $(STRATEGY) --symbol $(SYMBOL) --interval $(INTERVAL) \
-		--from $(FROM) --to $(TO) --slippage-bps $(SLIPPAGE_BPS) $(if $(PARAMS),--params $(PARAMS))
+	$(CLI) backtest --venue $(VENUE) --strategy $(STRATEGY) --symbol $(SYMBOL) --interval $(INTERVAL) \
+		--from $(FROM) --to $(TO) --slippage-bps $(SLIPPAGE_BPS) $(if $(PARAMS),--params $(PARAMS)) \
+		$(if $(FEE),--fee $(FEE)) $(if $(INITIAL_CASH),--initial-cash $(INITIAL_CASH))
 
 run-paper: ## Paper trade against testnet prices (the safe default)
 	$(CLI) run --paper
