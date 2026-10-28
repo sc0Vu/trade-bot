@@ -98,6 +98,9 @@ impl Instrument {
     fn check_band(&self, p: Price, side: Side, avg: Price) -> Result<(), FilterError>;
     // price_band: Option<PriceBand> = Binance PERCENT_PRICE_BY_SIDE (buy ∈ avg·[bid_down,
     // bid_up], sell ∈ avg·[ask_down, ask_up]); market-relative → not in check_order
+    fn check_open_count(&self, open: usize, open_stops: usize, adding_stop: bool) -> Result<(), FilterError>;
+    // max_open_orders / max_open_stops: Option<u32> = Binance MAX_NUM_ORDERS (stops
+    // count too) / MAX_NUM_ALGO_ORDERS; counts = broker's book → brokers check at submit
 }
 ```
 

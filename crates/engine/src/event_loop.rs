@@ -609,6 +609,8 @@ mod tests {
     async fn limit_beyond_the_price_band_is_refused_by_risk() {
         let mut provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
         provider.instrument = bot_core::Instrument::new(bot_core::InstrumentSpec {
+            max_open_orders: None,
+            max_open_stops: None,
             price_band: Some(bot_core::PriceBand {
                 bid_up: dec!(1.2),
                 bid_down: dec!(0.5),

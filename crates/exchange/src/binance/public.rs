@@ -242,6 +242,8 @@ pub(crate) fn parse_exchange_info(
         min_qty: str_field(&lot["minQty"], "minQty")?,
         min_notional: str_field(&notional["minNotional"], "minNotional")?,
         price_band,
+        max_open_orders: None,
+        max_open_stops: None,
     })
     .map_err(|e| ExchangeError::Decode(e.to_string()))
 }

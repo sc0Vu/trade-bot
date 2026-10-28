@@ -312,6 +312,8 @@ mod tests {
             lot_size: Qty::new(dec!(0.00001)),
             min_qty: Qty::new(dec!(0.00001)),
             min_notional: Notional::new(dec!(5)),
+            max_open_orders: None,
+            max_open_stops: None,
             price_band: None,
         })
         .unwrap()

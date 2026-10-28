@@ -51,6 +51,14 @@ pub struct InstrumentSpec {
     /// older cache file); nothing is checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_band: Option<PriceBand>,
+    /// Most orders one account may have open on the instrument, stops
+    /// included (Binance `MAX_NUM_ORDERS`). `None`: no cap known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_orders: Option<u32>,
+    /// Most stop orders (stop-market, stop-limit) open at once (Binance
+    /// `MAX_NUM_ALGO_ORDERS`). `None`: no cap known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_stops: Option<u32>,
 }
 
 /// Binance `PERCENT_PRICE_BY_SIDE`: a buy's price must lie in
@@ -141,6 +149,9 @@ impl Instrument {
                     "price_band avg_minutes must be >= 1",
                 ));
             }
+        }
+        if spec.max_open_orders == Some(0) || spec.max_open_stops == Some(0) {
+            return Err(Error::InvalidInstrument("open order caps must be >= 1"));
         }
         Ok(Self(spec))
     }
@@ -280,6 +291,27 @@ impl Instrument {
         Some((Price::new(avg.get() * down), Price::new(avg.get() * up)))
     }
 
+    /// Checks that one more order fits under the venue's open-order caps,
+    /// given the account's orders already open on this instrument (`open`,
+    /// of which `open_stops` are stops) and whether the new one is a stop.
+    /// Brokers check it at submit: the counts are their book, not a
+    /// strategy's view.
+    pub fn check_open_count(
+        &self,
+        open: usize,
+        open_stops: usize,
+        adding_stop: bool,
+    ) -> Result<(), FilterError> {
+        let full = |cap: Option<u32>, n: usize| cap.is_some_and(|c| n >= c as usize);
+        if full(self.max_open_orders, open) {
+            return Err(FilterError::TooManyOpenOrders);
+        }
+        if adding_stop && full(self.max_open_stops, open_stops) {
+            return Err(FilterError::TooManyOpenStops);
+        }
+        Ok(())
+    }
+
     /// Checks a limit `price` on `side` against the band around `avg`.
     /// Always passes without a band.
     pub fn check_band(&self, price: Price, side: Side, avg: Price) -> Result<(), FilterError> {
@@ -351,6 +383,8 @@ mod tests {
             lot_size: Qty::new(dec!(0.00001)),
             min_qty: Qty::new(dec!(0.00001)),
             min_notional: Notional::new(dec!(5)),
+            max_open_orders: None,
+            max_open_stops: None,
             price_band: None,
         }
     }
@@ -513,6 +547,8 @@ mod tests {
         assert!(Instrument::new(zero_lot).is_err());
         let neg_min = InstrumentSpec {
             min_notional: Notional::new(dec!(-1)),
+            max_open_orders: None,
+            max_open_stops: None,
             price_band: None,
             ..btcusdt_spec()
         };
@@ -535,6 +571,8 @@ mod tests {
     /// Binance BTCUSDT's `PERCENT_PRICE_BY_SIDE` (mainnet and demo, Oct 2026).
     fn banded() -> Instrument {
         Instrument::new(InstrumentSpec {
+            max_open_orders: None,
+            max_open_stops: None,
             price_band: Some(PriceBand {
                 bid_up: dec!(1.2),
                 bid_down: dec!(0.5),
@@ -549,6 +587,60 @@ mod tests {
 
     fn px(d: Decimal) -> Price {
         Price::new(d)
+    }
+
+    /// BTCUSDT's caps (mainnet and demo, Oct 2026): 200 open orders, 5 stops.
+    fn capped() -> Instrument {
+        Instrument::new(InstrumentSpec {
+            max_open_orders: Some(200),
+            max_open_stops: Some(5),
+            ..btcusdt_spec()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn open_order_caps_count_stops_in_both() {
+        let i = capped();
+        assert_eq!(i.check_open_count(199, 0, false), Ok(()));
+        assert_eq!(
+            i.check_open_count(200, 0, false),
+            Err(FilterError::TooManyOpenOrders)
+        );
+        // A stop counts toward both caps; the order cap is checked first.
+        assert_eq!(
+            i.check_open_count(200, 5, true),
+            Err(FilterError::TooManyOpenOrders)
+        );
+        assert_eq!(i.check_open_count(10, 4, true), Ok(()));
+        assert_eq!(
+            i.check_open_count(10, 5, true),
+            Err(FilterError::TooManyOpenStops)
+        );
+        // Five stops open doesn't block a plain order.
+        assert_eq!(i.check_open_count(10, 5, false), Ok(()));
+        // No caps known: nothing refused.
+        assert_eq!(btcusdt().check_open_count(10_000, 10_000, true), Ok(()));
+    }
+
+    #[test]
+    fn open_order_caps_are_optional_and_positive() {
+        let json = serde_json::to_string(&btcusdt()).unwrap();
+        assert!(!json.contains("max_open"), "{json}");
+        let round = serde_json::to_string(&capped()).unwrap();
+        assert!(
+            round.contains(r#""max_open_orders":200,"max_open_stops":5"#),
+            "{round}"
+        );
+        assert_eq!(
+            serde_json::from_str::<Instrument>(&round).unwrap(),
+            capped()
+        );
+        let zero = InstrumentSpec {
+            max_open_stops: Some(0),
+            ..btcusdt_spec()
+        };
+        assert!(Instrument::new(zero).is_err());
     }
 
     #[test]
@@ -632,6 +724,8 @@ mod tests {
     fn bad_band_is_refused() {
         let with = |b: PriceBand| {
             Instrument::new(InstrumentSpec {
+                max_open_orders: None,
+                max_open_stops: None,
                 price_band: Some(b),
                 ..btcusdt_spec()
             })

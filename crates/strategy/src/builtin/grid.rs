@@ -849,6 +849,8 @@ mod tests {
         )
         .unwrap();
         let inst = Instrument::new(bot_core::InstrumentSpec {
+            max_open_orders: None,
+            max_open_stops: None,
             price_band: Some(bot_core::PriceBand {
                 bid_up: dec!(1.2),
                 bid_down: dec!(0.5),

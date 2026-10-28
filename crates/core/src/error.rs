@@ -49,4 +49,10 @@ pub enum FilterError {
     /// Binance `PERCENT_PRICE_BY_SIDE` (`-1013`): see [`crate::PriceBand`].
     #[error("price outside the venue's band around its average price")]
     OutsidePriceBand,
+    /// Binance `MAX_NUM_ORDERS` (`-1013`).
+    #[error("too many open orders on the instrument")]
+    TooManyOpenOrders,
+    /// Binance `MAX_NUM_ALGO_ORDERS` (`-1013`).
+    #[error("too many open stop orders on the instrument")]
+    TooManyOpenStops,
 }
