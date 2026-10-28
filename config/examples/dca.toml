@@ -1,0 +1,28 @@
+# dca: dollar-cost averaging. Buys a fixed amount of one coin once per
+# period (UTC hour, day, week or month) and holds. No prediction: spreading
+# the entry removes the risk of buying everything at one bad moment, but
+# not the coin's direction (in a long decline it keeps buying and never
+# exits). Each buy pays a taker fee and slippage.
+#
+#   cargo run -p cli -- run --paper --config config/examples/dca.toml
+#
+# Safe by default: paper mode on testnet (fake money). Money values are
+# strings, never bare numbers.
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"   # or "demo" (demo.binance.com keys)
+interval = "1h"
+
+[strategy]
+name = "dca"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+quote_amount = "20"    # USDT per buy
+every = "week"         # "hour" | "day" | "week" (from Monday) | "month"
+max_buys = 52          # optional: stop after this many (a year of weeks)
+fee = "0.001"          # stated costs; unused in decisions
+slippage_bps = "5"

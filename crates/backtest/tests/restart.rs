@@ -184,6 +184,18 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "dca",
+            fixture: "sma_trend",
+            coins: BTC,
+            bars: 7,
+            params: r#"coin = "binance:BTCUSDT"
+                quote_amount = "300"
+                every = "hour"
+                max_buys = 3
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "sma_trend",
             fixture: "sma_trend",
             coins: BTC,

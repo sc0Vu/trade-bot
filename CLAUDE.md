@@ -461,7 +461,8 @@ Start. No/refused state: resume on most valuable sellable held coin
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, rsi_reversion, avwap) only version;
-buy_and_hold `decided`; momentum_rotation `last_eval`; grid stage, gaps,
+buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
+`last_eval`; grid stage, gaps,
 dust. Pinned by
 `crates/backtest/tests/restart.rs`: every strategy, every idle cut point
 (no working order): run₁ + save → fresh strategy + restore + Backfill
@@ -476,6 +477,13 @@ it on same coin after costs → no edge. Params `coin`, `quote_amount`, `fee`,
 `slippage_bps` (costs required, range-checked, unused). Decides once on coin's
 first candle: flat → quote-budget market buy; already held (restart) → hold.
 Never sells; rejected buy not retried. Keep minimal.
+`dca` — dollar-cost averaging, `buy_and_hold` spread over time: fixed
+`quote_amount` quote-budget market buy on coin's first candle, then first
+candle *closing* in each new UTC `every` period (`hour`/`day`/`week` from
+Monday/`month`, `builtin::calendar`, shared with avwap). Optional
+`max_buys`. Order on coin working → retry next candle same period; rejected
+→ uncounted, period stays used (no `-2010` loop). Never sells. Removes
+entry-timing risk, not direction risk; fee + slippage per buy.
 `sma_trend` — one coin, long or flat (cash = defensive; v1 spot no short).
 Long while close > SMA(`sma_period` closes, current bar included) ×
 (1 + `band_pct`); cash below SMA × (1 − `band_pct`). Buy = quote-budget market
@@ -552,7 +560,7 @@ rising). Edge unverified.
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (avwap, buy_and_hold, donchian_breakout,
+  strategy/    Strategy trait, Context, inventory registry, built-ins (avwap, buy_and_hold, dca, donchian_breakout,
                dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws
   engine/      shared event loop (backtest + live)

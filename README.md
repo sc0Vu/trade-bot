@@ -138,6 +138,7 @@ is deserialized into that strategy's own typed struct.
 |---|---|
 | `avwap` | One coin, long or flat. Holds while the close is above its anchored VWAP (the exact average price of all trading since the start of the day, week or month, or since a recent swing low or high), cash below. |
 | `buy_and_hold` | The benchmark. Buys one coin once with a fixed quote amount on its first candle, then holds forever. A strategy that can't beat it on the same coin after costs has no edge. |
+| `dca` | Dollar-cost averaging. Buys a fixed quote amount of one coin once per UTC hour, day, week or month (optionally at most `max_buys` times) and holds. No prediction: spreading the entry removes the risk of buying everything at a top, not the coin's direction; it keeps buying all the way down a decline. Each buy pays a fee and slippage. |
 | `ratio_hop` | Holds one coin of a set and rotates `A → USDT → B` only when the post-fee estimate of B's units beats the units of B last held, so unit counts only ratchet up. Includes a freefall guard against rotating into a collapsing coin. Maximizes units, not value. |
 | `donchian_breakout` | One coin. Buys when the close breaks above the highest high of the previous `channel_period` candles, sells when it breaks below their lowest low. Bets breakouts continue; whipsaws in ranges. |
 | `dual_ma_cross` | One coin, long or flat. Holds while the fast moving average is above the slow one, cash otherwise. A quicker variant of `sma_trend`; whipsaws in ranges. |
