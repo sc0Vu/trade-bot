@@ -319,6 +319,8 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    (`[open s, o, h, l, c, v]`, ≤ 10,000/page, no 1s) carry NO quote volume →
    estimated v × (o+h+l+c)/4 (avwap on MAX approximate). No band/caps
    published. Limits 1200 req/min (`max::default_limits`, 80%).
+   `fetch-data` / `backtest` `--venue binance|max` (`backtest::HistorySource`
+   per venue); cache under `data/{klines,instruments}/max/`.
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety

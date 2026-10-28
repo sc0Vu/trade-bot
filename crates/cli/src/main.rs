@@ -12,14 +12,15 @@ mod state;
 mod telemetry;
 
 use anyhow::Context;
-use backtest::{BacktestProvider, DataDir, PaperConfig, fetch, run_backtest};
+use backtest::{BacktestProvider, DataDir, HistorySource, PaperConfig, fetch, run_backtest};
 use bot_core::{Decimal, InstrumentId, Interval, Notional, Symbol, Timestamp, VenueId};
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use engine::EngineConfig;
 use exchange::Provider;
 use exchange::binance::{
     BinanceConfig, BinanceSpotProvider, Credentials, Network, PUBLIC_DATA_URL, PublicClient,
 };
+use exchange::max::public::MaxPublicClient;
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -203,11 +204,39 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Venue whose market data `fetch-data` downloads and `backtest` replays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Venue {
+    /// Binance spot (`binance:BTCUSDT`), history from its public data host.
+    Binance,
+    /// MAX by MaiCoin (`max:BTCUSDT`, `max:BTCTWD`); no 1s klines.
+    Max,
+}
+
+impl Venue {
+    fn id(self) -> anyhow::Result<VenueId> {
+        Ok(VenueId::new(match self {
+            Self::Binance => "binance",
+            Self::Max => exchange::max::VENUE,
+        })?)
+    }
+
+    fn data_url(self) -> &'static str {
+        match self {
+            Self::Binance => PUBLIC_DATA_URL,
+            Self::Max => exchange::max::REST_URL,
+        }
+    }
+}
+
 #[derive(Args)]
 struct BacktestArgs {
     /// Registered strategy name.
     #[arg(long)]
     strategy: String,
+    /// Venue the symbols are on (their cache directory).
+    #[arg(long, value_enum, default_value = "binance")]
+    venue: Venue,
     /// Strategy params as a TOML file (money values as strings).
     #[arg(long)]
     params: Option<PathBuf>,
@@ -227,7 +256,8 @@ struct BacktestArgs {
     #[arg(long, default_value = "1000", value_parser = parse_decimal)]
     initial_cash: Decimal,
     /// Maker and taker fee as a fraction (`0.001` = 0.1%), charged in the
-    /// received asset like Binance spot.
+    /// received asset like Binance spot. The default is Binance's base
+    /// rate; pass the venue's own rate for another venue.
     #[arg(long, default_value = "0.001", value_parser = parse_decimal)]
     fee: Decimal,
     /// Taker slippage in basis points. Required, no default: a market order
@@ -256,7 +286,7 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         .with_context(|| format!("parsing {}", path.display()))?,
         None => Params::default(),
     };
-    let venue = VenueId::new("binance")?;
+    let venue = a.venue.id()?;
     let ids: Vec<InstrumentId> = a
         .symbol
         .into_iter()
@@ -305,9 +335,12 @@ struct FetchArgs {
     /// Cache root.
     #[arg(long, default_value = "data")]
     data_dir: PathBuf,
-    /// REST host for public market data.
-    #[arg(long, default_value = PUBLIC_DATA_URL)]
-    base_url: String,
+    /// Venue to download from.
+    #[arg(long, value_enum, default_value = "binance")]
+    venue: Venue,
+    /// REST host for public market data; default follows `--venue`.
+    #[arg(long)]
+    base_url: Option<String>,
 }
 
 fn parse_interval(s: &str) -> anyhow::Result<Interval> {
@@ -324,13 +357,17 @@ fn now() -> Timestamp {
 }
 
 async fn fetch_data(a: FetchArgs) -> anyhow::Result<()> {
-    let client = PublicClient::new(a.base_url);
+    let base = a.base_url.unwrap_or_else(|| a.venue.data_url().to_owned());
+    let client: Box<dyn HistorySource> = match a.venue {
+        Venue::Binance => Box::new(PublicClient::new(base)),
+        Venue::Max => Box::new(MaxPublicClient::new(base)),
+    };
     let dir = DataDir::new(a.data_dir);
     let to = a.to.unwrap_or_else(now);
-    let venue = VenueId::new("binance")?;
+    let venue = a.venue.id()?;
     for symbol in a.symbol {
         let id = InstrumentId::new(venue.clone(), symbol);
-        let s = fetch(&client, &dir, &id, a.interval, a.from, to)
+        let s = fetch(client.as_ref(), &dir, &id, a.interval, a.from, to)
             .await
             .with_context(|| format!("fetching {id}"))?;
         println!(
@@ -382,4 +419,32 @@ async fn main() -> anyhow::Result<()> {
 /// commands without a config file.
 fn init_logging(filter: &str) {
     logging::init(filter, &config::LogSection::default());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn venue_picks_ids_and_data_host() {
+        assert_eq!(Venue::Binance.id().unwrap().as_str(), "binance");
+        assert_eq!(Venue::Max.id().unwrap().as_str(), "max");
+        assert_eq!(Venue::Binance.data_url(), "https://data-api.binance.vision");
+        assert_eq!(Venue::Max.data_url(), "https://max-api.maicoin.com");
+        let cli = Cli::try_parse_from([
+            "cli",
+            "fetch-data",
+            "--venue",
+            "max",
+            "--symbol",
+            "BTCTWD",
+            "--from",
+            "2024-01-01",
+        ])
+        .unwrap();
+        let Command::FetchData(a) = cli.command else {
+            panic!("not fetch-data");
+        };
+        assert_eq!((a.venue, a.base_url), (Venue::Max, None));
+    }
 }

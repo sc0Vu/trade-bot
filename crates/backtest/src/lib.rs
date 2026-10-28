@@ -11,7 +11,7 @@ mod provider;
 mod report;
 mod runner;
 
-pub use data::{DataDir, DataError, FetchSummary, fetch};
+pub use data::{DataDir, DataError, FetchSummary, HistorySource, fetch};
 pub use feed::KlineFeed;
 pub use provider::{BacktestProvider, PaperConfig};
 pub use report::Report;

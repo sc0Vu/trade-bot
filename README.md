@@ -170,6 +170,19 @@ public market-data host into `data/` (gitignored), and fetches only the
 ranges it doesn't have yet. `--slippage-bps` is required and has no
 default: a market order never fills at the price the decision saw.
 
+`--venue max` does the same against MAX (MaiCoin): `max:BTCUSDT`,
+`max:BTCTWD` and the other MAX markets, from 1m bars up (MAX has no 1s
+klines). Pass your MAX fee rate with `--fee` (the `0.0015` below is a
+placeholder, not a verified MAX rate), and expect more slippage
+than on Binance: MAX's USDT books are thin. MAX's REST klines carry no
+quote volume, so it is estimated from the bar's prices.
+
+```sh
+cargo run -p cli -- fetch-data --venue max --symbol BTCTWD --interval 1h --from 2024-01-01
+cargo run -p cli -- backtest --venue max --strategy sma_trend --params p.toml \
+    --symbol BTCTWD --from 2024-01-01 --to 2026-10-01 --fee 0.0015 --slippage-bps 20
+```
+
 The report gives final equity, realized P&L, lowest cash, maximum drawdown,
 fill and closed-trade counts, win rate, Sharpe ratio and rejected signals,
 all as exact decimals. The fill model is stated, not hidden; see

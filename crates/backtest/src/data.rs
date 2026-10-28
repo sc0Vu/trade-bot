@@ -6,9 +6,11 @@
 //! error, not a silently wrong backtest. After the first fetch, backtests
 //! run fully offline.
 
-use bot_core::{Candle, Instrument, InstrumentId, Interval, Timestamp};
+use async_trait::async_trait;
+use bot_core::{Candle, Instrument, InstrumentId, Interval, Symbol, Timestamp};
 use exchange::ExchangeError;
 use exchange::binance::PublicClient;
+use exchange::max::public::MaxPublicClient;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -190,6 +192,53 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DataError> {
     fs::rename(&tmp, path).map_err(io(path))
 }
 
+/// Where [`fetch`] downloads from: one venue's keyless market data.
+#[async_trait]
+pub trait HistorySource: Sync {
+    /// Today's filters for `symbol` on this venue.
+    async fn instrument(&self, symbol: &Symbol) -> Result<Instrument, ExchangeError>;
+    /// Closed candles with `start <= open_time < end`, oldest first.
+    async fn klines(
+        &self,
+        symbol: &Symbol,
+        interval: Interval,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> Result<Vec<Candle>, ExchangeError>;
+}
+
+#[async_trait]
+impl HistorySource for PublicClient {
+    async fn instrument(&self, symbol: &Symbol) -> Result<Instrument, ExchangeError> {
+        PublicClient::instrument(self, symbol).await
+    }
+    async fn klines(
+        &self,
+        symbol: &Symbol,
+        interval: Interval,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> Result<Vec<Candle>, ExchangeError> {
+        PublicClient::klines(self, symbol, interval, start, end).await
+    }
+}
+
+#[async_trait]
+impl HistorySource for MaxPublicClient {
+    async fn instrument(&self, symbol: &Symbol) -> Result<Instrument, ExchangeError> {
+        MaxPublicClient::instrument(self, symbol).await
+    }
+    async fn klines(
+        &self,
+        symbol: &Symbol,
+        interval: Interval,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> Result<Vec<Candle>, ExchangeError> {
+        MaxPublicClient::klines(self, symbol, interval, start, end).await
+    }
+}
+
 /// What one `fetch` did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FetchSummary {
@@ -203,7 +252,7 @@ pub struct FetchSummary {
 /// candles before the first or after the last cached one. Gaps inside the cached range are left alone (they are
 /// usually real exchange outages).
 pub async fn fetch(
-    client: &PublicClient,
+    client: &dyn HistorySource,
     dir: &DataDir,
     id: &InstrumentId,
     interval: Interval,
