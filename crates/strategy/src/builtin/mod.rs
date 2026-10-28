@@ -39,6 +39,7 @@ pub(crate) fn state_error(name: &str, reason: impl ToString) -> StrategyError {
 
 pub mod avwap;
 pub mod buy_and_hold;
+mod calendar;
 pub mod donchian_breakout;
 pub mod dual_ma_cross;
 pub mod grid;

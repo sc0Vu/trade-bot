@@ -23,14 +23,14 @@
 //! Expected edge is unverified: a round trip per cross pays two fees and
 //! slippage.
 
+use super::calendar::{Period, period_start};
 use crate::{Context, Params, Strategy, StrategyError, StrategyRegistration, exact_decimal};
 use bot_core::{
-    Candle, Decimal, InstrumentId, Notional, OrderKind, Price, Qty, Side, Signal, Size, Timestamp,
+    Candle, Decimal, InstrumentId, Notional, OrderKind, Price, Qty, Side, Signal, Size,
 };
 use serde::Deserialize;
 
 const NAME: &str = "avwap";
-const DAY_MS: i64 = 86_400_000;
 
 /// Where the average starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -75,34 +75,6 @@ pub struct Avwap {
     p: AvwapParams,
 }
 
-/// Days since 1970-01-01 of the first day of `days`' month (proleptic
-/// Gregorian, H. Hinnant's `civil_from_days` / `days_from_civil`).
-fn month_start(days: i64) -> i64 {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    // Back to the first day of that month: same year-of-era and month.
-    let doy1 = (153 * mp + 2) / 5;
-    let doe1 = yoe * 365 + yoe / 4 - yoe / 100 + doy1;
-    era * 146_097 + doe1 - 719_468
-}
-
-/// Start (UTC) of the day, week (from Monday) or month `t` falls in.
-fn period_start(anchor: Anchor, t: Timestamp) -> Option<Timestamp> {
-    let days = t.as_millis().div_euclid(DAY_MS);
-    let start = match anchor {
-        Anchor::Day => days,
-        // Day 0 (1970-01-01) was a Thursday, 3 days after a Monday.
-        Anchor::Week => days - (days + 3).rem_euclid(7),
-        Anchor::Month => month_start(days),
-        Anchor::SwingLow | Anchor::SwingHigh => return None,
-    };
-    Some(Timestamp::from_millis(start * DAY_MS))
-}
-
 impl Avwap {
     fn build(params: &Params) -> Result<Box<dyn Strategy>, StrategyError> {
         let p: AvwapParams = params.parse(NAME)?;
@@ -138,7 +110,12 @@ impl Avwap {
         let last = hist.last()?;
         match self.p.anchor {
             Anchor::Day | Anchor::Week | Anchor::Month => {
-                let start = period_start(self.p.anchor, last.open_time)?;
+                let period = match self.p.anchor {
+                    Anchor::Day => Period::Day,
+                    Anchor::Week => Period::Week,
+                    _ => Period::Month,
+                };
+                let start = period_start(period, last.open_time);
                 hist.iter().position(|c| c.open_time == start)
             }
             Anchor::SwingLow | Anchor::SwingHigh => {
@@ -242,6 +219,7 @@ mod tests {
     use super::*;
     use crate::builtin::test_support::btcusdt;
     use crate::{build, driver, names};
+    use bot_core::Timestamp;
     use bot_core::{CandleSpec, Interval, Order, OrderId, OrderSpec, Position};
     use rust_decimal_macros::dec;
 
@@ -335,30 +313,6 @@ mod tests {
             assert!(build(NAME, &params(extra)).is_err(), "{extra:?}");
         }
         assert!(build(NAME, &params(r#"anchor = "week""#)).is_ok());
-    }
-
-    /// Reference instants from Python's datetime (UTC).
-    #[test]
-    fn periods_start_on_utc_day_monday_and_first_of_month() {
-        let start = |a, ms| {
-            period_start(a, Timestamp::from_millis(ms))
-                .unwrap()
-                .as_millis()
-        };
-        // 2024-02-29T10:00 (leap day): day 2024-02-29, month 2024-02-01.
-        assert_eq!(start(Anchor::Day, 1_709_200_800_000), 1_709_164_800_000);
-        assert_eq!(start(Anchor::Month, 1_709_200_800_000), 1_706_745_600_000);
-        // 2024-03-01T00:00 starts its own month; 2023-12-31T23:00 is in
-        // December's.
-        assert_eq!(start(Anchor::Month, 1_709_251_200_000), 1_709_251_200_000);
-        assert_eq!(start(Anchor::Month, 1_704_063_600_000), 1_701_388_800_000);
-        // Monday 1970-01-05 (345600000) starts the week of Thursday 01-08
-        // and Sunday 01-11; Monday 01-12 starts the next.
-        assert_eq!(start(Anchor::Week, 648_000_000), 345_600_000);
-        assert_eq!(start(Anchor::Week, 946_800_000), 345_600_000);
-        assert_eq!(start(Anchor::Week, 950_400_000), 950_400_000);
-        // Wednesday 2026-10-28T05:00 is in the week of Monday 2026-10-26.
-        assert_eq!(start(Anchor::Week, 1_793_163_600_000), 1_792_972_800_000);
     }
 
     /// Day anchor, two bars of day 0: 2 BTC for 200 USDT, then 1 BTC for
