@@ -227,7 +227,10 @@ impl Grid {
         }))
     }
 
+    /// Stops for good, and says why: a grid stopped on its first candle
+    /// otherwise looks like a run where nothing happened.
     fn stop(&mut self, reason: &str) {
+        tracing::warn!(coin = %self.p.coin, reason, "grid stopped");
         self.stage = Stage::Stopped(reason.to_owned());
     }
 
