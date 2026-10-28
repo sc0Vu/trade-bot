@@ -21,4 +21,4 @@ tracing.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 rust_decimal_macros.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "net", "io-util"] }

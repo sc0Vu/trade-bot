@@ -197,9 +197,10 @@ pub struct FetchSummary {
     pub cached: usize,
 }
 
-/// Brings the cache for `id` up to `[from, to)`: downloads the instrument's
-/// filters if missing, and only the candles before the first or after the
-/// last cached one. Gaps inside the cached range are left alone (they are
+/// Brings the cache for `id` up to `[from, to)`: rewrites the instrument's
+/// filters every time (the venue changes them, and newer fields such as the
+/// price band only reach an old file this way), and downloads only the
+/// candles before the first or after the last cached one. Gaps inside the cached range are left alone (they are
 /// usually real exchange outages).
 pub async fn fetch(
     client: &PublicClient,
@@ -209,9 +210,7 @@ pub async fn fetch(
     from: Timestamp,
     to: Timestamp,
 ) -> Result<FetchSummary, DataError> {
-    if matches!(dir.read_instrument(id), Err(DataError::Missing(_))) {
-        dir.write_instrument(&client.instrument(id.symbol()).await?)?;
-    }
+    dir.write_instrument(&client.instrument(id.symbol()).await?)?;
     let mut series: BTreeMap<Timestamp, Candle> = dir
         .read_klines(id, interval)?
         .into_iter()
@@ -320,5 +319,78 @@ mod tests {
         let dir = DataDir::new(temp_dir("instrument"));
         dir.write_instrument(&btcusdt()).unwrap();
         assert_eq!(dir.read_instrument(&btcusdt().id).unwrap(), btcusdt());
+    }
+
+    /// A local HTTP server answering every request with `body`.
+    async fn serve(body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                let mut req = Vec::new();
+                let mut buf = [0; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = tcp.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                }
+                let res = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                tcp.write_all(res.as_bytes()).await.unwrap();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// An instrument file from before the price band existed is replaced
+    /// by today's filters, even when no candle is missing.
+    #[tokio::test]
+    async fn fetch_rewrites_the_instrument_file() {
+        const INFO: &str = r#"{"symbols":[{"symbol":"BTCUSDT","status":"TRADING",
+          "baseAsset":"BTC","quoteAsset":"USDT","filters":[
+            {"filterType":"PRICE_FILTER","minPrice":"0.01","maxPrice":"1000000","tickSize":"0.01"},
+            {"filterType":"LOT_SIZE","minQty":"0.00001","maxQty":"9000","stepSize":"0.00001"},
+            {"filterType":"NOTIONAL","minNotional":"5"},
+            {"filterType":"PERCENT_PRICE_BY_SIDE","bidMultiplierUp":"1.2","bidMultiplierDown":"0.5",
+             "askMultiplierUp":"2","askMultiplierDown":"0.8","avgPriceMins":5},
+            {"filterType":"MAX_NUM_ORDERS","maxNumOrders":200}]}]}"#;
+        let dir = DataDir::new(temp_dir("refetch"));
+        let old = btcusdt();
+        let id = old.id.clone();
+        assert_eq!(old.price_band, None);
+        dir.write_instrument(&old).unwrap();
+        let cs: Vec<Candle> = (0..2)
+            .map(|i| candle(&id, i, ["100", "101", "99", "100"]))
+            .collect();
+        dir.write_klines(&id, Interval::H1, &cs).unwrap();
+
+        let client = PublicClient::new(serve(INFO).await);
+        // [first open, last open]: every candle cached, none requested.
+        let s = fetch(
+            &client,
+            &dir,
+            &id,
+            Interval::H1,
+            cs[0].open_time,
+            cs[1].open_time,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            s,
+            FetchSummary {
+                downloaded: 0,
+                cached: 2
+            }
+        );
+        let now = dir.read_instrument(&id).unwrap();
+        assert_eq!(now.price_band.map(|b| b.avg_minutes), Some(5));
+        assert_eq!(now.max_open_orders, Some(200));
     }
 }
