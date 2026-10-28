@@ -10,6 +10,7 @@
 //! and `quote_unit_precision` are decimal places, and may be negative (a
 //! precision of -3 steps by 1000), see [`public::step`].
 
+pub mod paper;
 pub mod public;
 pub mod ws;
 

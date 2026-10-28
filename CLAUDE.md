@@ -328,6 +328,10 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `MaxWsConnector` + `MaxRestKlines` plug into `ReconnectingFeed` (same
    warm-up/backfill/reconnect rules). Ignored live test:
    `cargo test -p exchange live_feed -- --ignored`.
+   `MaxPaperProvider` (`max::paper`) = MAX feed + PaperBroker
+   (NextOpenFillModel, `fees`/`slippage`/`initial_cash` in first
+   instrument's quote): paper on MAX = backtest model on live bars; no key,
+   in-memory books (every run starts flat).
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety
