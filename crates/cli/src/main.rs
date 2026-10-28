@@ -13,13 +13,15 @@ mod telemetry;
 
 use anyhow::Context;
 use backtest::{BacktestProvider, DataDir, HistorySource, PaperConfig, fetch, run_backtest};
-use bot_core::{Decimal, InstrumentId, Interval, Notional, Symbol, Timestamp, VenueId};
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use bot_core::{Decimal, InstrumentId, Interval, Notional, Symbol, Timestamp};
+use clap::{ArgGroup, Args, Parser, Subcommand};
+use config::Venue;
 use engine::EngineConfig;
 use exchange::Provider;
 use exchange::binance::{
     BinanceConfig, BinanceSpotProvider, Credentials, Network, PUBLIC_DATA_URL, PublicClient,
 };
+use exchange::max::paper::{MaxPaperConfig, MaxPaperProvider};
 use exchange::max::public::MaxPublicClient;
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
 use std::path::PathBuf;
@@ -79,6 +81,10 @@ async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<
 }
 
 async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
+    if cfg.exchange.venue == Venue::Max {
+        gate::decide_max(cfg.mode, a.live)?;
+        return run_max_paper(cfg).await;
+    }
     let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
     gate::check_overrides(
         network,
@@ -182,20 +188,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
         Err(e) => eprintln!("could not close out open orders: {e}; check the account"),
     }
     if let Some(r) = outcome? {
-        println!(
-            "events {}  fills {}  rejected signals {}",
-            r.events,
-            r.fills.len(),
-            r.rejections.len()
-        );
-        for p in &r.positions {
-            println!(
-                "{}  qty {}  realized {}",
-                p.instrument(),
-                p.qty(),
-                p.realized_pnl()
-            );
-        }
+        print_summary(&r);
     }
     if let Some(saver) = observer.state.take() {
         saver.finish().await;
@@ -204,28 +197,86 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Venue whose market data `fetch-data` downloads and `backtest` replays.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum Venue {
-    /// Binance spot (`binance:BTCUSDT`), history from its public data host.
-    Binance,
-    /// MAX by MaiCoin (`max:BTCUSDT`, `max:BTCTWD`); no 1s klines.
-    Max,
+/// A paper run on MAX: MAX's live klines, the local paper broker. No key is
+/// read and no order leaves the process; books are in memory, so the run
+/// starts flat and saved strategy state is not resumed (it would describe
+/// positions this broker doesn't have). The API needs the order database
+/// and stays off.
+async fn run_max_paper(cfg: config::Config) -> anyhow::Result<()> {
+    let paper = cfg
+        .paper
+        .as_ref()
+        .context("exchange.venue = \"max\" needs a [paper] section")?;
+    let provider = MaxPaperProvider::new(
+        MaxPaperConfig {
+            interval: cfg.exchange.interval,
+            warmup: cfg.engine.history_len,
+            max_outage: std::time::Duration::from_secs(cfg.exchange.max_outage_secs),
+            http_timeout: std::time::Duration::from_secs(cfg.exchange.http_timeout_secs),
+            fees: RateFee::new(paper.fee, paper.fee, FeeAsset::Received)
+                .context("paper.fee must be in [0, 1)")?,
+            slippage: BpsSlippage::new(paper.slippage_bps)
+                .context("paper.slippage_bps must be >= 0")?,
+            initial_cash: paper.initial_cash,
+        },
+        cfg.whitelist.clone(),
+    );
+    if cfg.api.enabled {
+        tracing::warn!("api is not available on a MAX paper run (no order database); not started");
+    }
+    let params = Params::new(cfg.strategy.params);
+    let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
+    let engine_cfg = EngineConfig {
+        whitelist: cfg.whitelist,
+        history_len: cfg.engine.history_len,
+    };
+    telemetry::start(&cfg.metrics);
+    let mut observer = telemetry::RunObserver {
+        include_money: cfg.metrics.include_money,
+        live: None,
+        state: None,
+    };
+    tracing::info!(
+        provider = provider.id(),
+        strategy = %cfg.strategy.name,
+        "starting: MAX prices, local paper fills, nothing sent to MAX"
+    );
+    let outcome = tokio::select! {
+        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, None) => r.map(Some),
+        s = shutdown::signal() => {
+            eprintln!("{}: stopping", s?);
+            Ok(None)
+        }
+    };
+    if let Some(r) = outcome? {
+        print_summary(&r);
+    }
+    Ok(())
 }
 
-impl Venue {
-    fn id(self) -> anyhow::Result<VenueId> {
-        Ok(VenueId::new(match self {
-            Self::Binance => "binance",
-            Self::Max => exchange::max::VENUE,
-        })?)
+/// The end-of-run summary `run` prints.
+fn print_summary(r: &engine::RunReport) {
+    println!(
+        "events {}  fills {}  rejected signals {}",
+        r.events,
+        r.fills.len(),
+        r.rejections.len()
+    );
+    for p in &r.positions {
+        println!(
+            "{}  qty {}  realized {}",
+            p.instrument(),
+            p.qty(),
+            p.realized_pnl()
+        );
     }
+}
 
-    fn data_url(self) -> &'static str {
-        match self {
-            Self::Binance => PUBLIC_DATA_URL,
-            Self::Max => exchange::max::REST_URL,
-        }
+/// Where `fetch-data` downloads `venue`'s public market data from.
+fn data_url(venue: Venue) -> &'static str {
+    match venue {
+        Venue::Binance => PUBLIC_DATA_URL,
+        Venue::Max => exchange::max::REST_URL,
     }
 }
 
@@ -286,7 +337,7 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         .with_context(|| format!("parsing {}", path.display()))?,
         None => Params::default(),
     };
-    let venue = a.venue.id()?;
+    let venue = a.venue.id();
     let ids: Vec<InstrumentId> = a
         .symbol
         .into_iter()
@@ -357,14 +408,14 @@ fn now() -> Timestamp {
 }
 
 async fn fetch_data(a: FetchArgs) -> anyhow::Result<()> {
-    let base = a.base_url.unwrap_or_else(|| a.venue.data_url().to_owned());
+    let base = a.base_url.unwrap_or_else(|| data_url(a.venue).to_owned());
     let client: Box<dyn HistorySource> = match a.venue {
         Venue::Binance => Box::new(PublicClient::new(base)),
         Venue::Max => Box::new(MaxPublicClient::new(base)),
     };
     let dir = DataDir::new(a.data_dir);
     let to = a.to.unwrap_or_else(now);
-    let venue = a.venue.id()?;
+    let venue = a.venue.id();
     for symbol in a.symbol {
         let id = InstrumentId::new(venue.clone(), symbol);
         let s = fetch(client.as_ref(), &dir, &id, a.interval, a.from, to)
@@ -427,10 +478,10 @@ mod tests {
 
     #[test]
     fn venue_picks_ids_and_data_host() {
-        assert_eq!(Venue::Binance.id().unwrap().as_str(), "binance");
-        assert_eq!(Venue::Max.id().unwrap().as_str(), "max");
-        assert_eq!(Venue::Binance.data_url(), "https://data-api.binance.vision");
-        assert_eq!(Venue::Max.data_url(), "https://max-api.maicoin.com");
+        assert_eq!(Venue::Binance.id().as_str(), "binance");
+        assert_eq!(Venue::Max.id().as_str(), "max");
+        assert_eq!(data_url(Venue::Binance), "https://data-api.binance.vision");
+        assert_eq!(data_url(Venue::Max), "https://max-api.maicoin.com");
         let cli = Cli::try_parse_from([
             "cli",
             "fetch-data",

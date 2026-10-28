@@ -26,6 +26,12 @@ mode = "paper"
 whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
 
 [exchange]
+# "binance" (default) or "max" (MAX by MaiCoin). MAX has no testnet: with
+# venue = "max" only paper runs are allowed, on MAX's live prices with the
+# local paper broker below ([paper] required, no API key read), and the
+# whitelist must be max: instruments (max:BTCTWD, max:BTCUSDT).
+venue = "binance"
+# Binance only:
 # "testnet" (default): testnet.binance.vision, fake balances.
 # "demo": demo.binance.com Demo Trading, fake balances, mainnet-like prices.
 # "live": mainnet, real money (needs the other two locks above).
@@ -72,6 +78,16 @@ freefall_pct = "0.2"
 freefall_candles = 60
 order_type = "limit"
 limit_timeout = 3
+
+# The local paper broker, for venue = "max" (Binance paper runs use its
+# testnet or demo network instead). Same model as `backtest`: an order
+# fills at the next bar's open, taker fills slipped. Positions live in
+# memory, so every run starts flat from initial_cash; saved strategy state
+# is not resumed. Money values are strings.
+# [paper]
+# initial_cash = "30000"   # in the first whitelisted instrument's quote (TWD here)
+# fee = "0.0015"           # your MAX fee rate (placeholder, not verified)
+# slippage_bps = "20"      # required; MAX books are thinner than Binance's
 
 [engine]
 # Candles of history kept per instrument for the strategy. Must exceed

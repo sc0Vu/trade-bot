@@ -249,6 +249,28 @@ Live trading:
 cargo run -p cli -- run --live --i-understand
 ```
 
+### MAX (MaiCoin)
+
+MAX has no testnet, so the bot never sends it orders yet. With
+`exchange.venue = "max"`, `run --paper` trades MAX's live closed bars
+against the local paper broker: the same fill model as `backtest` (next
+bar's open, stated fee and slippage), no API key, nothing sent to MAX.
+Positions are in memory: each run starts flat from `paper.initial_cash`, and
+the read-only API is off.
+
+```toml
+whitelist = ["max:BTCTWD"]
+[exchange]
+venue = "max"
+interval = "1m"
+[paper]
+initial_cash = "30000"   # TWD, the first instrument's quote
+fee = "0.0015"           # your MAX fee rate (placeholder)
+slippage_bps = "20"
+```
+
+`mode = "live"` or `--live` with MAX is refused.
+
 ## Containers and Render
 
 `Dockerfile` builds the bot (`trade-bot run --paper` by default);

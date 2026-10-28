@@ -8,7 +8,7 @@
 //! `BINANCE_API_KEY` / `BINANCE_API_SECRET`.
 
 use anyhow::{Context, bail};
-use bot_core::{InstrumentId, Interval};
+use bot_core::{Decimal, InstrumentId, Interval, Notional, VenueId};
 use exchange::binance::Network;
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
@@ -47,6 +47,58 @@ pub struct Config {
     pub api: ApiSection,
     #[serde(default)]
     pub log: LogSection,
+    /// How a paper run on a venue without a testnet (MAX) fills orders.
+    /// Required with `exchange.venue = "max"`; unused on Binance, whose
+    /// paper runs trade on its testnet or demo network.
+    pub paper: Option<PaperSection>,
+}
+
+/// Which exchange the bot trades on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Venue {
+    /// Binance spot (`binance:BTCUSDT`): testnet, demo or mainnet.
+    #[default]
+    Binance,
+    /// MAX by MaiCoin (`max:BTCUSDT`, `max:BTCTWD`). No testnet: paper only
+    /// (live MAX data, local fills) until live orders are built.
+    Max,
+}
+
+impl Venue {
+    /// The venue part of its instrument ids.
+    pub fn id(self) -> VenueId {
+        let name = match self {
+            Self::Binance => "binance",
+            Self::Max => exchange::max::VENUE,
+        };
+        VenueId::new(name).unwrap_or_else(|_| unreachable!("valid venue id"))
+    }
+}
+
+/// The local paper broker's settings (`[paper]`), as in `backtest`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperSection {
+    /// Starting balance in the first whitelisted instrument's quote asset
+    /// (`"1000"`).
+    pub initial_cash: Notional,
+    /// Maker and taker fee as a fraction (`"0.0015"`), charged in the
+    /// received asset.
+    #[serde(deserialize_with = "exact_decimal")]
+    pub fee: Decimal,
+    /// Taker slippage in basis points (`"20"`). Required, like
+    /// `backtest --slippage-bps`: a market order never fills at the price
+    /// the decision saw.
+    #[serde(deserialize_with = "exact_decimal")]
+    pub slippage_bps: Decimal,
+}
+
+/// A decimal from a string only (`"0.0015"`), never a TOML float
+/// (invariant 1).
+fn exact_decimal<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Decimal, D::Error> {
+    let s = String::deserialize(d)?;
+    Decimal::from_str_exact(&s).map_err(serde::de::Error::custom)
 }
 
 /// Logging for `run`.
@@ -207,7 +259,11 @@ pub fn network_name(network: Network) -> &'static str {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExchangeSection {
-    /// `testnet` (default), `demo` or `live`. Keys must belong to it.
+    /// `binance` (default) or `max`.
+    #[serde(default)]
+    pub venue: Venue,
+    /// Binance only: `testnet` (default), `demo` or `live`. Keys must
+    /// belong to it.
     #[serde(default)]
     pub network: Network,
     pub rest_url: Option<String>,
@@ -318,6 +374,37 @@ impl Config {
                 self.api.listen
             );
         }
+        let venue = self.exchange.venue.id();
+        if let Some(other) = self.whitelist.iter().find(|i| *i.venue() != venue) {
+            bail!("whitelist has {other}, but exchange.venue is {venue}");
+        }
+        if self.exchange.venue == Venue::Max {
+            if self.mode == Mode::Live {
+                bail!("live orders on MAX are not supported yet; use mode = \"paper\"");
+            }
+            if self.paper.is_none() {
+                bail!(
+                    "exchange.venue = \"max\" needs a [paper] section (initial_cash, fee, slippage_bps)"
+                );
+            }
+            if self.exchange.interval == Interval::S1 {
+                bail!("MAX serves no 1s klines; set exchange.interval to 1m or longer");
+            }
+            if self.exchange.rest_url.is_some() || self.exchange.ws_url.is_some() {
+                bail!("exchange.rest_url and ws_url are Binance overrides; remove them for MAX");
+            }
+        }
+        if let Some(p) = &self.paper {
+            if !p.initial_cash.is_positive() {
+                bail!("paper.initial_cash must be positive");
+            }
+            if p.fee < Decimal::ZERO || p.fee >= Decimal::ONE {
+                bail!("paper.fee must be in [0, 1)");
+            }
+            if p.slippage_bps < Decimal::ZERO {
+                bail!("paper.slippage_bps must be >= 0");
+            }
+        }
         if !self.metrics.listen.ip().is_loopback() && !self.metrics.allow_public {
             bail!(
                 "metrics.listen {} is not loopback; the endpoint has no authentication, \
@@ -346,6 +433,78 @@ mod tests {
 
     fn parse(toml: &str) -> anyhow::Result<Config> {
         Config::from_figment(Figment::new().merge(Toml::string(toml)))
+    }
+
+    const MAX_PAPER: &str = r#"
+        whitelist = ["max:BTCTWD"]
+        [exchange]
+        venue = "max"
+        [paper]
+        initial_cash = "30000"
+        fee = "0.0015"
+        slippage_bps = "20"
+        [strategy]
+        name = "dca"
+        params = { coin = "max:BTCTWD", quote_amount = "1000", every = "day", fee = "0.0015", slippage_bps = "20" }
+    "#;
+
+    #[test]
+    fn max_paper_loads() {
+        Jail::expect_with(|_| {
+            let c = parse(MAX_PAPER).unwrap();
+            assert_eq!(c.exchange.venue, Venue::Max);
+            let p = c.paper.unwrap();
+            assert_eq!(p.initial_cash, Notional::new(Decimal::from(30_000)));
+            assert_eq!(p.fee, Decimal::new(15, 4));
+            assert_eq!(p.slippage_bps, Decimal::from(20));
+            // Binance stays the default venue.
+            assert_eq!(parse(MIN).unwrap().exchange.venue, Venue::Binance);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn max_refuses_what_it_cannot_do() {
+        Jail::expect_with(|_| {
+            let live = MAX_PAPER.replace("whitelist", "mode = \"live\"\nwhitelist");
+            assert!(
+                parse(&live)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not supported")
+            );
+            let no_paper = MAX_PAPER.replace("[paper]", "[unused]");
+            assert!(parse(&no_paper).is_err());
+            let start = MAX_PAPER.find("[paper]").unwrap();
+            let end = MAX_PAPER.find("[strategy]").unwrap();
+            let without = format!("{}{}", &MAX_PAPER[..start], &MAX_PAPER[end..]);
+            let err = parse(&without).unwrap_err().to_string();
+            assert!(err.contains("[paper]"), "{err}");
+            let one_sec =
+                MAX_PAPER.replace("venue = \"max\"", "venue = \"max\"\ninterval = \"1s\"");
+            assert!(parse(&one_sec).is_err());
+            let float = MAX_PAPER.replace("slippage_bps = \"20\"\n", "slippage_bps = 20\n");
+            assert!(parse(&float).is_err(), "money as a bare number");
+            let override_url = MAX_PAPER.replace(
+                "venue = \"max\"",
+                "venue = \"max\"\nrest_url = \"https://example.com\"",
+            );
+            assert!(parse(&override_url).is_err());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn whitelist_must_be_on_the_venue() {
+        Jail::expect_with(|_| {
+            let mixed =
+                MAX_PAPER.replace(r#"["max:BTCTWD"]"#, r#"["max:BTCTWD", "binance:BTCUSDT"]"#);
+            let err = parse(&mixed).unwrap_err().to_string();
+            assert!(err.contains("binance:BTCUSDT"), "{err}");
+            let on_binance = MIN.replace(r#"["binance:BTCUSDT"]"#, r#"["max:BTCUSDT"]"#);
+            assert!(parse(&on_binance).is_err());
+            Ok(())
+        });
     }
 
     #[test]

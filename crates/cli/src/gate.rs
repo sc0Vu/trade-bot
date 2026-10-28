@@ -46,6 +46,16 @@ pub fn check_overrides(network: Network, urls: &[Option<&str>]) -> anyhow::Resul
 /// A config set to `mode = "live"` or `network = "live"` is refused rather
 /// than quietly downgraded, so the mismatch is noticed. With `--live`:
 /// every missing lock is listed.
+/// The gate for MAX, which has no testnet and no live orders yet: only a
+/// paper run (local fills) is allowed. `--live` or `mode = "live"` is
+/// refused, not downgraded.
+pub fn decide_max(mode: Mode, live_flag: bool) -> anyhow::Result<()> {
+    if live_flag || mode == Mode::Live {
+        bail!("live orders on MAX are not supported yet; run it with --paper and mode = \"paper\"");
+    }
+    Ok(())
+}
+
 pub fn decide(
     mode: Mode,
     network: Network,
@@ -87,6 +97,14 @@ mod tests {
     use super::*;
 
     const NETWORKS: [Network; 3] = [Network::Testnet, Network::Demo, Network::Live];
+
+    #[test]
+    fn max_runs_paper_only() {
+        assert!(decide_max(Mode::Paper, false).is_ok());
+        assert!(decide_max(Mode::Paper, true).is_err(), "--live");
+        assert!(decide_max(Mode::Live, false).is_err(), "mode = live");
+        assert!(decide_max(Mode::Live, true).is_err());
+    }
 
     #[test]
     fn mainnet_only_with_all_three_locks() {

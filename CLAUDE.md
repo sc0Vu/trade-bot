@@ -332,6 +332,12 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    (NextOpenFillModel, `fees`/`slippage`/`initial_cash` in first
    instrument's quote): paper on MAX = backtest model on live bars; no key,
    in-memory books (every run starts flat).
+   Config `exchange.venue = binance|max` (default binance; whitelist must
+   match venue). MAX: `[paper]` {initial_cash, fee, slippage_bps — strings,
+   slippage required} required, no 1s, no rest/ws_url, `mode = "live"` /
+   `--live` refused (`gate::decide_max`); `exchange.network` ignored.
+   `cli::run_max_paper`: no creds, no db, no API (warned), no state resume
+   (would contradict a flat broker), no close-out (nothing on MAX).
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety
