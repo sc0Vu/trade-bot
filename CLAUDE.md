@@ -528,8 +528,8 @@ anchor / order open → no decision. Dust = cash.
 `quote_per_grid` at Lᵢ (GTC limit), its lot (net of base fee) sells at
 Lᵢ₊₁. Build refuses a grid whose narrowest step doesn't clear two `fee`s
 (Lᵢ₊₁·(1−fee)² > Lᵢ); `on_start` re-checks on the tick (levels rounded at
-12 dp then floored, `powd` approximate) and that each buy passes filters,
-else Stopped. First eval: every gap buys, those above price marketable
+12 dp then floored, `powd` approximate), that each buy passes filters and
+`grids` ≤ `max_open_orders` (one order per gap), else Stopped. First eval: every gap buys, those above price marketable
 (neutral opening). Order ↔ gap via `on_order` ids (paper order can fill
 before visible); fills sum, gap settles when its order neither open nor
 cancelling (split fills); refusal (`on_rejected`) → gap back, no new orders

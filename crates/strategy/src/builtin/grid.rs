@@ -547,11 +547,20 @@ impl Strategy for Grid {
     }
 
     /// Computes the levels on the coin's tick, and checks every gap's buy
-    /// and the fees after rounding. A grid that can't trade stops.
+    /// and the fees after rounding, and that the venue lets every gap keep
+    /// its order open. A grid that can't trade stops.
     fn on_start(&mut self, ctx: &mut Context) {
         let Some(inst) = ctx.instrument(&self.p.coin) else {
             return self.stop("coin not in the universe");
         };
+        // One working order per gap at most; past the cap the venue refuses
+        // the rest and those gaps never trade.
+        if inst
+            .max_open_orders
+            .is_some_and(|cap| self.p.grids > cap as usize)
+        {
+            return self.stop("more grids than the venue allows open orders");
+        }
         // 12 dp first: `powd` is approximate, and a level a hair under a
         // tick (199.999…) must not floor a whole tick down.
         let levels: Vec<Price> = raw_levels(&self.p)
@@ -865,6 +874,34 @@ mod tests {
         let mut s = build(NAME, &p).unwrap();
         s.on_start(&mut ctx);
         (s, ctx)
+    }
+
+    #[test]
+    fn more_gaps_than_the_open_order_cap_stops() {
+        let started = |cap: u32| {
+            let p = params("");
+            let inst = Instrument::new(bot_core::InstrumentSpec {
+                max_open_orders: Some(cap),
+                ..(*btcusdt()).clone()
+            })
+            .unwrap();
+            let mut ctx = driver::new(vec![inst], p.clone(), 10);
+            let mut s = build(NAME, &p).unwrap();
+            s.on_start(&mut ctx);
+            (s, ctx)
+        };
+        // 4 gaps: a cap of 3 leaves one gap that could never place its order.
+        let (mut s, mut ctx) = started(3);
+        assert!(bar(s.as_mut(), &mut ctx, 0, "100").is_empty());
+        assert!(
+            s.save_state().unwrap()["stage"]
+                .to_string()
+                .contains("more grids than the venue allows open orders"),
+            "{:?}",
+            s.save_state()
+        );
+        let (mut s, mut ctx) = started(4);
+        assert_eq!(bar(s.as_mut(), &mut ctx, 0, "100").len(), 4);
     }
 
     /// Opening at 100 (buys allowed 50..=120): 40 waits, 70 and 100 go as
