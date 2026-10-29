@@ -616,7 +616,10 @@ data/          downloaded klines, per-network run dbs (gitignored)
 .github/       ci.yml (`make check` + deploy configs via each tool's image), release.yml
                (tag `v<workspace version>` → `trade-bot` for linux x86_64/arm64 gnu,
                macOS arm64/x86_64, windows x86_64; `cli --features vendored-tls` =
-               static OpenSSL; archives + SHA256SUMS on a GitHub release)
+               static OpenSSL; archives + SHA256SUMS on a GitHub release), pages.yml
+               (site/ → GitHub Pages sc0vu.github.io/trade-bot on push to main)
+site/          static project page (one index.html, no build); strategy table and
+               safety claims mirror README: keep in sync
 Dockerfile     debian + rustup (toolchain pin), system libssl; `run --paper` default,
                books in volume /app/data; live only via typed command (invariant 7)
 render.yaml    worker, frankfurt (Binance 451s US IPs), disk /app/data (books survive;

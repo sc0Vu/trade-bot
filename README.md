@@ -31,7 +31,8 @@ that would be a bug.
 - [Development](#development)
 - [License](#license)
 
-More depth: [doc/architecture.md](doc/architecture.md).
+More depth: [doc/architecture.md](doc/architecture.md). Project page:
+<https://sc0vu.github.io/trade-bot/>.
 
 ## Safety model
 
@@ -399,6 +400,8 @@ image and starts it once, on every push and pull request. Pushing a tag `vX.Y.Z`
 statically through the `vendored-tls` feature), smoke-tests each binary,
 and publishes the archives with `SHA256SUMS` as a GitHub release. *Run
 workflow* on the Release action builds the archives without publishing.
+`pages.yml` publishes `site/` (a single static page) to
+<https://sc0vu.github.io/trade-bot/> on every push to `main` that touches it.
 
 ## License
 
