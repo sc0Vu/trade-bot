@@ -285,7 +285,10 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    = `executedQty`, record trades idempotently, close. Startup-recovered fills
    (`Reconciled.fills`) → `BinanceBroker::with_recovered` →
    `take_recovered_fills` → strategy `on_fill`. Startup also refuses
-   open `tb…` order not in books (bot under other db: fills untracked) and
+   open `tb…` order not in books (bot under other db: fills untracked;
+   `Orphans::Refuse` default, `run --cancel-orphans` = `Orphans::Cancel`:
+   cancel them + start, never adopted (partial history), their fills stay
+   outside books; venue can't tell lost db from second live instance) and
    books holding > account free+locked. Others' open orders (manual, other
    software) only warned: books count own fills only; worst case bot order
    gets `-2010` (non-fatal rejection).

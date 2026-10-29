@@ -215,8 +215,12 @@ What a run does:
 1. Checks the key with a read-only signed request before trading.
 2. **Reconciles** with Binance. It records fills that happened while the bot
    was down, cancels orders it left open, and refuses to start if an order
-   it placed under another database is still open. Orders other people
-   placed are left alone and only logged.
+   it placed under another database is still open. If that database is
+   gone for good, `run --paper --cancel-orphans` cancels those orders and
+   starts; anything they already filled stays in your account but outside
+   the bot's books. Don't use it while another copy of the bot is running:
+   it cancels that copy's orders. Orders other people placed are left alone
+   and only logged.
 3. Trades on closed candles. Orders, fills, cancels and rejections are
    logged by id; money values stay out of info-level logs.
 4. On Ctrl-C, SIGTERM or SIGHUP, stops and cancels its open orders. A
@@ -300,7 +304,7 @@ docker logs -f tb
 
 A fresh volume with orders still open on the account makes the bot refuse
 to start (an unknown `tb…` order). That's the guard working: reuse the
-volume.
+volume, or, if the old one is lost, start once with `--cancel-orphans`.
 
 **2. On Render, still testnet.** *New > Blueprint* with this repo reads
 `render.yaml`. Then, in the dashboard:

@@ -18,6 +18,7 @@ use clap::{ArgGroup, Args, Parser, Subcommand};
 use config::Venue;
 use engine::EngineConfig;
 use exchange::Provider;
+use exchange::binance::reconcile::Orphans;
 use exchange::binance::{
     BinanceConfig, BinanceSpotProvider, Credentials, Network, PUBLIC_DATA_URL, PublicClient,
 };
@@ -62,6 +63,13 @@ struct RunArgs {
     /// Acknowledge that `--live` sends real orders.
     #[arg(long, requires = "live")]
     i_understand: bool,
+    /// Cancel open orders this bot placed under another database (the
+    /// startup refusal "missing from this database") instead of stopping.
+    /// Their fills so far stay in the account, outside the books. Only for
+    /// a lost database: if another instance is still running, it cancels
+    /// that instance's orders.
+    #[arg(long)]
+    cancel_orphans: bool,
     /// Config file (default `BOT_CONFIG`, else config/config.toml).
     #[arg(long)]
     config: Option<PathBuf>,
@@ -83,6 +91,9 @@ async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<
 async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     if cfg.exchange.venue == Venue::Max {
         gate::decide_max(cfg.mode, a.live)?;
+        if a.cancel_orphans {
+            tracing::warn!("--cancel-orphans ignored: a MAX paper run places no orders on MAX");
+        }
         return run_max_paper(cfg).await;
     }
     let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
@@ -111,7 +122,12 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
         creds,
         cfg.whitelist.clone(),
         books.clone(),
-    );
+    )
+    .with_orphans(if a.cancel_orphans {
+        Orphans::Cancel
+    } else {
+        Orphans::Refuse
+    });
     let state_hash = state::params_hash(&cfg.strategy.name, &cfg.strategy.params);
     let resume = state::load(&*books, &cfg.strategy.name, &state_hash).await?;
     if resume.is_some() {

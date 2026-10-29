@@ -1,6 +1,6 @@
 use super::feed::{ReconnectingFeed, RestKlines, WsConnector};
 use super::limits;
-use super::reconcile::{Phase, Reconciled, reconcile};
+use super::reconcile::{Orphans, Phase, Reconciled, reconcile};
 use super::{
     BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_API_URL, DEMO_WS_URL, LIVE_REST_URL,
     LIVE_WS_API_URL, LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock,
@@ -109,6 +109,8 @@ pub struct BinanceSpotProvider {
     limiter: Arc<RateLimiter>,
     /// Prefix of this run's client order ids ([`run_tag`]).
     run_tag: String,
+    /// What startup does with this bot's orders the books don't know.
+    orphans: Orphans,
 }
 
 impl BinanceSpotProvider {
@@ -128,7 +130,15 @@ impl BinanceSpotProvider {
             books,
             limiter: Arc::new(RateLimiter::new(limits::default_limits())),
             run_tag: run_tag(SystemClock.now_millis()),
+            orphans: Orphans::Refuse,
         }
+    }
+
+    /// Sets what startup does with orphans ([`Orphans`]); refusing them is
+    /// the default.
+    pub fn with_orphans(mut self, orphans: Orphans) -> Self {
+        self.orphans = orphans;
+        self
     }
 
     /// This run's client order id prefix: order lines log the full
@@ -212,12 +222,18 @@ impl Provider for BinanceSpotProvider {
     }
 
     /// Checks the key, then reconciles the books with Binance
-    /// ([`Phase::Startup`]) before the broker starts from them.
+    /// ([`Phase::Startup`], orphans as [`with_orphans`](Self::with_orphans)) before the broker starts from them.
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
         let client = self.client().await?;
         client.check_credentials().await?;
         let books_instruments = self.books_instruments().await?;
-        let r = reconcile(&client, &books_instruments, &*self.books, Phase::Startup).await?;
+        let r = reconcile(
+            &client,
+            &books_instruments,
+            &*self.books,
+            Phase::Startup(self.orphans),
+        )
+        .await?;
         tracing::info!(
             orders_closed = r.orders_closed,
             fills_recovered = r.fills_recovered,

@@ -29,12 +29,32 @@ const ATTEMPTS: u32 = 10;
 /// Wait between status polls while Binance catches up.
 const RETRY_DELAY: Duration = Duration::from_millis(500);
 
-/// When a reconcile runs. Startup also refuses to trade next to orders
-/// the books don't know and checks holdings against the account.
+/// When a reconcile runs. Startup also deals with open orders the books
+/// don't know ([`Orphans`]) and checks holdings against the account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
-    Startup,
+    Startup(Orphans),
     Exit,
+}
+
+/// What startup does with orphans: open orders carrying this bot's
+/// client-id prefix that the books don't know, i.e. placed under another
+/// database (deleted, or another `db.url`).
+///
+/// Binance can't tell a lost database from a second instance still
+/// trading the account under its own one, so refusing is the default and
+/// cancelling is the operator's explicit call (`run --cancel-orphans`).
+/// Neither adopts them: the books would hold only those orders' fills,
+/// not the lost database's history, a position that looks right and isn't.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Orphans {
+    /// Stop before trading; the operator cancels them or restores the
+    /// database that placed them.
+    #[default]
+    Refuse,
+    /// Cancel them and start. Fills they already had stay in the account
+    /// but outside the books, like any coin the bot didn't buy.
+    Cancel,
 }
 
 /// What a reconcile changed. Log the counts; the fills carry money
@@ -84,15 +104,15 @@ pub(crate) async fn reconcile_with(
         done.orders_closed += 1;
     }
     let label = match phase {
-        Phase::Startup => "startup",
+        Phase::Startup(_) => "startup",
         Phase::Exit => "exit",
     };
     metrics::counter!(crate::metrics::RECONCILE_ORDERS, "phase" => label)
         .increment(done.orders_closed as u64);
     metrics::counter!(crate::metrics::RECONCILE_FILLS, "phase" => label)
         .increment(done.fills_recovered as u64);
-    if phase == Phase::Startup {
-        refuse_unknown_open_orders(client, instruments).await?;
+    if let Phase::Startup(orphans) = phase {
+        unknown_open_orders(client, instruments, orphans).await?;
         check_balances(client, instruments, books).await?;
     }
     Ok(done)
@@ -204,14 +224,15 @@ async fn close_out(
 /// symbol is one the books don't know.
 ///
 /// One with this bot's client-id prefix was placed by the bot under
-/// another database: its fills would never reach these books, so the run
-/// is refused. Anyone else's (placed by hand, by other software) is only
+/// another database: its fills would never reach these books, so it is
+/// refused or cancelled as `orphans` says. Anyone else's (placed by hand, by other software) is only
 /// logged: the books count only this bot's fills, so it can't corrupt
 /// them. At worst it uses balance a bot order needed, and that order is
 /// refused by Binance (`-2010`), which the engine records and survives.
-async fn refuse_unknown_open_orders(
+async fn unknown_open_orders(
     client: &SignedClient,
     instruments: &[Instrument],
+    orphans: Orphans,
 ) -> Result<(), ExchangeError> {
     let mut unknown = Vec::new();
     for inst in instruments {
@@ -227,14 +248,16 @@ async fn refuse_unknown_open_orders(
             .ok_or_else(|| ExchangeError::Decode("openOrders".into()))?
         {
             let cid = o["clientOrderId"].as_str().unwrap_or("?");
-            if cid.starts_with(CLIENT_ID_PREFIX) {
-                unknown.push(format!("{} {cid}", inst.id));
-            } else {
+            if !cid.starts_with(CLIENT_ID_PREFIX) {
                 tracing::warn!(
                     instrument = %inst.id,
                     client_order_id = cid,
                     "open order not placed by this bot; its fills are not counted"
                 );
+            } else if orphans == Orphans::Cancel {
+                cancel_orphan(client, inst, o).await?;
+            } else {
+                unknown.push(format!("{} {cid}", inst.id));
             }
         }
     }
@@ -243,9 +266,49 @@ async fn refuse_unknown_open_orders(
     }
     Err(ExchangeError::Decode(format!(
         "open orders placed by this bot but missing from this database: {}; \
-         was it run with another db.url? Cancel them or use that database",
+         was it run with another db.url? Use that database, or cancel them \
+         (by hand or with run --cancel-orphans) and start without their fills",
         unknown.join(", ")
     )))
+}
+
+/// Cancels one orphan by its venue id. A cancel refused because the order
+/// just closed (`-2011`) is fine: either way it no longer works.
+async fn cancel_orphan(
+    client: &SignedClient,
+    inst: &Instrument,
+    order: &serde_json::Value,
+) -> Result<(), ExchangeError> {
+    let venue_id = order["orderId"]
+        .as_i64()
+        .ok_or_else(|| ExchangeError::Decode("openOrders orderId".into()))?;
+    let partly_filled = executed_qty(order)? > Decimal::ZERO;
+    match client
+        .signed(
+            Method::Delete,
+            "/api/v3/order",
+            &[
+                ("symbol", inst.id.symbol().to_string()),
+                ("orderId", venue_id.to_string()),
+            ],
+        )
+        .await
+    {
+        Ok(_)
+        | Err(ExchangeError::Venue {
+            code: CANCEL_REJECTED,
+            ..
+        }) => {}
+        Err(e) => return Err(e),
+    }
+    tracing::warn!(
+        instrument = %inst.id,
+        client_order_id = order["clientOrderId"].as_str().unwrap_or("?"),
+        partly_filled,
+        "cancelled an order this bot placed under another database; \
+         its fills are not in the books"
+    );
+    Ok(())
 }
 
 /// The books may hold less than the account (coins the bot never bought),
@@ -515,8 +578,60 @@ mod tests {
     async fn startup_refuses_bot_orders_missing_from_the_books() {
         let (t, db) = (FakeTransport::default(), TempDb::new().await);
         t.reply(200, r#"[{"orderId":99,"clientOrderId":"tbother-o-1"}]"#);
-        let err = run(&t, &db, Phase::Startup).await.unwrap_err().to_string();
+        let err = run(&t, &db, Phase::Startup(Orphans::Refuse))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("tbother-o-1"), "{err}");
+    }
+
+    fn orphan_and_foreign(executed: &str) -> String {
+        format!(
+            r#"[{{"orderId":99,"clientOrderId":"tbother-o-1","executedQty":"{executed}"}},{{"orderId":5,"clientOrderId":"web_abc","executedQty":"0"}}]"#
+        )
+    }
+
+    async fn run_cancelling(t: &FakeTransport, db: &TempDb) -> Result<Reconciled, ExchangeError> {
+        let phase = Phase::Startup(Orphans::Cancel);
+        reconcile_with(&client(t), &[btcusdt()], &*db.store, phase, Duration::ZERO).await
+    }
+
+    #[tokio::test]
+    async fn cancel_orphans_cancels_only_this_bots_unknown_orders() {
+        let (t, db) = (FakeTransport::default(), TempDb::new().await);
+        t.reply(200, &orphan_and_foreign("0.3"));
+        t.reply(200, r#"{"orderId":99,"status":"CANCELED"}"#); // DELETE
+        t.reply(200, &account("0"));
+        let r = run_cancelling(&t, &db).await.unwrap();
+        let deletes: Vec<_> = t
+            .sent()
+            .into_iter()
+            .filter(|r| r.method == Method::Delete)
+            .collect();
+        assert_eq!(deletes.len(), 1, "someone else's order is left alone");
+        assert_eq!(param(&deletes[0].query, "orderId"), Some("99"));
+        assert_eq!(param(&deletes[0].query, "symbol"), Some("BTCUSDT"));
+        // Not adopted: its 0.3 filled stays outside the books.
+        assert_eq!(r, Reconciled::default());
+        assert_eq!(held(&db).await, None);
+        assert!(db.store.unfinished_orders().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_orphans_accepts_an_order_that_closed_meanwhile() {
+        let (t, db) = (FakeTransport::default(), TempDb::new().await);
+        t.reply(200, &orphan_and_foreign("0"));
+        t.reply(400, r#"{"code":-2011,"msg":"Unknown order sent."}"#);
+        t.reply(200, &account("0"));
+        run_cancelling(&t, &db).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_orphans_stops_on_any_other_cancel_failure() {
+        let (t, db) = (FakeTransport::default(), TempDb::new().await);
+        t.reply(200, &orphan_and_foreign("0"));
+        t.reply(401, r#"{"code":-2015,"msg":"Invalid API-key."}"#);
+        assert!(run_cancelling(&t, &db).await.is_err());
     }
 
     #[tokio::test]
@@ -524,7 +639,7 @@ mod tests {
         let (t, db) = (FakeTransport::default(), TempDb::new().await);
         t.reply(200, r#"[{"orderId":99,"clientOrderId":"web_abc"}]"#);
         t.reply(200, &account("0"));
-        run(&t, &db, Phase::Startup).await.unwrap();
+        run(&t, &db, Phase::Startup(Orphans::Refuse)).await.unwrap();
         assert!(
             t.sent().iter().all(|r| r.method != Method::Delete),
             "someone else's order is left alone"
@@ -549,11 +664,14 @@ mod tests {
         // 0.5 free + 0.5 locked covers the 1 BTC the books hold.
         t.reply(200, "[]");
         t.reply(200, &account("0.5"));
-        run(&t, &db, Phase::Startup).await.unwrap();
+        run(&t, &db, Phase::Startup(Orphans::Refuse)).await.unwrap();
         // 0.4 + 0.5 does not.
         t.reply(200, "[]");
         t.reply(200, &account("0.4"));
-        let err = run(&t, &db, Phase::Startup).await.unwrap_err().to_string();
+        let err = run(&t, &db, Phase::Startup(Orphans::Refuse))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("more BTC"), "{err}");
     }
 

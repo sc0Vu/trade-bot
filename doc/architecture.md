@@ -407,7 +407,12 @@ At startup only, it also:
 
 - Refuses to start if an open order with the bot's prefix is missing from
   this database: the bot ran under another database, and that order's fills
-  would never reach these books. Orders other people placed are only
+  would never reach these books. Binance can't tell a lost database from a
+  second instance still trading under its own, so this is the default;
+  `run --cancel-orphans` instead cancels them and starts (`Orphans::Cancel`),
+  for when the database is known lost. They are never adopted: the books
+  would hold only those orders' fills, not the lost history. Fills they had
+  stay in the account, outside the books. Orders other people placed are only
   logged. The books count only the bot's own fills, and at worst such an
   order uses balance a bot order needed, which Binance then refuses with
   `-2010` (a non-fatal rejection).
