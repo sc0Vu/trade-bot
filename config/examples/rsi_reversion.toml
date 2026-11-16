@@ -20,6 +20,7 @@ rsi_period = 14         # needs rsi_period + 1 closes
 oversold = "30"
 overbought = "70"
 quote_amount = "100"
+# trend_period = 200    # optional: buy dips only above the 200-bar average
 fee = "0.001"
 slippage_bps = "5"
 

@@ -8,10 +8,17 @@
 //! **That bet is dangerous in a trend.** Mean reversion buys dips, so in a
 //! sustained downtrend it catches falling knives: it buys the first dip,
 //! RSI never recovers to `overbought`, and it holds the coin all the way
-//! down. It has no stop and no trend filter by design. It exists for
-//! ranging markets, and partly to show, against `sma_trend` and
-//! `momentum_rotation`, what betting against the trend costs. Expected edge
-//! is unverified.
+//! down. It has no stop by design. It exists for ranging markets, and
+//! partly to show, against `sma_trend` and `momentum_rotation`, what
+//! betting against the trend costs. Expected edge is unverified.
+//!
+//! Optional `trend_period` (Connors' RSI-2 idea): buy a dip only while the
+//! close is above its simple moving average of that many closes, i.e. a
+//! pullback inside an uptrend, never a dip in a downtrend. It filters
+//! entries only: a position bought before the trend turns is still held
+//! until RSI is overbought. It also skips the oversold bars of a crash,
+//! which in a range are its best entries; whether it helps after costs is
+//! unverified.
 //!
 //! RSI here is the v1 *simple-average* form, not Wilder's smoothing, so a
 //! value can be checked by hand. Over the last `rsi_period` close-to-close
@@ -49,6 +56,12 @@ struct RsiReversionParams {
     /// Quote spent on each buy (`"1000"` USDT), as a quote-budget market
     /// order.
     quote_amount: Notional,
+    /// Buy only while the close is above the simple average of this many
+    /// closes, current included (`200`). Unset (the default): no filter.
+    /// Until that many closes exist nothing is bought, so `history_len`
+    /// must be at least this.
+    #[serde(default)]
+    trend_period: Option<usize>,
     /// Fee per trade assumed (`"0.001"`). Required, like the other
     /// strategies', so the config states the costs the backtest runs with;
     /// decisions don't use it.
@@ -78,6 +91,9 @@ impl RsiReversion {
         let hundred = Decimal::from(100);
         if p.rsi_period == 0 {
             return bad("rsi_period must be >= 1");
+        }
+        if p.trend_period == Some(0) {
+            return bad("trend_period must be >= 1");
         }
         if p.oversold < Decimal::ZERO || p.overbought > hundred || p.oversold >= p.overbought {
             return bad("need 0 <= oversold < overbought <= 100");
@@ -118,6 +134,21 @@ impl RsiReversion {
             return Some(Decimal::from(50));
         }
         Some(Decimal::from(100) * gains / moved)
+    }
+
+    /// Whether the trend filter lets a buy through on close `c`: no filter,
+    /// or the close is above the average of the last `trend_period` closes.
+    /// Too little history for the average: no.
+    fn uptrend(&self, ctx: &Context, c: &Candle) -> bool {
+        let Some(n) = self.p.trend_period else {
+            return true;
+        };
+        let hist = ctx.history(&self.p.coin);
+        if hist.len() < n {
+            return false;
+        }
+        let sum: Decimal = hist.rev().take(n).map(|c| c.close.get()).sum();
+        c.close.get() > sum / Decimal::from(n)
     }
 
     /// Lot-rounded units held, if a sell of them would pass the venue's
@@ -165,7 +196,7 @@ impl Strategy for RsiReversion {
             return Vec::new();
         };
         match self.long_units(ctx, c) {
-            None if rsi < self.p.oversold => vec![Signal::Submit {
+            None if rsi < self.p.oversold && self.uptrend(ctx, c) => vec![Signal::Submit {
                 instrument: coin.clone(),
                 side: Side::Buy,
                 size: Size::Quote(self.p.quote_amount),
@@ -333,6 +364,56 @@ mod tests {
         assert!(bar(s.as_mut(), &mut ctx, 3, "85").is_empty());
         assert!(bar(s.as_mut(), &mut ctx, 4, "95").is_empty());
         assert_eq!(bar(s.as_mut(), &mut ctx, 5, "105"), vec![sell(dec!(9.99))]);
+    }
+
+    /// trend_period 4 against the same knife: every close is below the
+    /// average of the last 4 (and bar 2 has only 3), so it never buys.
+    #[test]
+    fn the_trend_filter_refuses_the_falling_knife() {
+        let mut s = build(NAME, &params("trend_period = 4")).unwrap();
+        let mut ctx = ctx();
+        for (i, p) in [
+            (0, "100"),
+            (1, "95"),
+            (2, "90"),
+            (3, "80"),
+            (4, "70"),
+            (5, "60"),
+        ] {
+            assert!(bar(s.as_mut(), &mut ctx, i, p).is_empty(), "bar {i}");
+        }
+    }
+
+    /// A pullback in an uptrend passes: closes 60, 80, 100, 120, 118, 116.
+    /// At 116 the last two changes are −2, −2 → RSI 0 < 30, and the close
+    /// is above the average of (100, 120, 118, 116) = 113.5 → buy. At 118
+    /// RSI is 100·20/22 = 90.9: no.
+    #[test]
+    fn the_trend_filter_passes_a_pullback_in_an_uptrend() {
+        let mut s = build(NAME, &params("trend_period = 4")).unwrap();
+        let mut ctx = ctx();
+        for (i, p) in [(0, "60"), (1, "80"), (2, "100"), (3, "120"), (4, "118")] {
+            assert!(bar(s.as_mut(), &mut ctx, i, p).is_empty(), "bar {i}");
+        }
+        assert_eq!(bar(s.as_mut(), &mut ctx, 5, "116"), vec![buy()]);
+    }
+
+    /// The filter gates buys only, and needs its average to exist. Closes
+    /// 100, 100, 90: RSI 0, but only 3 closes for a 4-close average: no
+    /// buy (the unfiltered strategy buys here). Holding, closes 80, 82, 84
+    /// (RSI 100) sell even though 84 is under the average 86.5.
+    #[test]
+    fn the_trend_filter_gates_buys_only() {
+        let mut s = build(NAME, &params("trend_period = 4")).unwrap();
+        let mut ctx = ctx();
+        bar(s.as_mut(), &mut ctx, 0, "100");
+        bar(s.as_mut(), &mut ctx, 1, "100");
+        assert!(bar(s.as_mut(), &mut ctx, 2, "90").is_empty());
+        hold(&mut ctx, dec!(9.99));
+        bar(s.as_mut(), &mut ctx, 3, "80");
+        bar(s.as_mut(), &mut ctx, 4, "82");
+        assert_eq!(bar(s.as_mut(), &mut ctx, 5, "84"), vec![sell(dec!(9.99))]);
+        assert!(build(NAME, &params("trend_period = 0")).is_err());
     }
 
     /// The danger the docs state: in a steady downtrend RSI stays at 0,

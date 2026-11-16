@@ -603,7 +603,9 @@ RSI < `oversold` → buy `quote_amount`; long and RSI > `overbought` → sell al
 RSI = v1 simple-average form (not Wilder) over last `rsi_period` changes
 (needs `rsi_period + 1` closes): 100·G/(G+L); no losses 100, no gains 0, no
 move 50. Bets on ranges; in sustained downtrend catches falling knife, holds
-to the bottom (no stop, by design). Dust = cash; no decision while order open.
+to the bottom (no stop, by design). Optional `trend_period` (Connors RSI-2):
+buy only if close > SMA(trend_period closes incl. current; too few → no buy);
+gates entries only, never exits. Dust = cash; no decision while order open.
 
 `avwap` — `sma_trend` skeleton, anchored VWAP instead of SMA. AVWAP =
 Σ quote_volume / Σ volume from anchor bar through current (exact via
