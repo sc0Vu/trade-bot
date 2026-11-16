@@ -221,6 +221,24 @@ four real answers. v1 registry; rest open via invariant 5.
 | **Rhai script** | no | just write a script | interpreted | yes | external users, candle freq. |
 | **WASM** (`wasmtime`) | no | compile to wasm | near-native | yes | external users, sandbox + speed |
 
+Built: **Rhai** (`strategy::script`, feature `rhai`, off by default):
+`strategy.name = "rhai"`, `params.script` = path (cwd-relative), other params
+= script's own (TOML float refused). Rhai `no_float` + `decimal`: every
+non-integer number = `Decimal` (invariant 1); `sync`, `no_time`; no eval /
+import (dummy resolver) / file / net; `MAX_OPERATIONS` 1M per hook call, call
+depth 64, size caps; `print` → log. Hooks optional, named like trait's
+(`on_start/on_candle/on_fill/on_order/on_rejected(ctx, ..)` → `()` | signal |
+array), `check_params(params)` at build (throw = refuse), `restore(saved,
+ctx)` → `()` take | string refuse (no `restore` → always fresh). `this` = one
+state map, encoded to JSON after every hook (decimal = `{"$decimal": s}`;
+unsavable value = fault in backtest too), saved in envelope with script
+SHA-256 (edited script → fresh). `ctx` = Arc snapshot of `Context` copied per
+hook (history cloned: debug build ~1 ms/bar at 50-bar window, unoptimized).
+Any script error → `Strategy::fault` → run stops. Shared boundary in
+`script/mod.rs` (source, params split, envelope) for Lua/WASM later.
+Reference port `strategies/sma_trend.rhai` = built-in's fills exactly
+(`backtest/tests/rhai_script.rs`, 2000-bar walk, 3 param sets) + restart
+case. `make check` runs `FEATURES` (`strategy/rhai,backtest/rhai`).
 v1: `inventory` so strategy file self-registers (`inventory::submit!`); add
 one = add file — no central match — runs in backtest free.
 `strategy.params` generic table each strategy deserializes into own typed
@@ -664,7 +682,8 @@ rising). Edge unverified.
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (atr_breakout, avwap,
+  strategy/    Strategy trait, Context, inventory registry, `script` (feature `rhai`:
+               script strategies), built-ins (atr_breakout, avwap,
                bollinger_reversion, buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid,
                macd_cross, momentum_rotation, ratio_hop, rebalance, rsi_reversion, sma_trend, vol_target,
                volatility_breakout)
@@ -681,6 +700,7 @@ crates/
                no write route ever (orders only from strategy via risk)
   cli/         binary: run | backtest | fetch-data | migrate
 migration/     SeaORM migrations
+strategies/    script strategies (`sma_trend.rhai`: reference port, tested vs built-in)
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.
   examples/    one runnable config per built-in (`<strategy>.toml`, paper/testnet), README
 data/          downloaded klines, per-network run dbs (gitignored)
@@ -808,7 +828,7 @@ Not finished until all hold — per task, not at end:
   label unverified. Mirrors owner's first-principles preference.
 
 ## Crates
-`tokio, async-trait, inventory, reqwest, tokio-tungstenite, serde/serde_json,
+`tokio, async-trait, inventory, rhai (optional), reqwest, tokio-tungstenite, serde/serde_json,
 rust_decimal, sea-orm, sea-orm-migration, figment, thiserror, anyhow, tracing, clap, toml,
 metrics, metrics-exporter-prometheus, metrics-process, axum`.
 (`barter-rs` option if later prefer ready-made framework over

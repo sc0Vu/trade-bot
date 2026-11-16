@@ -6,6 +6,10 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+# Script strategies; also runs the script acceptance tests.
+rhai = ["strategy/rhai"]
+
 [dependencies]
 async-trait.workspace = true
 bot-core.workspace = true

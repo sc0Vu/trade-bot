@@ -11,6 +11,8 @@ mod error;
 pub mod indicator;
 mod params;
 mod registry;
+#[cfg(feature = "rhai")]
+pub mod script;
 
 pub use context::{Context, driver};
 pub use error::StrategyError;

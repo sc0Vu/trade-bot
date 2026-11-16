@@ -1,0 +1,33 @@
+# rhai: a strategy written as a Rhai script, loaded at startup, no
+# recompile. This one runs strategies/sma_trend.rhai, a port of the
+# built-in sma_trend (same fills, tested). Edge unverified, as sma_trend's.
+# Needs a build with the `rhai` feature:
+#
+#   cargo run -p cli --features rhai -- run --paper --config config/examples/rhai.toml
+#
+# The script API (hooks, ctx, signals, state) is documented in
+# crates/strategy/src/script/rhai.rs. Numbers with a decimal point in a
+# script are exact decimals; money in params stays a string.
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "rhai"
+
+[strategy.params]
+script = "strategies/sma_trend.rhai"   # relative to the working directory
+# Everything below is the script's own params.
+coin = "binance:BTCUSDT"
+sma_period = 200
+band_pct = "0.01"
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

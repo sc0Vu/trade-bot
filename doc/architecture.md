@@ -528,6 +528,38 @@ available by name, with no central list. Because a strategy's only window to
 the world is `Context`, the loading mechanism can change later without
 touching strategy code.
 
+**Rhai scripts** are built behind the `rhai` cargo feature (off by
+default). `strategy.name = "rhai"` and `strategy.params.script` names the
+file; the other params are the script's own. One adapter
+(`strategy::script::rhai::RhaiStrategy`) implements `Strategy` and calls the
+script's functions of the same names (`on_candle(ctx, candle)` and the
+rest), so the engine, risk and brokers see an ordinary strategy and a script
+runs unchanged in backtest and live. The governing constraints, and how
+each is kept:
+
+- **Exact money.** Rhai is built without floats and with `decimal`: a
+  literal like `0.001` is a `rust_decimal::Decimal`, and every price and
+  quantity crosses as one. A TOML float in the params is refused.
+- **Same inputs, same decisions.** No clock, file, network, `eval` or
+  `import`; maps are ordered. A script sees a snapshot of `Context` and
+  nothing else.
+- **Bounded.** One million operations per hook call, call depth and sizes
+  capped. A runaway loop fails within a fraction of a second.
+- **Loud failure.** Any error (a `throw`, a type error, the budget) sets
+  `Strategy::fault`, and the run stops before routing anything the
+  failing call returned.
+- **Restart.** The script keeps its state in `this`, a map saved after
+  every hook in an envelope carrying the script's SHA-256. Only the same
+  script gets it back, and only through its own `restore(saved, ctx)`,
+  which checks it against the books or refuses.
+
+`strategies/sma_trend.rhai` ports the built-in `sma_trend`, and a test
+requires identical fills over 2,000 generated bars with three parameter
+sets, plus the restart property. Measured in a debug build it runs about
+1 ms a bar with a 50-bar window (the native strategy: about 0.01 ms),
+mostly copying history into the snapshot; fine at candle frequency, not
+tuned.
+
 ## Where the design is headed
 
 The scope ladder is **v1:** crypto spot, then US equities. **v2:** options

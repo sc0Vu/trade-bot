@@ -19,6 +19,8 @@ FEE          ?=
 INITIAL_CASH ?=
 
 CLI := cargo run -p cli --
+# Optional features `check` also covers, so code behind them can't rot.
+FEATURES := --features strategy/rhai,backtest/rhai
 
 .DEFAULT_GOAL := help
 .PHONY: help build test lint fmt fmt-check doc check \
@@ -34,11 +36,12 @@ help: ## List targets
 build: ## Build every crate
 	cargo build --workspace
 
-test: ## Run all tests
-	cargo test --workspace
+test: ## Run all tests (optional features on)
+	cargo test --workspace $(FEATURES)
 
-lint: ## Clippy with warnings as errors
+lint: ## Clippy with warnings as errors, without and with optional features
 	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets $(FEATURES) -- -D warnings
 
 fmt: ## Format code
 	cargo fmt --all
@@ -47,7 +50,7 @@ fmt-check: ## Fail if code is not formatted
 	cargo fmt --all --check
 
 doc: ## Build docs, failing on broken links or doc warnings
-	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps $(FEATURES)
 
 check: fmt-check lint doc test ## Definition-of-done gate: run before every commit
 

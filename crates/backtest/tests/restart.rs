@@ -359,3 +359,26 @@ async fn every_strategy_survives_a_restart() {
         run_case(c).await;
     }
 }
+
+/// The shipped `sma_trend.rhai` script restarts like the built-in: its
+/// `this` state travels through the same save / restore path.
+#[cfg(feature = "rhai")]
+#[tokio::test]
+async fn rhai_script_survives_a_restart() {
+    let params = format!(
+        "script = {:?}\ncoin = \"binance:BTCUSDT\"\nsma_period = 3\n\
+         quote_amount = \"1009.08\"\nfee = \"0.001\"\nslippage_bps = \"10\"",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../strategies/sma_trend.rhai"
+        )
+    );
+    run_case(&Case {
+        strategy: "rhai",
+        fixture: "sma_trend",
+        coins: BTC,
+        bars: 7,
+        params: Box::leak(params.into_boxed_str()),
+    })
+    .await;
+}

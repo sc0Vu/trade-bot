@@ -42,6 +42,11 @@ metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
 metrics-process = "2.4.3"
 metrics-util = { version = "0.20.4", default-features = false, features = ["debugging"] }
+# Script strategies (`strategy` feature `rhai`). `sync`: a strategy is Send.
+# `no_float` + `decimal`: every non-integer number in a script, literals
+# included, is a rust_decimal::Decimal, never f64 (invariant 1). `no_time`:
+# no clock, so a script decides the same in backtest and live.
+rhai = { version = "1.27.0", features = ["sync", "no_float", "decimal", "no_time"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "http2", "query"] }
 rust_decimal = "1.43.0"
 rust_decimal_macros = "1.40.0"

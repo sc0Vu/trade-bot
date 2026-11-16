@@ -711,7 +711,9 @@ mod tests {
 
     /// Every file in `config/examples/` is a valid config whose strategy
     /// builds from its params, and every registered strategy has one, so
-    /// the examples can't rot or fall behind the registry.
+    /// the examples can't rot or fall behind the registry. An example for a
+    /// strategy behind a feature this build lacks is skipped; `make check`
+    /// builds with the features on, so it is still tested.
     #[test]
     fn strategy_examples_load_and_cover_every_strategy() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/examples");
@@ -728,7 +730,16 @@ mod tests {
                 loaded = Some(parse(&text).unwrap_or_else(|e| panic!("{}: {e:#}", path.display())));
                 Ok(())
             });
-            let c = loaded.unwrap();
+            let mut c = loaded.unwrap();
+            if !strategy::names().contains(&c.strategy.name.as_str()) {
+                // Behind a cargo feature this build lacks (`rhai`).
+                continue;
+            }
+            // A script path is relative to the working directory, which
+            // for `run` is the repo root.
+            if let Some(toml::Value::String(script)) = c.strategy.params.get_mut("script") {
+                *script = dir.join("../..").join(&*script).display().to_string();
+            }
             let params = strategy::Params::new(c.strategy.params);
             strategy::build(&c.strategy.name, &params)
                 .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
