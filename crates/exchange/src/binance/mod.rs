@@ -12,6 +12,7 @@ mod provider;
 pub mod public;
 pub mod reconcile;
 pub mod signed;
+pub mod status;
 pub mod user_stream;
 pub mod ws;
 

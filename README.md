@@ -287,7 +287,9 @@ When a coin the bot trades is scheduled for delisting, the bot stops
 buying it at once and sells what it holds `delist_exit_hours` (default 24)
 before the delisting, whatever the strategy does. A live run reads the
 schedule from Binance every hour; Binance publishes it on its live host
-only, so testnet and demo runs never see one.
+only, so testnet and demo runs never see one. Every run also checks each
+pair's trading status every minute: while Binance has a pair halted, the
+bot sends no orders on it and multi-coin strategies carry on without it.
 
 What a run does:
 

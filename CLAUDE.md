@@ -336,6 +336,14 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `exchange.network = "live"` + `--i-understand` (`cli::gate`, all combos
    tested); fake-money run refuses `*.binance.com` URL overrides except the
    two demo hosts.
+   Pair status (`binance::status`): every network; `StatusWatch` wraps the
+   feed (inside `DelistWatch`), polls `exchangeInfo?symbols=[..]` (weight 20)
+   before first event + every `STATUS_POLL` (60 s); status ≠ `TRADING` (HALT,
+   BREAK, ..) → `TradingStatus { trading: false }`, back → `true`; changes
+   only, stamped like delistings; `-1121` (unknown symbol, e.g. delisted
+   since) → per-symbol asks, unknown = not trading (public client reports
+   venue errors as `Http` with body: feed keeps retrying 429). Checked on
+   demo 2026-11-17 (`live_trading_status`, ignored test).
    Delisting schedule (`binance::delist`): live network on Binance's own host
    only (demo/testnet 404, checked 2026-11-17) → `DelistWatch` wraps the feed,
    polls `GET /sapi/v1/spot/delist-schedule` (`SignedClient::keyed`: key, no

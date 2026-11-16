@@ -12,6 +12,7 @@ use bot_core::{
     Interval, Notional, Price, PriceBand, Qty, Symbol, Timestamp, VenueId,
 };
 use serde_json::Value;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -148,6 +149,67 @@ impl PublicClient {
         super::limits::apply_published(&self.limiter, &info);
         parse_exchange_info(&info, &self.venue)
     }
+}
+
+impl PublicClient {
+    /// Whether each of `symbols` is trading now (`exchangeInfo` status
+    /// `TRADING`; `HALT`, `BREAK` or any other status: not). One request
+    /// for all; if Binance refuses it for an unknown symbol (`-1121`,
+    /// e.g. one delisted since), each is asked on its own and an unknown
+    /// one counts as not trading.
+    pub async fn trading_status(
+        &self,
+        symbols: &[Symbol],
+    ) -> Result<HashMap<Symbol, bool>, ExchangeError> {
+        let list = |s: &[Symbol]| {
+            let names: Vec<String> = s.iter().map(|s| format!("\"{s}\"")).collect();
+            format!("[{}]", names.join(","))
+        };
+        match self
+            .get("/api/v3/exchangeInfo", &[("symbols", list(symbols))])
+            .await
+        {
+            Ok(info) => parse_status(&info),
+            Err(e) if invalid_symbol(&e) => {
+                let mut out = HashMap::new();
+                for s in symbols {
+                    match self
+                        .get("/api/v3/exchangeInfo", &[("symbol", s.to_string())])
+                        .await
+                    {
+                        Ok(info) => out.extend(parse_status(&info)?),
+                        Err(e) if invalid_symbol(&e) => {
+                            out.insert(s.clone(), false);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(out)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Binance's "Invalid symbol" (`-1121`). The public client reports venue
+/// errors as HTTP errors with the body (so the feed retries a 429 as
+/// before); this looks for the code in that body.
+fn invalid_symbol(e: &ExchangeError) -> bool {
+    matches!(e, ExchangeError::Http(m) if m.contains("\"code\":-1121"))
+}
+
+/// `exchangeInfo`'s symbols → trading or not.
+pub(crate) fn parse_status(info: &Value) -> Result<HashMap<Symbol, bool>, ExchangeError> {
+    info["symbols"]
+        .as_array()
+        .ok_or_else(|| decode("exchangeInfo: no symbols"))?
+        .iter()
+        .map(|s| {
+            let symbol: Symbol = str_field(&s["symbol"], "symbol")?;
+            let status = s["status"].as_str().ok_or_else(|| decode("status"))?;
+            Ok((symbol, status == "TRADING"))
+        })
+        .collect()
 }
 
 fn now_millis() -> i64 {
@@ -418,5 +480,37 @@ mod tests {
         assert_eq!(i.tick_size, Price::new(dec!(0.01)));
         assert_eq!(i.lot_size, Qty::new(dec!(0.00001)));
         assert_eq!(i.min_notional, Notional::new(dec!(5)));
+    }
+
+    #[test]
+    fn status_is_trading_only_when_binance_says_so() {
+        let info: Value = serde_json::from_str(
+            r#"{"symbols":[{"symbol":"BTCUSDT","status":"TRADING"},
+                           {"symbol":"FTTUSDT","status":"BREAK"},
+                           {"symbol":"XYZUSDT","status":"HALT"}]}"#,
+        )
+        .unwrap();
+        let s = parse_status(&info).unwrap();
+        assert!(s[&Symbol::new("BTCUSDT").unwrap()]);
+        assert!(!s[&Symbol::new("FTTUSDT").unwrap()]);
+        assert!(!s[&Symbol::new("XYZUSDT").unwrap()]);
+        assert!(parse_status(&serde_json::json!({})).is_err());
+    }
+
+    /// Against Binance demo (network, no key): two real pairs trading, and
+    /// an unknown one counted as not trading through the per-symbol
+    /// fallback. `cargo test -p exchange live_trading_status -- --ignored`
+    #[tokio::test]
+    #[ignore]
+    async fn live_trading_status() {
+        let c = PublicClient::new(super::super::DEMO_REST_URL);
+        let syms: Vec<Symbol> = ["BTCUSDT", "ETHUSDT", "NOPEUSDT"]
+            .iter()
+            .map(|s| Symbol::new(s).unwrap())
+            .collect();
+        let got = c.trading_status(&syms).await.unwrap();
+        assert!(got[&syms[0]]);
+        assert!(got[&syms[1]]);
+        assert!(!got[&syms[2]]);
     }
 }

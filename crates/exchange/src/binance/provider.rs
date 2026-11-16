@@ -2,6 +2,7 @@ use super::delist::{BinanceSchedule, DelistWatch};
 use super::feed::{ReconnectingFeed, RestKlines, WsConnector};
 use super::limits;
 use super::reconcile::{Orphans, Phase, Reconciled, reconcile};
+use super::status::{BinanceStatus, StatusWatch};
 use super::{
     BinanceBroker, Clock, Credentials, DEMO_REST_URL, DEMO_WS_API_URL, DEMO_WS_URL, LIVE_REST_URL,
     LIVE_WS_API_URL, LIVE_WS_URL, PublicClient, ReqwestTransport, SignedClient, SystemClock,
@@ -18,6 +19,11 @@ use std::sync::Arc;
 /// weight 100 that is under 0.03% of the minute budget, and Binance
 /// announces delistings days ahead.
 pub const DELIST_POLL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// How often every run asks for its pairs' trading status: each minute. A
+/// halt comes with no notice; at weight 20 this is under half a percent of
+/// the minute budget.
+pub const STATUS_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Which Binance spot environment to trade on. Each takes its own keys:
 /// a key from one is refused (`-2015`) by the others.
@@ -231,6 +237,15 @@ impl Provider for BinanceSpotProvider {
             self.universe.clone(),
             self.config.warmup,
             self.config.max_outage,
+        ));
+        let feed: Box<dyn MarketData> = Box::new(StatusWatch::new(
+            feed,
+            Box::new(BinanceStatus(
+                PublicClient::with_timeout(self.config.rest_url(), self.config.http_timeout)
+                    .with_limiter(self.limiter.clone()),
+            )),
+            self.universe.clone(),
+            STATUS_POLL,
         ));
         if !self.watches_delistings() {
             tracing::info!(
