@@ -8,6 +8,7 @@
 pub mod builtin;
 mod context;
 mod error;
+pub mod indicator;
 mod params;
 mod registry;
 

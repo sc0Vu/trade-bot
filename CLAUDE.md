@@ -604,6 +604,8 @@ crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (avwap, buy_and_hold, dca, donchian_breakout,
                dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
+               `indicator` (shared, window of newest bars only: ATR = simple mean of
+               true ranges, not Wilder: Wilder depends on where bounded history starts)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws;
                max (MaiCoin: public data + kline ws so far)
   engine/      shared event loop (backtest + live)

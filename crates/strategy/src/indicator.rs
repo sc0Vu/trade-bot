@@ -1,0 +1,151 @@
+//! Technical indicators over a strategy's closed-candle history.
+//!
+//! Each reads candles oldest first, ending at the current (closed) bar, as
+//! [`Context::history`](crate::Context::history) yields them, so nothing
+//! later than the current event can enter (invariant 2). Arithmetic is
+//! `Decimal` throughout (invariant 1). Every indicator is a function of a
+//! fixed window of the newest bars, never of where the history starts: a
+//! backtest, a live run and a restart's warm-up see the same value on the
+//! same bar as long as `history_len` covers the window.
+
+use bot_core::{Candle, Decimal, Price};
+
+/// True range of `c`: the largest of its high-low range and the distances
+/// from `prev_close` (the bar before's close) to its high and its low. A gap
+/// between bars counts as movement, which the high-low range alone would
+/// miss.
+pub fn true_range(c: &Candle, prev_close: Price) -> Decimal {
+    let (high, low, prev) = (c.high.get(), c.low.get(), prev_close.get());
+    (high - low)
+        .max((high - prev).abs())
+        .max((low - prev).abs())
+}
+
+/// Average true range: the mean of the last `period` true ranges, the
+/// newest being the current bar's. A price distance in quote units, never
+/// negative.
+///
+/// Needs `period + 1` candles (the oldest supplies only its close), so
+/// `history_len` must be at least that; `None` with fewer, or for a `period`
+/// of 0.
+///
+/// The simple-average form, not Wilder's smoothing
+/// (`atr = (atr_prev·(n−1) + tr) / n`, seeded once). Wilder's value
+/// depends on every bar since the seed, so it shifts with where the bounded
+/// history happens to start and takes many periods to settle; the simple
+/// average is exact from `period + 1` bars. It reacts faster to a volatility change and so differs
+/// from charting tools that use Wilder's form.
+pub fn atr<'a, I>(candles: I, period: usize) -> Option<Decimal>
+where
+    I: DoubleEndedIterator<Item = &'a Candle> + ExactSizeIterator,
+{
+    if period == 0 || candles.len() < period + 1 {
+        return None;
+    }
+    let newest: Vec<&Candle> = candles.rev().take(period + 1).collect();
+    // Newest first: each pair is (bar, the bar before it).
+    let sum: Decimal = newest
+        .windows(2)
+        .map(|w| true_range(w[0], w[1].close))
+        .sum();
+    Some(sum / Decimal::from(period))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bot_core::{CandleSpec, Interval, Notional, Qty, Timestamp};
+    use rust_decimal_macros::dec;
+
+    fn bar(i: i64, o: &str, h: &str, l: &str, c: &str) -> Candle {
+        let p = |s: &str| s.parse::<Price>().unwrap();
+        Candle::new(CandleSpec {
+            instrument: "binance:BTCUSDT".parse().unwrap(),
+            interval: Interval::H1,
+            open_time: Timestamp::from_millis(i * 3_600_000),
+            close_time: Timestamp::from_millis(i * 3_600_000 + 3_599_999),
+            open: p(o),
+            high: p(h),
+            low: p(l),
+            close: p(c),
+            volume: Qty::new(dec!(1)),
+            quote_volume: Notional::new(p(c).get()),
+        })
+        .unwrap()
+    }
+
+    fn px(s: &str) -> Price {
+        s.parse().unwrap()
+    }
+
+    /// Each of the three terms can be the largest.
+    #[test]
+    fn true_range_takes_the_widest_of_range_and_gaps() {
+        // Prev close inside the bar 101..105: range 4, gaps 2 and 2.
+        assert_eq!(
+            true_range(&bar(1, "103", "105", "101", "104"), px("103")),
+            dec!(4)
+        );
+        // Gap up: prev 95, bar 100..102: range 2, high-prev 7, low-prev 5.
+        assert_eq!(
+            true_range(&bar(1, "100", "102", "100", "101"), px("95")),
+            dec!(7)
+        );
+        // Gap down: prev 110, bar 100..102: range 2, |102-110| 8, |100-110| 10.
+        assert_eq!(
+            true_range(&bar(1, "101", "102", "100", "101"), px("110")),
+            dec!(10)
+        );
+        // No movement at all.
+        assert_eq!(
+            true_range(&bar(1, "100", "100", "100", "100"), px("100")),
+            dec!(0)
+        );
+    }
+
+    /// period 3 over 5 bars uses only the newest 4: bar 0's huge range never
+    /// counts (only bar 1's close does, as bar 2's previous close).
+    ///   bar 2: prev 100, 99..103   -> max(4, 3, 1)  = 4
+    ///   bar 3: prev 102, 101..108  -> max(7, 6, 1)  = 7
+    ///   bar 4: prev 107, 100..104  -> max(4, 3, 7)  = 7
+    ///   ATR = (4 + 7 + 7) / 3 = 6
+    #[test]
+    fn averages_the_last_period_true_ranges() {
+        let h = [
+            bar(0, "100", "200", "50", "100"),
+            bar(1, "100", "101", "99", "100"),
+            bar(2, "100", "103", "99", "102"),
+            bar(3, "102", "108", "101", "107"),
+            bar(4, "104", "104", "100", "101"),
+        ];
+        assert_eq!(atr(h.iter(), 3), Some(dec!(6)));
+        // period 4 reaches bar 1: prev 100, 99..101 -> max(2, 1, 1) = 2,
+        // so (2 + 4 + 7 + 7) / 4 = 5. Bar 0 still only lends its close.
+        assert_eq!(atr(h.iter(), 4), Some(dec!(5)));
+    }
+
+    /// Division stays exact to Decimal's precision: (1 + 1 + 2) / 3.
+    #[test]
+    fn a_non_terminating_average_is_decimal_not_float() {
+        let h = [
+            bar(0, "10", "10", "10", "10"),
+            bar(1, "10", "11", "10", "11"),
+            bar(2, "11", "12", "11", "12"),
+            bar(3, "12", "14", "12", "14"),
+        ];
+        assert_eq!(atr(h.iter(), 3), Some(dec!(4) / dec!(3)));
+    }
+
+    #[test]
+    fn needs_period_plus_one_candles() {
+        let h = [
+            bar(0, "100", "101", "99", "100"),
+            bar(1, "100", "101", "99", "100"),
+            bar(2, "100", "101", "99", "100"),
+        ];
+        assert_eq!(atr(h.iter(), 3), None, "3 candles give 2 true ranges");
+        assert_eq!(atr(h.iter(), 2), Some(dec!(2)));
+        assert_eq!(atr(h.iter(), 0), None);
+        assert_eq!(atr([].iter(), 1), None);
+    }
+}
