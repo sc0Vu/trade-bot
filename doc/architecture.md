@@ -238,7 +238,12 @@ All figures are exact decimals:
   The report keeps its own cash ledger by replaying fills.
 - **Maximum drawdown** is a fraction of the running peak, which starts at
   the initial cash.
-- **`min_cash`** is the lowest cash after any fill. The report's ledger is
+- **`min_cash`** is the lowest cash after the fills of any one instant.
+  Fills with the same timestamp (several coins at one open) count
+  together: the broker lets a buy spend what a market sell at the same
+  open raises, as live, where the sell goes first and fills at once, so
+  cash read between two simultaneous fills would depend only on which
+  coin's candle the backtest replays first. The report's ledger is
   independent of the broker's balance, so a negative value would expose a
   broker that let an overspend through.
 - **A closed trade** is a sell, and it counts as a win if its realized P&L

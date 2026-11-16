@@ -24,10 +24,16 @@ pub struct Report {
     pub final_equity: Notional,
     /// Profit closed out by sells, after fees (average-cost accounting).
     pub realized_pnl: Notional,
-    /// Lowest cash balance after any fill, starting at `initial_cash`.
-    /// The backtest broker refuses buys it can't cover, so this stays at
-    /// or above zero; negative would mean quote spent that wasn't there,
-    /// a broker bug this independent ledger exists to expose.
+    /// Lowest cash balance after the fills of any one instant, starting at
+    /// `initial_cash`. Fills sharing a timestamp are simultaneous (one
+    /// open, several coins), so cash is read after all of them: the broker
+    /// lets a buy spend what a market sell filling at the same open raises
+    /// (a rotation, as live, where the sell is sent first and fills at
+    /// once), and which coin's candle the backtest happens to replay first
+    /// must not decide the figure. The broker refuses buys it can't cover,
+    /// so this stays at or above zero; negative would mean quote spent
+    /// that wasn't there, a broker bug this independent ledger exists to
+    /// expose.
     pub min_cash: Notional,
     /// Largest fall from a running equity peak, as a fraction of that peak
     /// (`0.25` = 25%). The peak starts at `initial_cash`.
@@ -77,6 +83,9 @@ impl Report {
                 if let Some(inst) = by_id.get(&f.instrument) {
                     ledger.apply(f, inst);
                 }
+                if fills.peek().is_none_or(|next| next.ts != f.ts) {
+                    ledger.instant_done();
+                }
             }
             while i < sorted.len() && sorted[i].close_time == t {
                 ledger
@@ -93,6 +102,7 @@ impl Report {
                 ledger.apply(f, inst);
             }
         }
+        ledger.instant_done();
 
         let realized_pnl = ledger.positions.values().map(Position::realized_pnl).sum();
         let final_equity = ledger.equity(&by_id);
@@ -149,6 +159,10 @@ impl Ledger {
                 }
             }
         }
+    }
+
+    /// Every fill of one instant is applied: cash as of now counts.
+    fn instant_done(&mut self) {
         self.min_cash = self.min_cash.min(self.cash);
     }
 
@@ -361,6 +375,35 @@ mod tests {
             Interval::H1,
         );
         assert_eq!(r.min_cash, Notional::new(dec!(-1000)));
+    }
+
+    /// Holding 10 @ 100 with cash 0, one open fills a buy of 5 @ 100 and a
+    /// sell of the 10 @ 100 (a rotation into another coin, here one coin
+    /// for brevity) in that order. Between them cash is -500, but they are
+    /// one instant: cash goes 0 -> 500, never below 0.
+    #[test]
+    fn fills_of_one_instant_count_together() {
+        let id = btcusdt().id.clone();
+        let candles: Vec<Candle> = (0..3)
+            .map(|i| candle(&id, i, ["100", "100", "100", "100"]))
+            .collect();
+        let run = RunReport {
+            fills: vec![
+                fill(Side::Buy, dec!(10), dec!(100), dec!(0), HOUR),
+                fill(Side::Buy, dec!(5), dec!(100), dec!(0), 2 * HOUR),
+                fill(Side::Sell, dec!(10), dec!(100), dec!(0), 2 * HOUR),
+            ],
+            ..RunReport::default()
+        };
+        let r = Report::compute(
+            &run,
+            &candles,
+            &[btcusdt()],
+            Notional::new(dec!(1000)),
+            Interval::H1,
+        );
+        assert_eq!(r.min_cash, Notional::ZERO);
+        assert_eq!(r.final_equity, Notional::new(dec!(1000)));
     }
 
     #[test]

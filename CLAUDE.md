@@ -421,8 +421,9 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `engine::run`; `run_backtest` → `Report` (all `Decimal`). Report keeps own
    cash ledger (broker has none) replaying fills vs candles; equity = cash +
    holdings at latest close, once per close time. Max drawdown = fraction of
-   running peak (starts at initial cash). `min_cash` = lowest cash after any
-   fill; report ledger independent of broker → negative = broker let overspend through (bug).
+   running peak (starts at initial cash). `min_cash` = lowest cash after each
+   instant's fills (same ts = simultaneous: rotation buy may precede its
+   funding sell in replay order); report ledger independent of broker → negative = broker let overspend through (bug).
    `BacktestProvider` takes `initial_cash` = PaperBroker balance (first
    instrument's quote; other-quoted orders refused) = report start. Closed trade = sell; win = realized
    delta > 0. Sharpe = mean/sample-sd of per-bar equity returns × √(bars/yr,
