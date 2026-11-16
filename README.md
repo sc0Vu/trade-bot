@@ -212,10 +212,11 @@ signals from them. The same rules hold as for compiled strategies:
 
 `strategies/sma_trend.rhai` is a port of `sma_trend`. A test requires
 identical fills to the built-in, and a 2021–2026 daily BTC backtest gives the
-same report. Scripts are slower: that backtest took 3.1 s against 0.1 s in a
-debug build, most of it copying 500 bars of history into each call. That is
-fine for candle intervals, but don't expect native speed. The full API is
-documented in `crates/strategy/src/script/rhai.rs`.
+same report. Scripts are slower: in a release build, six months of 1-minute
+bars take about 12 s against 3 s for the built-in (about 35 µs a bar). Ask
+for the bars you need with `ctx.history(id, n)` rather than the whole
+history. That is fine for candle intervals, but don't expect native speed.
+The full API is documented in `crates/strategy/src/script/rhai.rs`.
 
 ## Backtesting
 

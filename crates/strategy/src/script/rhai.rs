@@ -44,7 +44,9 @@
 //! `ctx.instrument(id)` (`()` outside the universe),
 //! `ctx.position(id)`, `ctx.open_orders(id)`, `ctx.cancelling_orders(id)`,
 //! `ctx.history(id)` (closed candles, oldest first, ending at the current
-//! one), `ctx.last_candle(id)` (`()` if none). Ids are strings
+//! one), `ctx.history(id, n)` (only the newest `n` of them: prefer it, as
+//! building the whole history costs a script time in proportion to
+//! `history_len` on every call), `ctx.last_candle(id)` (`()` if none). Ids are strings
 //! (`"binance:BTCUSDT"`), sides `"buy"` / `"sell"`, times ms integers.
 //!
 //! - Candle: `instrument open_time close_time open high low close volume
@@ -93,7 +95,7 @@ use rhai::{
     AST, Array, CallFnOptions, Dynamic, Engine, EvalAltResult, INT, ImmutableString, Map, Scope,
 };
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 const NAME: &str = "rhai";
@@ -121,6 +123,10 @@ pub struct RhaiStrategy {
     /// `this` as JSON after the last hook: what `save_state` hands out.
     saved: Value,
     fault: Option<String>,
+    /// The engine's history per instrument as shared candles, brought up to
+    /// date before each hook by appending only what is new, so a hook call
+    /// costs no copy of the whole history.
+    mirror: HashMap<InstrumentId, VecDeque<Arc<Candle>>>,
 }
 
 inventory::submit! {
@@ -153,6 +159,7 @@ impl RhaiStrategy {
             this: Dynamic::from_map(Map::new()),
             saved: Value::Object(Default::default()),
             fault: None,
+            mirror: HashMap::new(),
         };
         if s.has("check_params", 1) {
             let args = vec![Dynamic::from_map((*s.params).clone())];
@@ -179,8 +186,44 @@ impl RhaiStrategy {
         self.fault = Some(reason);
     }
 
-    fn view(&self, ctx: &Context) -> Dynamic {
-        Dynamic::from(ScriptContext::new(ctx, &self.params))
+    fn view(&mut self, ctx: &Context) -> Dynamic {
+        self.sync(ctx);
+        Dynamic::from(ScriptContext::new(ctx, &self.params, &self.mirror))
+    }
+
+    /// Brings [`mirror`](Self::mirror) up to `ctx`'s history: appends the
+    /// candles newer than its last, drops what the engine evicted, and
+    /// rebuilds it whole if the two still disagree at either end.
+    fn sync(&mut self, ctx: &Context) {
+        for inst in ctx.instruments() {
+            let id = &inst.id;
+            let m = self.mirror.entry(id.clone()).or_default();
+            let last = m.back().map(|c| c.close_time);
+            let new: Vec<Arc<Candle>> = ctx
+                .history(id)
+                .rev()
+                .take_while(|c| last.is_none_or(|t| c.close_time > t))
+                .map(|c| Arc::new(c.clone()))
+                .collect();
+            m.extend(new.into_iter().rev());
+            let len = ctx.history(id).len();
+            while m.len() > len {
+                m.pop_front();
+            }
+            let ends = |h: &VecDeque<Arc<Candle>>| {
+                (
+                    h.front().map(|c| c.close_time),
+                    h.back().map(|c| c.close_time),
+                )
+            };
+            let engine = (
+                ctx.history(id).next().map(|c| c.close_time),
+                ctx.last_candle(id).map(|c| c.close_time),
+            );
+            if m.len() != len || ends(m) != engine {
+                *m = ctx.history(id).map(|c| Arc::new(c.clone())).collect();
+            }
+        }
     }
 
     /// Calls `hook` if the script defines it and nothing has failed yet,
@@ -264,29 +307,41 @@ impl Strategy for RhaiStrategy {
     }
 
     fn on_start(&mut self, ctx: &mut Context) {
-        let args = vec![self.view(ctx)];
+        let view = self.view(ctx);
+        let args = vec![view];
         self.submit_from(ctx, "on_start", args);
     }
 
     fn on_candle(&mut self, ctx: &mut Context, c: &Candle) -> Vec<Signal> {
-        let args = vec![self.view(ctx), Dynamic::from(c.clone())];
+        let view = self.view(ctx);
+        let bar = self
+            .mirror
+            .get(&c.instrument)
+            .and_then(|m| m.back())
+            .filter(|b| b.close_time == c.close_time)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(c.clone()));
+        let args = vec![view, Dynamic::from(bar)];
         let returned = self.call("on_candle", args);
         self.signals("on_candle", returned)
     }
 
     fn on_fill(&mut self, ctx: &mut Context, f: &Fill) {
-        let args = vec![self.view(ctx), Dynamic::from(f.clone())];
+        let view = self.view(ctx);
+        let args = vec![view, Dynamic::from(f.clone())];
         self.submit_from(ctx, "on_fill", args);
     }
 
     fn on_order(&mut self, ctx: &mut Context, o: &Order) {
-        let args = vec![self.view(ctx), Dynamic::from(o.clone())];
+        let view = self.view(ctx);
+        let args = vec![view, Dynamic::from(o.clone())];
         self.submit_from(ctx, "on_order", args);
     }
 
     fn on_rejected(&mut self, ctx: &mut Context, signal: &Signal, reason: &str) {
+        let view = self.view(ctx);
         let args = vec![
-            self.view(ctx),
+            view,
             Dynamic::from(signal.clone()),
             Dynamic::from(reason.to_owned()),
         ];
@@ -312,7 +367,8 @@ impl Strategy for RhaiStrategy {
         // All or nothing: the script works on a copy, kept only if it
         // accepts.
         let mut candidate = self.this.clone();
-        let args = vec![saved, self.view(ctx)];
+        let view = self.view(ctx);
+        let args = vec![saved, view];
         let opts = CallFnOptions::new()
             .eval_ast(false)
             .rewind_scope(true)
@@ -380,9 +436,9 @@ fn engine() -> Engine {
 
 // ---------------------------------------------------------------- ctx
 
-/// What a script sees of [`Context`], copied before each hook call: a
+/// What a script sees of [`Context`], built before each hook call: a
 /// script holds no reference into the engine, and nothing it does to this
-/// reaches the books.
+/// reaches the books. Candles are shared (`Arc`), not copied.
 #[derive(Clone)]
 pub struct ScriptContext(Arc<View>);
 
@@ -393,11 +449,15 @@ struct View {
     positions: HashMap<InstrumentId, Position>,
     open: Vec<Order>,
     cancelling: Vec<Order>,
-    history: HashMap<InstrumentId, Vec<Candle>>,
+    history: HashMap<InstrumentId, Vec<Arc<Candle>>>,
 }
 
 impl ScriptContext {
-    fn new(ctx: &Context, params: &Arc<Map>) -> Self {
+    fn new(
+        ctx: &Context,
+        params: &Arc<Map>,
+        mirror: &HashMap<InstrumentId, VecDeque<Arc<Candle>>>,
+    ) -> Self {
         let instruments: Vec<Instrument> = ctx.instruments().cloned().collect();
         let mut view = View {
             now: ctx.now(),
@@ -413,8 +473,11 @@ impl ScriptContext {
             view.open.extend(ctx.open_orders(&i.id).cloned());
             view.cancelling
                 .extend(ctx.cancelling_orders(&i.id).cloned());
-            view.history
-                .insert(i.id.clone(), ctx.history(&i.id).cloned().collect());
+            let shared = mirror
+                .get(&i.id)
+                .map(|m| m.iter().cloned().collect())
+                .unwrap_or_default();
+            view.history.insert(i.id.clone(), shared);
         }
         view.instruments = instruments;
         Self(Arc::new(view))
@@ -521,6 +584,21 @@ fn register_context(e: &mut Engine) {
             },
         )
         .register_fn(
+            "history",
+            |c: &mut ScriptContext, id: &str, n: INT| -> RhaiResult<Array> {
+                let id = instrument_id(id)?;
+                let n = usize::try_from(n)
+                    .map_err(|_| format!("history(id, n): n must be >= 0, got {n}"))?;
+                Ok(c.0.history.get(&id).map_or_else(Array::new, |h| {
+                    h[h.len().saturating_sub(n)..]
+                        .iter()
+                        .cloned()
+                        .map(Dynamic::from)
+                        .collect()
+                }))
+            },
+        )
+        .register_fn(
             "last_candle",
             |c: &mut ScriptContext, id: &str| -> RhaiResult<Dynamic> {
                 let id = instrument_id(id)?;
@@ -540,16 +618,17 @@ fn opt_dec(d: Option<Decimal>) -> Dynamic {
 }
 
 fn register_values(e: &mut Engine) {
-    e.register_type_with_name::<Candle>("Candle")
-        .register_get("instrument", |c: &mut Candle| c.instrument.to_string())
-        .register_get("open_time", |c: &mut Candle| ms(c.open_time))
-        .register_get("close_time", |c: &mut Candle| ms(c.close_time))
-        .register_get("open", |c: &mut Candle| c.open.get())
-        .register_get("high", |c: &mut Candle| c.high.get())
-        .register_get("low", |c: &mut Candle| c.low.get())
-        .register_get("close", |c: &mut Candle| c.close.get())
-        .register_get("volume", |c: &mut Candle| c.volume.get())
-        .register_get("quote_volume", |c: &mut Candle| c.quote_volume.get());
+    // Shared, so handing a script the history copies no candle.
+    e.register_type_with_name::<Arc<Candle>>("Candle")
+        .register_get("instrument", |c: &mut Arc<Candle>| c.instrument.to_string())
+        .register_get("open_time", |c: &mut Arc<Candle>| ms(c.open_time))
+        .register_get("close_time", |c: &mut Arc<Candle>| ms(c.close_time))
+        .register_get("open", |c: &mut Arc<Candle>| c.open.get())
+        .register_get("high", |c: &mut Arc<Candle>| c.high.get())
+        .register_get("low", |c: &mut Arc<Candle>| c.low.get())
+        .register_get("close", |c: &mut Arc<Candle>| c.close.get())
+        .register_get("volume", |c: &mut Arc<Candle>| c.volume.get())
+        .register_get("quote_volume", |c: &mut Arc<Candle>| c.quote_volume.get());
 
     e.register_type_with_name::<Position>("Position")
         .register_get("instrument", |p: &mut Position| p.instrument().to_string())
@@ -1081,6 +1160,8 @@ mod tests {
                        held: ctx.position(c.instrument).qty, flat: ctx.position(c.instrument).is_flat,
                        ids: ctx.instruments, coin: ctx.params.coin, other: ctx.instrument("binance:ETHUSDT"),
                        open: ctx.open_orders(c.instrument).len(),
+                       last2: ctx.history(c.instrument, 2).map(|b| b.close),
+                       all: ctx.history(c.instrument, 99).len(),
                    };
                }"#,
             "coin = \"x\"",
@@ -1105,6 +1186,7 @@ mod tests {
                 "now": 7_199_999, "n": 2, "first": {"$decimal": "100"}, "last": {"$decimal": "101"},
                 "held": {"$decimal": "0.5"}, "flat": false, "ids": ["binance:BTCUSDT"],
                 "coin": "x", "other": null, "open": 0,
+                "last2": [{"$decimal": "100"}, {"$decimal": "101"}], "all": 2,
             })
         );
     }

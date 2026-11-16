@@ -233,8 +233,10 @@ array), `check_params(params)` at build (throw = refuse), `restore(saved,
 ctx)` → `()` take | string refuse (no `restore` → always fresh). `this` = one
 state map, encoded to JSON after every hook (decimal = `{"$decimal": s}`;
 unsavable value = fault in backtest too), saved in envelope with script
-SHA-256 (edited script → fresh). `ctx` = Arc snapshot of `Context` copied per
-hook (history cloned: debug build ~1 ms/bar at 50-bar window, unoptimized).
+SHA-256 (edited script → fresh). `ctx` = Arc snapshot of `Context` per hook;
+candles shared via an `Arc` mirror synced incrementally (rebuilt if ends
+disagree); `ctx.history(id, n)` = newest n (whole history costs O(history_len)
+per call). Release, 265k 1m bars: native 2.9 s, script 11.8 s (~35 µs/bar).
 Any script error → `Strategy::fault` → run stops. Shared boundary in
 `script/mod.rs` (source, params split, envelope) for Lua/WASM later.
 Reference port `strategies/sma_trend.rhai` = built-in's fills exactly

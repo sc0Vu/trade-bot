@@ -38,11 +38,12 @@ fn on_candle(ctx, c) {
     // An order still working would be doubled by deciding again.
     if c.instrument != coin || ctx.open_orders(coin).len() > 0 { return; }
 
-    let hist = ctx.history(coin);
+    // Only the newest n bars: cheaper than the whole history.
     let n = p.sma_period;
+    let hist = ctx.history(coin, n);
     if hist.len() < n { return; }
     let sum = 0;
-    for i in 0..n { sum += hist[hist.len() - 1 - i].close; }
+    for i in 0..n { sum += hist[n - 1 - i].close; }
     let sma = sum / n;
 
     // Units held, if a sell of them passes the venue's filters; otherwise

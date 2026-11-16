@@ -570,10 +570,13 @@ each is kept:
 
 `strategies/sma_trend.rhai` ports the built-in `sma_trend`, and a test
 requires identical fills over 2,000 generated bars with three parameter
-sets, plus the restart property. Measured in a debug build it runs about
-1 ms a bar with a 50-bar window (the native strategy: about 0.01 ms),
-mostly copying history into the snapshot; fine at candle frequency, not
-tuned.
+sets, plus the restart property. Speed, measured in a release build on six
+months of 1m ETH bars (265,000): native 2.9 s, the script 11.8 s (about
+35 µs a bar, the interpreter's), a no-op script 2.2 s. Candles reach the
+script shared, not copied, and `ctx.history(id, n)` hands over only the
+newest `n`, so the cost doesn't grow with `history_len` (building the whole
+history every bar at `history_len` 500 took 30 s). Fine at candle
+frequency.
 
 ## Where the design is headed
 
