@@ -146,6 +146,12 @@ skew, rate limits, decode failures, and transport errors, where a submit may
 have reached the venue and its state is unknown. A run that kept going
 through those would look healthy while trading nothing.
 
+A strategy can also stop the run: `Strategy::fault` reports a defect it
+found in itself, such as a script that raised an error or ran past its
+budget. The engine checks it after every hook call, before routing, so
+nothing the failing call queued reaches the broker, and the run stops with
+`StrategyFault`. A live run then closes out as on any error.
+
 Pinned by `crates/backtest/tests/lookahead.rs`: for every cut point *t*,
 all candles after *t* are rewritten, and every fill and rejection up to *t*'s
 close must be identical. It runs for `ratio_hop` and `sma_trend`.

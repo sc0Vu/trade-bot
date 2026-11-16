@@ -90,6 +90,18 @@ pub trait Strategy: Send {
     /// event's.
     fn on_order(&mut self, _ctx: &mut Context, _order: &Order) {}
 
+    /// Why the strategy can no longer decide, if it can't: a defect it
+    /// found in itself, such as a script that raised a runtime error or
+    /// ran past its budget. The engine checks this after every hook call
+    /// and before routing signals; `Some` stops the run with
+    /// `EngineError::StrategyFault`, and signals queued since the last
+    /// check are never routed. A live run then closes out like on any
+    /// error (cancels working orders, reconciles), so a broken strategy
+    /// never trades on silently. `None` (the default): healthy.
+    fn fault(&self) -> Option<String> {
+        None
+    }
+
     /// Called when a signal (submit or cancel) is refused, by risk or by
     /// the venue refusing that one order (`-2010` insufficient balance, a
     /// filter), with the reason. Not called for errors that stop the run.

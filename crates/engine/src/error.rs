@@ -17,4 +17,8 @@ pub enum EngineError {
     /// The provider can't trade this instrument's asset class.
     #[error("provider does not serve the asset class of {0}")]
     UnsupportedAssetClass(InstrumentId),
+    /// The strategy reported it can no longer decide (`Strategy::fault`),
+    /// e.g. a script runtime error. Nothing it queued since was routed.
+    #[error("strategy failed: {0}")]
+    StrategyFault(String),
 }

@@ -145,8 +145,10 @@ async fn run_inner<P: Provider + ?Sized>(
             Err(e) => tracing::warn!(error = %e, "saved strategy state discarded; starting fresh"),
         }
     }
+    check_fault(strategy)?;
     let signals = driver::take_signals(&mut ctx);
     run.route(&mut ctx, strategy, signals).await?;
+    check_fault(strategy)?;
     // Fills made while the bot was down reach `on_fill` with the first
     // event the strategy decides on, once its history has warmed up (a
     // follow-up order may need a last close).
@@ -202,9 +204,13 @@ async fn run_inner<P: Provider + ?Sized>(
             driver::push_candle(&mut ctx, c.clone());
         }
         let returned = strategy.on_event(&mut ctx, &event);
+        // Covers this event's `on_fill` calls too: nothing they or
+        // `on_event` queued is routed from a strategy that failed.
+        check_fault(strategy)?;
         let mut signals = driver::take_signals(&mut ctx);
         signals.extend(returned);
         run.route(&mut ctx, strategy, signals).await?;
+        check_fault(strategy)?;
 
         if let Some(o) = observer.as_deref_mut() {
             o.on_snapshot(&Snapshot {
@@ -234,6 +240,14 @@ async fn run_inner<P: Provider + ?Sized>(
         .map(|id| run.broker.position(id))
         .collect();
     Ok(run.report)
+}
+
+/// Stops the run if the strategy reported a fault (`Strategy::fault`).
+fn check_fault(strategy: &dyn Strategy) -> Result<(), EngineError> {
+    match strategy.fault() {
+        Some(reason) => Err(EngineError::StrategyFault(reason)),
+        None => Ok(()),
+    }
 }
 
 struct Run<'a> {
@@ -1021,6 +1035,80 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(s.log[2], "refused: venue error -2010: test");
+    }
+
+    /// A strategy that reports a fault stops the run, and nothing it
+    /// queued in the failing call reaches the broker: c0's buy is placed,
+    /// c1's buy (queued in the same call that failed) never is.
+    #[tokio::test]
+    async fn a_strategy_fault_stops_the_run_before_routing() {
+        #[derive(Default)]
+        struct Breaks {
+            bars: usize,
+            placed: Vec<String>,
+            fault: Option<String>,
+        }
+        impl Strategy for Breaks {
+            fn name(&self) -> &str {
+                "breaks"
+            }
+            fn on_candle(&mut self, _: &mut Context, c: &bot_core::Candle) -> Vec<Signal> {
+                self.bars += 1;
+                if self.bars == 2 {
+                    self.fault = Some("boom".into());
+                }
+                vec![Signal::Submit {
+                    instrument: c.instrument.clone(),
+                    side: bot_core::Side::Buy,
+                    size: bot_core::Size::Base(Qty::new(dec!(1))),
+                    kind: bot_core::OrderKind::Market,
+                }]
+            }
+            fn on_order(&mut self, _: &mut Context, o: &Order) {
+                self.placed.push(o.id.to_string());
+            }
+            fn fault(&self) -> Option<String> {
+                self.fault.clone()
+            }
+        }
+        let provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        let mut s = Breaks::default();
+        let err = run(&provider, &mut s, Params::default(), &config())
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, EngineError::StrategyFault(r) if r == "boom"));
+        assert_eq!(s.placed, vec!["o-1"]);
+        assert_eq!(s.bars, 2, "no event after the fault");
+    }
+
+    /// A fault in `on_start` stops the run before its signals are routed.
+    #[tokio::test]
+    async fn a_fault_at_start_routes_nothing() {
+        struct BadStart;
+        impl Strategy for BadStart {
+            fn name(&self) -> &str {
+                "bad_start"
+            }
+            fn on_start(&mut self, ctx: &mut Context) {
+                ctx.submit(Signal::Submit {
+                    instrument: btcusdt().id.clone(),
+                    side: bot_core::Side::Buy,
+                    size: bot_core::Size::Base(Qty::new(dec!(1))),
+                    kind: bot_core::OrderKind::Market,
+                });
+            }
+            fn on_order(&mut self, _: &mut Context, _: &Order) {
+                panic!("an order was routed from a failed strategy");
+            }
+            fn fault(&self) -> Option<String> {
+                Some("bad script".into())
+            }
+        }
+        let provider = TestProvider::new(three_candles(), dec!(0), dec!(0));
+        let err = run(&provider, &mut BadStart, Params::default(), &config())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::StrategyFault(_)));
     }
 
     /// An order the venue hasn't confirmed cancelled yet leaves

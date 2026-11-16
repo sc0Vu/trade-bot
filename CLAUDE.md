@@ -206,7 +206,9 @@ refuse state contradicting books; refused → fresh + warning.
 open orders, last candles, counts) after each event; `run` = no observer, no
 snapshot cost. Observer can't change run, must return fast. Rejected signal (risk, or venue refusing that one order:
 `ExchangeError::is_order_rejection`) → `RunReport`, not fatal; other broker
-errors (auth `-2015`, transport, clock, rate limit) stop run. Order ids deterministic (`o-1`, `o-2`, …).
+errors (auth `-2015`, transport, clock, rate limit) stop run. `Strategy::fault() -> Option<String>`
+(default `None`; script runtime error / budget) checked after each hook, before routing →
+`EngineError::StrategyFault`, nothing it queued routed. Order ids deterministic (`o-1`, `o-2`, …).
 
 ## Strategy import — the Rust-specific problem
 Python imports `.py` at runtime; Rust compiled, so "drop in strategy" has
