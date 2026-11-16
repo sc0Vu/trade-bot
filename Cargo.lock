@@ -431,10 +431,12 @@ dependencies = [
  "exchange",
  "rust_decimal",
  "rust_decimal_macros",
+ "serde",
  "serde_json",
  "strategy",
  "thiserror",
  "tokio",
+ "toml 1.1.8+spec-1.1.0",
  "tracing",
 ]
 

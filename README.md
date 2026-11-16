@@ -235,6 +235,15 @@ Like a live run, a backtest first replays the last `--history-len` bars
 history; fetch from earlier than `--from` to have them (it warns if they
 aren't cached).
 
+Delistings are replayed without hindsight. Announced ones come from
+`config/delistings/binance.toml` (announcement time, delisting time,
+source) and reach the strategy when they were announced; the engine sells
+before the delisting as it would live. A series that just stops (a halt
+nobody announced, like LUNA's or FTT's in 2022), or a gap longer than
+`--max-gap-hours` (48), is cut there with no notice: what was held stays
+at its last price, as it did for real holders. A symbol the venue later
+reused for another coin is never spliced onto the first.
+
 `--venue max` does the same against MAX (MaiCoin): `max:BTCUSDT`,
 `max:BTCTWD` and the other MAX markets, from 1m bars up (MAX has no 1s
 klines). Pass your MAX fee rate with `--fee` (the `0.0015` below is a

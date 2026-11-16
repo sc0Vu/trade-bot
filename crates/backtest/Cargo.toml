@@ -16,9 +16,11 @@ bot-core.workspace = true
 engine.workspace = true
 exchange.workspace = true
 rust_decimal = { workspace = true, features = ["maths"] }
+serde.workspace = true
 serde_json.workspace = true
 strategy.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

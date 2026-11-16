@@ -434,6 +434,15 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `Backfill` (`BacktestProvider::warm_up_from_cache` / `with_warmup`;
    fewer cached → stderr warning); report starts at `--from`. Pinned by
    `tests/warmup.rs` (start at t3 + warm-up = fills of start at t0).
+   Delistings without lookahead (`backtest::listing`): announced ones from
+   committed `config/delistings/<venue>.toml` (UTC `announced`, `at`,
+   required `source`; replayed at announcement, candles from `at` dropped:
+   reused symbol); unannounced stops: any gap > `--max-gap-hours` (48) or
+   early end → cut, `Delisting { at: last close + 1 ms }` at that close (no
+   notice, holding stuck at last price; LUNA classic/2.0 splice, FTT halt,
+   SRM end). Never inferred early from where data ends. `--delist-exit-hours`
+   = engine exit. PaperBroker on Delisting: from `at` cancels the coin's
+   orders, refuses new (as venue). Pinned by `tests/delisting.rs`.
    `BacktestProvider` = cached feed + PaperBroker(NextOpenFillModel), through
    `engine::run`; `run_backtest` → `Report` (all `Decimal`). Report keeps own
    cash ledger (broker has none) replaying fills vs candles; equity = cash +

@@ -204,6 +204,16 @@ the first N bars of every backtest, in cash, which flattered it in a
 falling market and handicapped it in a rising one. The report starts at
 the backtest's start; warm-up bars are no part of it.
 
+A backtest learns of a delisting when a live run would have, never from
+where its data ends: that would sell a coin before a halt nobody had
+announced. Announced delistings come from a committed reference file with
+their sources and replay at the announcement. A series that stops (a gap
+longer than `--max-gap-hours`, or an early end) is cut and delisted on the
+spot with no notice, so its holding stays at its last price; this also
+keeps a reused symbol (LUNAUSDT after LUNA's collapse) from splicing two
+coins. The paper broker then does what the venue does: cancels the coin's
+orders and refuses new ones.
+
 The paper broker and the Binance broker refuse the same things before
 submitting (unknown instrument, reused id, selling more than the holding
 minus pending sells), so a strategy sees identical refusals in both.

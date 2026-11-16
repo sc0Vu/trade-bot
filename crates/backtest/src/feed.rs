@@ -28,14 +28,33 @@ impl KlineFeed {
     /// as a live run warms up before its first decision: backfilled bars
     /// join the strategy's history but are no decision, and the broker
     /// doesn't settle against them.
-    pub fn with_warmup(mut warmup: Vec<Candle>, mut candles: Vec<Candle>) -> Self {
+    pub fn with_warmup(warmup: Vec<Candle>, candles: Vec<Candle>) -> Self {
+        Self::with_events(warmup, candles, Vec::new())
+    }
+
+    /// [`with_warmup`](Self::with_warmup), plus `extra` events (delistings)
+    /// merged in by time. At equal times an extra event comes before the
+    /// candles, so a decision at that close already knows of it.
+    pub fn with_events(
+        mut warmup: Vec<Candle>,
+        mut candles: Vec<Candle>,
+        extra: Vec<MarketEvent>,
+    ) -> Self {
         sort(&mut warmup);
         sort(&mut candles);
+        let bars = warmup
+            .into_iter()
+            .map(MarketEvent::Backfill)
+            .chain(candles.into_iter().map(MarketEvent::Candle))
+            .map(|e| (1, e));
+        let mut events: Vec<(u8, MarketEvent)> =
+            extra.into_iter().map(|e| (0, e)).chain(bars).collect();
+        // Stable: bars keep their (close time, id) order among themselves.
+        events.sort_by_key(|(rank, e)| (e.ts(), *rank));
         Self {
-            events: warmup
+            events: events
                 .into_iter()
-                .map(MarketEvent::Backfill)
-                .chain(candles.into_iter().map(MarketEvent::Candle))
+                .map(|(_, e)| e)
                 .collect::<Vec<_>>()
                 .into_iter(),
         }

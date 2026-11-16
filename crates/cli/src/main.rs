@@ -13,7 +13,7 @@ mod telemetry;
 
 use anyhow::Context;
 use backtest::{BacktestProvider, DataDir, HistorySource, PaperConfig, fetch, run_backtest};
-use bot_core::{Decimal, InstrumentId, Interval, Notional, Symbol, Timestamp};
+use bot_core::{Decimal, InstrumentId, Interval, MarketEvent, Notional, Symbol, Timestamp};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use config::Venue;
 use engine::EngineConfig;
@@ -27,7 +27,7 @@ use exchange::max::public::MaxPublicClient;
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use storage::SqlStore;
 use strategy::Params;
 
@@ -334,6 +334,19 @@ struct BacktestArgs {
     /// that cost.
     #[arg(long, value_parser = parse_decimal)]
     slippage_bps: Decimal,
+    /// Announced delistings to replay (see `config/delistings/`): default
+    /// `config/delistings/<venue>.toml` when it exists.
+    #[arg(long)]
+    delistings: Option<PathBuf>,
+    /// A series that stops for longer than this many hours, or ends this
+    /// long before `--to`, is cut there and delisted with no notice (a halt
+    /// nobody announced; also keeps a reused symbol's later bars out).
+    #[arg(long, default_value_t = 48)]
+    max_gap_hours: u64,
+    /// Hours before an announced delisting at which the engine sells the
+    /// holding, as `[engine] delist_exit_hours` live.
+    #[arg(long, default_value_t = 24)]
+    delist_exit_hours: u64,
     /// Candles of history kept per instrument for the strategy. As many
     /// cached bars before `--from` are replayed first as warm-up (history,
     /// no decisions), as `run` does before trading.
@@ -380,6 +393,35 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
     )?
     // As `run` warms up `history_len` bars before its first decision.
     .warm_up_from_cache(&dir, a.interval, a.from, a.history_len)?;
+    let reference = a
+        .delistings
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("config/delistings/{}.toml", venue.as_str())));
+    let announced = if reference.exists() {
+        backtest::read_delistings(&reference, &venue)?
+    } else if a.delistings.is_some() {
+        anyhow::bail!("no delistings file at {}", reference.display());
+    } else {
+        Vec::new()
+    };
+    let provider = provider.with_delistings(&announced).cut_at_gaps(
+        Duration::from_secs(a.max_gap_hours.saturating_mul(3600)),
+        a.to,
+    );
+    for e in provider.events() {
+        if let MarketEvent::Delisting {
+            instrument,
+            at: Some(at),
+            ts,
+        } = e
+        {
+            eprintln!(
+                "note: {instrument} delists at {} (known from {})",
+                date::format(*at),
+                date::format(*ts)
+            );
+        }
+    }
     for (id, n) in provider.warmup_bars() {
         if n < a.history_len {
             eprintln!(
@@ -393,7 +435,7 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
     let config = EngineConfig {
         whitelist: ids,
         history_len: a.history_len,
-        ..Default::default()
+        delist_exit: Duration::from_secs(a.delist_exit_hours.saturating_mul(3600)),
     };
     let report = run_backtest(&provider, strategy.as_mut(), params, &config, a.interval).await?;
     println!("{report}");

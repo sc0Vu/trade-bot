@@ -1,0 +1,14 @@
+# Announced Binance spot delistings, replayed by backtests at their
+# announcement time (no lookahead: a backtest learns of a delisting when a
+# live run would have). Each entry is evidence: the announcement's time,
+# the delisting time, and the announcement it comes from. Times in UTC.
+#
+# Halts nobody announced (a crash suspension) don't belong here: the
+# backtest cuts a series at any gap longer than --max-gap-hours and treats
+# it as a delisting with no notice.
+#
+# [[delisting]]
+# symbol = "XXXUSDT"
+# announced = 2024-01-01T00:00:00Z
+# at = 2024-01-15T03:00:00Z
+# source = "https://www.binance.com/en/support/announcement/..."

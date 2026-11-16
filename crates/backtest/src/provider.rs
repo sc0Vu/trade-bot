@@ -1,8 +1,11 @@
-use crate::{DataDir, DataError, KlineFeed};
+use crate::{DataDir, DataError, Delisting, KlineFeed, listing};
 use async_trait::async_trait;
-use bot_core::{AssetClass, Candle, Instrument, InstrumentId, Interval, Notional, Timestamp};
+use bot_core::{
+    AssetClass, Candle, Instrument, InstrumentId, Interval, MarketEvent, Notional, Timestamp,
+};
 use exchange::paper::{BpsSlippage, NextOpenFillModel, PaperBroker, RateFee};
 use exchange::{Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
+use std::time::Duration;
 
 /// How the backtest's paper broker trades: its fee and slippage models and
 /// the quote it starts with.
@@ -29,6 +32,8 @@ pub struct BacktestProvider {
     /// Bars before the start, replayed first as backfill (history, no
     /// decisions, no fills).
     warmup: Vec<Candle>,
+    /// Non-candle events (delistings), merged in by time.
+    events: Vec<MarketEvent>,
     paper: PaperConfig,
 }
 
@@ -38,8 +43,49 @@ impl BacktestProvider {
             instruments,
             candles,
             warmup: Vec::new(),
+            events: Vec::new(),
             paper,
         }
+    }
+
+    /// Replays the announced delistings of `list` that concern this
+    /// universe, at their announcement times, and drops every candle
+    /// opening at or after a delisting (a reused symbol's later bars
+    /// belong to another coin). See [`crate::read_delistings`].
+    pub fn with_delistings(mut self, list: &[Delisting]) -> Self {
+        for d in list {
+            if !self.instruments.iter().any(|i| i.id == d.instrument) {
+                continue;
+            }
+            let gone = |c: &Candle| c.instrument == d.instrument && c.open_time >= d.at;
+            self.candles.retain(|c| !gone(c));
+            self.warmup.retain(|c| !gone(c));
+            self.events.push(d.event());
+        }
+        self
+    }
+
+    /// Cuts each series at its first gap longer than `max_gap`, or at an
+    /// end that comes more than `max_gap` before `to`, and delists it right
+    /// there with no notice (see [`crate::cut_at_gaps`]). Warm-up and
+    /// backtest bars are cut as one series.
+    pub fn cut_at_gaps(mut self, max_gap: Duration, to: Timestamp) -> Self {
+        let start = self.candles.iter().map(|c| c.open_time).min();
+        let mut all = std::mem::take(&mut self.warmup);
+        all.append(&mut self.candles);
+        let (kept, events) = listing::cut_at_gaps(all, max_gap, to);
+        let (warmup, candles): (Vec<Candle>, Vec<Candle>) = kept
+            .into_iter()
+            .partition(|c| start.is_some_and(|s| c.open_time < s));
+        self.warmup = warmup;
+        self.candles = candles;
+        self.events.extend(events);
+        self
+    }
+
+    /// The delisting events this provider replays.
+    pub fn events(&self) -> &[MarketEvent] {
+        &self.events
     }
 
     /// Replays `candles` (bars before the backtest's first) as warm-up:
@@ -133,9 +179,10 @@ impl Provider for BacktestProvider {
     }
 
     async fn market_data(&self) -> Result<Box<dyn MarketData>, ExchangeError> {
-        Ok(Box::new(KlineFeed::with_warmup(
+        Ok(Box::new(KlineFeed::with_events(
             self.warmup.clone(),
             self.candles.clone(),
+            self.events.clone(),
         )))
     }
 
