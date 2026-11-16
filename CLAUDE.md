@@ -132,7 +132,13 @@ enum MarketEvent { Candle(Candle), Quote(Quote),
                    SessionOpen { venue: VenueId, ts: Timestamp },   // carry ts: orderable
                    SessionClose { venue: VenueId, ts: Timestamp },
                    CorporateAction(CorpAction),
-                   Delisting { instrument, at: Option<Timestamp>, ts } /*, Expiry deferred */ }
+                   Delisting { instrument, at: Option<Timestamp>, ts },
+                   TradingStatus { instrument, trading: bool, ts } /*, Expiry deferred */ }
+// TradingStatus: venue halt/resume, no schedule (ctx.halted(id); ctx.tradable
+// = !delisted && !halted). While halted: risk + PaperBroker refuse every order
+// on it (resting kept), engine exit pauses, multi-coin strategies don't wait
+// for it (completes), don't trade it (portfolio), don't pick it (rankings),
+// ratio_hop holding it waits, grid idles. Live-only (backtest gaps → cut).
 // Delisting: venue scheduled `instrument` to stop trading at `at` (None =
 // schedule withdrawn); ctx.delisting(id) / ctx.delisted(id) (now ≥ at). From
 // announcement risk refuses buys; from at − EngineConfig.delist_exit
@@ -163,7 +169,7 @@ trait Strategy: Send {
 // open_orders (ids for Signal::Cancel; as of last settle), cancelling_orders
 // (cancelled, venue hasn't confirmed: may still fill; never cancel again),
 // history (≤ history_len closed candles, oldest first, ends at current event),
-// delisting(id), params, submit. Engine mutates via `strategy::driver` (strategy calling it
+// delisting(id), delisted(id), halted(id), tradable(id), params, submit. Engine mutates via `strategy::driver` (strategy calling it
 // only corrupts own view; broker = source of truth).
 
 #[async_trait] trait MarketData { async fn next(&mut self) -> Result<Option<MarketEvent>>; } // feed error stops run

@@ -341,6 +341,9 @@ impl Grid {
     }
 
     fn evaluate(&mut self, ctx: &Context, inst: &Instrument, close: Price) -> Vec<Signal> {
+        if ctx.halted(&self.p.coin) {
+            return Vec::new(); // the book stays; nothing new until it trades
+        }
         match self.stage {
             Stage::Stopped(_) => return Vec::new(),
             Stage::Stopping => {

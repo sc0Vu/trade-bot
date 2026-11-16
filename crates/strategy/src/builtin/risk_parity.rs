@@ -111,13 +111,14 @@ impl RiskParity {
     /// Inverse-volatility weights, scaled to `exposure`; `None` until every
     /// coin has `vol_period + 1` closes, or while one hasn't moved.
     fn targets(&self, ctx: &Context) -> Option<Vec<Target>> {
-        // A coin scheduled for delisting gets 0; the others share it all.
+        // A coin scheduled for delisting, or halted, gets 0; the others
+        // share it all.
         let inverse: Vec<Decimal> = self
             .p
             .coins
             .iter()
             .map(|id| {
-                if ctx.delisting(id).is_some() {
+                if ctx.delisting(id).is_some() || ctx.halted(id) {
                     return Some(Decimal::ZERO);
                 }
                 let sd = indicator::return_sd(ctx.history(id), self.p.vol_period)?;

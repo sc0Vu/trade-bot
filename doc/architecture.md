@@ -153,6 +153,14 @@ for good), target it at 0 and choose among the rest; `ratio_hop` rotates
 out of it even below its ratchet; `grid` winds down. A backtest replays the same event, so the
 exit is part of every backtest too.
 
+**Halts.** A venue can also stop trading a coin with no schedule (a
+suspension, a break) and resume later. `MarketEvent::TradingStatus` reports
+it; while a coin is halted no order is sent on it (risk and the paper
+broker refuse), what is held stays held, and multi-coin strategies neither
+wait for its candles nor trade or pick it; when it trades again everything
+picks up. A backtest has no status feed: a long gap is cut as a delisting
+with no notice, the conservative reading.
+
 **Errors.** A risk refusal, or a venue refusing *one order* (paper refusals,
 an unknown order, Binance `-1013` filter failure, `-2010` order rejected,
 `-2011` cancel rejected), is recorded in the run report and the run

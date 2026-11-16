@@ -232,6 +232,16 @@ pub enum MarketEvent {
         at: Option<Timestamp>,
         ts: Timestamp,
     },
+    /// The venue reports `instrument` trading again (`trading: true`) or
+    /// halted (a suspension, a break: no orders taken, no candles), with
+    /// no schedule: it may resume. While halted no order is sent on it,
+    /// and strategies neither wait for its candles nor trade it; what is
+    /// held stays held. `ts` is when the bot learned it.
+    TradingStatus {
+        instrument: InstrumentId,
+        trading: bool,
+        ts: Timestamp,
+    },
     // Expiry(InstrumentId): deferred with options
 }
 
@@ -245,7 +255,8 @@ impl MarketEvent {
             Self::Quote(q) => q.ts,
             Self::SessionOpen { ts, .. }
             | Self::SessionClose { ts, .. }
-            | Self::Delisting { ts, .. } => *ts,
+            | Self::Delisting { ts, .. }
+            | Self::TradingStatus { ts, .. } => *ts,
             Self::CorporateAction(a) => match *a {},
         }
     }

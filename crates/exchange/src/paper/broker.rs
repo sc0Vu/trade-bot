@@ -115,6 +115,9 @@ pub struct PaperBroker {
     delisting: HashMap<InstrumentId, Timestamp>,
     /// Time of the latest event settled.
     now: Option<Timestamp>,
+    /// Instruments the venue reports halted: orders refused until they
+    /// resume (resting ones stay, as on the venue).
+    halted: std::collections::HashSet<InstrumentId>,
     positions: HashMap<InstrumentId, Position>,
     cash: Option<Cash>,
     /// Latest close per instrument: prices market orders for the balance
@@ -142,6 +145,7 @@ impl PaperBroker {
             last_open: HashMap::new(),
             delisting: HashMap::new(),
             now: None,
+            halted: std::collections::HashSet::new(),
             positions: HashMap::new(),
             cash: None,
             last_close: HashMap::new(),
@@ -504,6 +508,9 @@ impl Broker for PaperBroker {
         {
             return Err(ExchangeError::Rejected("instrument delisted"));
         }
+        if self.halted.contains(&order.instrument) {
+            return Err(ExchangeError::Rejected("instrument halted"));
+        }
         crate::check_open_count(
             self.instruments
                 .get(&order.instrument)
@@ -555,6 +562,18 @@ impl Broker for PaperBroker {
                 Some(at) => self.delisting.insert(instrument.clone(), *at),
                 None => self.delisting.remove(instrument),
             };
+        }
+        if let MarketEvent::TradingStatus {
+            instrument,
+            trading,
+            ..
+        } = event
+        {
+            if *trading {
+                self.halted.remove(instrument);
+            } else {
+                self.halted.insert(instrument.clone());
+            }
         }
         self.now = Some(event.ts());
         self.expire_delisted(event.ts());
@@ -1385,5 +1404,26 @@ mod tests {
             ..limit_buy(id, qty, price).into()
         })
         .unwrap()
+    }
+
+    /// Halted: new orders refused, resting ones kept; resumed: accepted.
+    #[test]
+    fn a_halt_refuses_orders_until_trading_resumes() {
+        let mut b = broker(dec!(0));
+        let status = |trading: bool, ts: i64| MarketEvent::TradingStatus {
+            instrument: btcusdt().id.clone(),
+            trading,
+            ts: Timestamp::from_millis(ts),
+        };
+        futures_block(async {
+            b.submit(limit_buy("o-1", dec!(1), dec!(50))).await.unwrap();
+            b.settle(&status(false, 1)).await.unwrap();
+            assert!(rejected(
+                b.submit(limit_buy("o-2", dec!(1), dec!(50))).await
+            ));
+            assert_eq!(b.open_orders().len(), 1, "the resting order stays");
+            b.settle(&status(true, 2)).await.unwrap();
+            b.submit(limit_buy("o-2", dec!(1), dec!(50))).await.unwrap();
+        });
     }
 }

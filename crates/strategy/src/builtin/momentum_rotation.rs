@@ -149,7 +149,7 @@ impl MomentumRotation {
         let mut best: Option<(&InstrumentId, Decimal)> = None;
         for (id, r) in returns
             .into_iter()
-            .filter(|(id, _)| ctx.delisting(id).is_none())
+            .filter(|(id, _)| ctx.delisting(id).is_none() && !ctx.halted(id))
         {
             if best.is_none_or(|(_, b)| r > b) {
                 best = Some((id, r));
@@ -163,8 +163,8 @@ impl MomentumRotation {
             .p
             .coins
             .iter()
-            // A coin already delisted can't be sold: it stays where it is.
-            .filter(|id| Some(*id) != target && !ctx.delisted(id))
+            // A coin delisted or halted can't be sold: it stays where it is.
+            .filter(|id| Some(*id) != target && ctx.tradable(id))
             .filter_map(|id| {
                 Self::held(ctx, id).map(|units| Signal::Submit {
                     instrument: id.clone(),

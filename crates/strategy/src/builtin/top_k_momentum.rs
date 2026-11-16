@@ -104,14 +104,15 @@ impl TopKMomentum {
 
     /// 1/k for each of the best `k` coins beating `min_momentum`, 0 for the
     /// rest; `None` until every coin has `lookback + 1` closes. A coin
-    /// scheduled for delisting isn't ranked: its slot goes to the next.
+    /// scheduled for delisting, or halted, isn't ranked: its slot goes to
+    /// the next.
     fn targets(&self, ctx: &Context) -> Option<Vec<Target>> {
         let mut ranked: Vec<(usize, Decimal)> = self
             .p
             .coins
             .iter()
             .enumerate()
-            .filter(|(_, coin)| ctx.delisting(coin).is_none())
+            .filter(|(_, coin)| ctx.delisting(coin).is_none() && !ctx.halted(coin))
             .map(|(i, coin)| {
                 let hist = ctx.history(coin);
                 if hist.len() < self.p.lookback + 1 {

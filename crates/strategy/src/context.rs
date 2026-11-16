@@ -24,6 +24,7 @@ pub struct Context {
     history: HashMap<InstrumentId, VecDeque<Candle>>,
     history_len: usize,
     delisting: HashMap<InstrumentId, Timestamp>,
+    halted: std::collections::HashSet<InstrumentId>,
     params: Params,
     outbox: Vec<Signal>,
 }
@@ -100,6 +101,19 @@ impl Context {
         }
     }
 
+    /// Whether the venue reports `id` halted (`MarketEvent::TradingStatus`):
+    /// no orders taken and no candles until it resumes. Don't wait for its
+    /// candle, don't trade it, keep what is held.
+    pub fn halted(&self, id: &InstrumentId) -> bool {
+        self.halted.contains(id)
+    }
+
+    /// Whether an order on `id` can be placed now: neither delisted nor
+    /// halted.
+    pub fn tradable(&self, id: &InstrumentId) -> bool {
+        !self.delisted(id) && !self.halted(id)
+    }
+
     pub fn params(&self) -> &Params {
         &self.params
     }
@@ -127,6 +141,7 @@ pub mod driver {
             history: HashMap::new(),
             history_len: history_len.max(1),
             delisting: HashMap::new(),
+            halted: std::collections::HashSet::new(),
             params,
             outbox: Vec::new(),
         }
@@ -172,6 +187,15 @@ pub mod driver {
             Some(at) => ctx.delisting.insert(id, at),
             None => ctx.delisting.remove(&id),
         };
+    }
+
+    /// Records whether `id` is trading (`false`: halted).
+    pub fn set_trading(ctx: &mut Context, id: InstrumentId, trading: bool) {
+        if trading {
+            ctx.halted.remove(&id);
+        } else {
+            ctx.halted.insert(id);
+        }
     }
 
     /// Drains queued signals in submission order.
@@ -220,6 +244,17 @@ mod tests {
         assert!(ctx.delisted(&id));
         driver::set_delisting(&mut ctx, id.clone(), None);
         assert!(!ctx.delisted(&id), "withdrawn");
+    }
+
+    #[test]
+    fn a_halt_is_known_until_trading_resumes() {
+        let mut ctx = driver::new(vec![btcusdt()], Params::default(), 1);
+        let id = btcusdt().id.clone();
+        assert!(ctx.tradable(&id) && !ctx.halted(&id));
+        driver::set_trading(&mut ctx, id.clone(), false);
+        assert!(ctx.halted(&id) && !ctx.tradable(&id));
+        driver::set_trading(&mut ctx, id.clone(), true);
+        assert!(ctx.tradable(&id));
     }
 
     #[test]

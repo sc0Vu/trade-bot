@@ -420,6 +420,9 @@ impl RatioHop {
             self.phase = Phase::Stopped;
             return Vec::new();
         }
+        if ctx.halted(a) {
+            return Vec::new(); // can't sell it now; wait for trading
+        }
         let Some(units) = Self::sellable(ctx, a).filter(|u| u.is_positive()) else {
             return Vec::new();
         };
@@ -443,7 +446,9 @@ impl RatioHop {
             .p
             .coins
             .iter()
-            .filter(|b| *b != a && !self.in_freefall(ctx, b) && ctx.delisting(b).is_none())
+            .filter(|b| {
+                *b != a && !self.in_freefall(ctx, b) && ctx.delisting(b).is_none() && !ctx.halted(b)
+            })
             .filter_map(|b| {
                 let est = self.estimate(ctx, a, units, b)?;
                 let base = *self.baseline.get(b)?;
@@ -486,6 +491,15 @@ impl RatioHop {
     /// - buy cancelled: place what's left of the budget at the last close;
     /// - bought something: that's the holding.
     fn progress(&mut self, ctx: &Context, t: Timestamp) -> Vec<Signal> {
+        // A leg on a halted coin can't be placed: wait for it to trade.
+        let leg_halted = match &self.phase {
+            Phase::Selling { from, .. } => ctx.halted(from),
+            Phase::Buying { to, .. } => ctx.halted(to),
+            _ => false,
+        };
+        if leg_halted {
+            return Vec::new();
+        }
         let idle = |id: &InstrumentId| {
             ctx.open_orders(id).next().is_none() && ctx.cancelling_orders(id).next().is_none()
         };
@@ -1419,6 +1433,24 @@ mod tests {
                     kind: OrderKind::Market,
                 }]
             );
+        }
+
+        /// The held coin is halted: no rotation (it can't be sold), and
+        /// no stop either; once it trades again the same rotation goes.
+        #[test]
+        fn a_halted_held_coin_waits() {
+            let (mut s, mut ctx) = start(vec![held(&btc(), dec!(0.01), dec!(600))]);
+            close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            driver::set_trading(&mut ctx, btc().id.clone(), false);
+            // An ETH dip (3%, under the freefall guard) would normally
+            // rotate; halted, nothing.
+            assert!(close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(2900)).is_empty());
+            assert_eq!(
+                s.save_state().unwrap()["phase"],
+                serde_json::json!({ "holding": "binance:BTCUSDT" })
+            );
+            driver::set_trading(&mut ctx, btc().id.clone(), true);
+            assert!(!close(s.as_mut(), &mut ctx, 2, dec!(60000), dec!(2900)).is_empty());
         }
 
         /// The rest is dust the venue wouldn't take (0.00001 BTC = 0.6 USDT,

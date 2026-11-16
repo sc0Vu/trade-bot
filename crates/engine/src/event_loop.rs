@@ -234,6 +234,19 @@ async fn run_inner<P: Provider + ?Sized>(
             }
             driver::set_delisting(&mut ctx, instrument.clone(), *at);
         }
+        if let MarketEvent::TradingStatus {
+            instrument,
+            trading,
+            ..
+        } = &event
+        {
+            if *trading {
+                tracing::info!(%instrument, "trading resumed");
+            } else {
+                tracing::warn!(%instrument, "trading halted: no orders until it resumes");
+            }
+            driver::set_trading(&mut ctx, instrument.clone(), *trading);
+        }
         driver::set_now(&mut ctx, ts);
         // A backfilled candle is history like any other; whether it is a
         // decision is the strategy's `on_event` (the default says no).
@@ -335,6 +348,9 @@ impl Run<'_> {
             // every order, and what's left stays where it is.
             if now.as_millis() < at.as_millis().saturating_sub(lead) || now >= at {
                 continue;
+            }
+            if ctx.halted(id) {
+                continue; // nothing can be done until it resumes
             }
             let working: Vec<OrderId> = self
                 .broker
@@ -442,11 +458,13 @@ impl Run<'_> {
                     }
                     Err(e) => Err(refusal(e)?),
                 },
+                Signal::Submit { instrument, .. } if ctx.halted(instrument) => {
+                    metrics::counter!(m::REJECTED, "source" => "risk", "code" => "halted")
+                        .increment(1);
+                    Err("instrument is halted: no orders until it resumes".to_owned())
+                }
                 Signal::Submit {
-                    instrument,
-                    side,
-                    size,
-                    kind,
+                    instrument, side, ..
                 } if *side == Side::Buy && ctx.delisting(instrument).is_some() => {
                     metrics::counter!(m::REJECTED, "source" => "risk", "code" => "delisting")
                         .increment(1);
@@ -1369,6 +1387,36 @@ mod tests {
         assert_eq!(r.fills.len(), 1, "only the buy");
         assert_eq!(r.positions[0].qty(), Qty::new(dec!(10)));
         assert!(r.rejections.is_empty(), "{:?}", r.rejections);
+    }
+
+    /// Halted before the first candle: buy_and_hold's buy is refused
+    /// (not fatal); once trading resumes a later strategy's buy goes
+    /// through.
+    #[tokio::test]
+    async fn no_orders_while_halted() {
+        let halt = |trading: bool, ts: i64| MarketEvent::TradingStatus {
+            instrument: btcusdt().id.clone(),
+            trading,
+            ts: Timestamp::from_millis(ts),
+        };
+        let mut events = vec![halt(false, 0)];
+        events.extend(flat_bars(0, 3));
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let r = run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        assert!(r.fills.is_empty());
+        assert!(
+            r.rejections[0].reason.contains("halted"),
+            "{:?}",
+            r.rejections
+        );
+
+        let mut events = vec![halt(false, 0), halt(true, 0)];
+        events.extend(flat_bars(0, 3));
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let r = run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        assert_eq!(r.fills.len(), 1);
     }
 
     /// A resting limit buy (far below the market, never fills) on an

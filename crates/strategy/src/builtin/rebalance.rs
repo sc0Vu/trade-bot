@@ -149,8 +149,8 @@ pub(crate) fn one_quote<'a>(
 
 /// True on the candle that completes close time `c.close_time` for every
 /// coin in `coins` still trading (the last of them to arrive). A coin past
-/// its delisting sends no more candles, so it isn't waited for: waiting
-/// would halt every multi-coin strategy holding it in its list for good.
+/// its delisting, or halted, sends no candles, so it isn't waited for:
+/// waiting would freeze every multi-coin strategy with it in its list.
 /// Shared by the multi-coin strategies.
 pub(crate) fn completes<'a>(
     ctx: &Context,
@@ -158,7 +158,7 @@ pub(crate) fn completes<'a>(
     mut coins: impl Iterator<Item = &'a InstrumentId>,
 ) -> bool {
     coins.all(|id| {
-        ctx.delisted(id)
+        !ctx.tradable(id)
             || ctx
                 .last_candle(id)
                 .is_some_and(|l| l.close_time == c.close_time)
@@ -484,5 +484,18 @@ mod tests {
         driver::set_now(&mut ctx, late.close_time);
         driver::push_candle(&mut ctx, late.clone());
         assert!(completes(&ctx, &late, coins.iter()));
+    }
+
+    /// A halted coin sends no candles: ETH's candle alone completes the
+    /// close time while BTC is halted.
+    #[test]
+    fn a_halted_coin_is_not_waited_for() {
+        let mut ctx = ctx();
+        let coins = [btcusdt().id.clone(), ethusdt().id.clone()];
+        let c = eth_candle(0, "10");
+        driver::push_candle(&mut ctx, c.clone());
+        assert!(!completes(&ctx, &c, coins.iter()));
+        driver::set_trading(&mut ctx, coins[0].clone(), false);
+        assert!(completes(&ctx, &c, coins.iter()));
     }
 }

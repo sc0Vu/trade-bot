@@ -212,9 +212,10 @@ impl Strategy for PairReversion {
         let Some(signal) = self.signal(ctx) else {
             return Vec::new();
         };
-        // Never switch into a coin scheduled for delisting; one held is
-        // targeted at 0 by `portfolio::rebalance` and sold.
-        let leaving = |i: &usize| ctx.delisting(&coins[*i]).is_some();
+        // Never switch into a coin scheduled for delisting or halted; one
+        // held and delisting is targeted at 0 by `portfolio::rebalance` and
+        // sold (a halted one stays until it trades again).
+        let leaving = |i: &usize| ctx.delisting(&coins[*i]).is_some() || ctx.halted(&coins[*i]);
         let Some(target) = signal.filter(|i| !leaving(i)).or_else(|| self.held(ctx)) else {
             return Vec::new();
         };
