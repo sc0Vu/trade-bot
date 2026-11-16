@@ -522,11 +522,14 @@ re-price). `order_type` required: `market` (taker,
 next open + slippage; leg unfilled 2 evals → stops) or `limit` (GTC at last
 close, maker, estimate without slippage; needs `limit_timeout`: stale buy
 cancelled by id via `ctx.open_orders`, once cancel final re-priced at close
-for budget − spent; stale sell cancelled, once final → keep holding, or
-buy with what a late fill raised). Limit may never fill: real cost.
+for budget − spent; stale sell cancelled, once final → keep holding if
+nothing sold). Sell leg idle with something sold but a sellable rest of
+the coin left (fill beat the cancel, or restart reconcile) → sell the rest
+at last close first, then buy with all proceeds (never two coins; dust
+rest = sold). Limit may never fill: real cost.
 State (phase, baselines, last eval) saved each event, restored on restart
 checked vs books: Holding needs coin held; Selling + coin held → Holding
-(reconcile cancelled sell; part sold → buy with its proceeds); Selling + coin gone → wait recovered fill → buy
+(reconcile cancelled sell, nothing sold); part sold → finish sell, then buy; Selling + coin gone → wait recovered fill → buy
 with proceeds; Buying → re-place buy for budget − spent (recovered fills
 counted) once nothing on coin can fill; Stopped →
 Start. No/refused state: resume on most valuable sellable held coin

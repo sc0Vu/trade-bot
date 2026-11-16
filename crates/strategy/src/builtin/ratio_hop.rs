@@ -27,7 +27,10 @@
 //! buy is re-placed for its budget less what already filled. A leg that
 //! has started filling is waited out, never cancelled as stale or given
 //! up on: cancelling it would leave part of each coin, and the strategy
-//! holds one.
+//! holds one. For the same reason, a sell that ends part-filled (a fill
+//! beat a stale sell's cancel, or a restart's reconcile cancelled the rest)
+//! is finished first: the rest of the coin is sold at the last close, and
+//! only then is the target bought with everything raised.
 //!
 //! Decisions use only closed candles and positions read through `Context`
 //! (invariants 2 and 5). Expected edge is unverified: rotation pays two
@@ -256,6 +259,15 @@ impl RatioHop {
         Some(ctx.instrument(id)?.round_qty(ctx.position(id).qty()))
     }
 
+    /// What's left of a partly sold coin, if the venue would take a market
+    /// sell of it at the last close; dust is no rest.
+    fn rest(ctx: &Context, id: &InstrumentId) -> Option<Qty> {
+        let inst = ctx.instrument(id)?;
+        let q = inst.round_qty(ctx.position(id).qty());
+        let close = ctx.last_candle(id)?.close;
+        inst.check_market(q, close, Side::Sell).ok().map(|()| q)
+    }
+
     /// Units of `to` held after selling `units` of `from` and buying `to`
     /// with the proceeds, starting from current closes. Each market leg
     /// pays slippage (sell at close*(1-s) rounded down to tick, buy at
@@ -450,7 +462,12 @@ impl RatioHop {
     /// up; the leg ends once no order of ours on the coin is open or being
     /// cancelled, i.e. no fill can still arrive (the broker drops an order
     /// only once it is closed with every fill delivered). Then:
-    /// - sold something: buy the target with the whole proceeds;
+    /// - sold part, and a sellable rest of the coin is left (a fill beat a
+    ///   stale sell's cancel, or a restart's reconcile cancelled the rest):
+    ///   sell the rest at the last close first, so the strategy never ends
+    ///   up holding parts of two coins;
+    /// - sold something, nothing sellable left: buy the target with the
+    ///   whole proceeds;
     /// - sell cancelled, nothing sold: hold again;
     /// - buy cancelled: place what's left of the budget at the last close;
     /// - bought something: that's the holding.
@@ -466,7 +483,26 @@ impl RatioHop {
                 cancelling,
                 ..
             } if idle(&from) => {
+                // A rest-sell placed at this close time isn't in
+                // `open_orders` until the event ends: another coin's candle
+                // at the same close would place it twice.
+                if self.placed == Some(t) {
+                    return Vec::new();
+                }
                 if proceeds.is_positive() {
+                    if let Some(sell) = Self::rest(ctx, &from)
+                        .and_then(|q| self.order(ctx, &from, Side::Sell, Size::Base(q)))
+                    {
+                        self.phase = Phase::Selling {
+                            from,
+                            to,
+                            waited: 0,
+                            proceeds,
+                            cancelling: false,
+                        };
+                        self.placed = Some(t);
+                        return vec![sell];
+                    }
                     // Spend exactly what the sell raised, never more.
                     (to, proceeds, Notional::ZERO)
                 } else {
@@ -559,8 +595,9 @@ impl Strategy for RatioHop {
                     "holding a coin the books don't hold",
                 ));
             }
-            // Partly sold: buy with what it raised (plus any recovered
-            // fills) once `progress` sees the leg done.
+            // Partly sold: `progress` sells the rest once nothing on the
+            // coin can fill, then buys with everything raised (plus any
+            // recovered fills).
             Phase::Selling { from, proceeds, .. }
                 if known(&from) && held(&from) && proceeds.is_zero() =>
             {
@@ -1245,10 +1282,14 @@ mod tests {
         }
 
         /// Saved mid-sell with 239.52024 already raised and 0.006 BTC left:
-        /// the restart's reconcile cancelled the rest, so the strategy buys
-        /// with what was raised rather than forgetting it as holding BTC.
+        /// the restart's reconcile cancelled the rest. The strategy first
+        /// sells the 0.006 left (market, as configured), then buys with
+        /// everything raised: neither forgetting the proceeds nor ending up
+        /// holding parts of two coins. The rest sells at 59940 (slipped):
+        /// 359.64 − 0.35964 fee = 359.28036; total 598.8006. Derived by
+        /// hand, not owner-confirmed.
         #[test]
-        fn a_partly_filled_sell_restores_and_buys_with_its_proceeds() {
+        fn a_partly_filled_sell_restores_and_finishes_before_buying() {
             let (mut s, mut ctx) = start(vec![held(&btc(), dec!(0.006), dec!(360))]);
             let state = saved(serde_json::json!({ "selling": {
                 "from": "binance:BTCUSDT", "to": "binance:ETHUSDT", "waited": 1,
@@ -1256,7 +1297,24 @@ mod tests {
             s.restore_state(state, &ctx).unwrap();
             assert_eq!(
                 close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000)),
-                vec![buy_eth(dec!(239.52024), OrderKind::Market)]
+                vec![Signal::Submit {
+                    instrument: btc().id.clone(),
+                    side: Side::Sell,
+                    size: Size::Base(Qty::new(dec!(0.006))),
+                    kind: OrderKind::Market,
+                }]
+            );
+            let rest = part(
+                &btc(),
+                Side::Sell,
+                dec!(0.006),
+                dec!(59940),
+                Liquidity::Taker,
+            );
+            settle(s.as_mut(), &mut ctx, vec![], &[rest], dec!(0));
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(3000)),
+                vec![buy_eth(dec!(598.8006), OrderKind::Market)]
             );
         }
 
@@ -1274,10 +1332,14 @@ mod tests {
         /// Limit mode, timeout 3: the t2 sell of 0.01 BTC at 60000 rests
         /// unfilled and is cancelled at t5. A fill of 0.004 beat the cancel
         /// and is reported at t6, while the venue hasn't confirmed the
-        /// cancel: nothing yet. At t7 the cancel is final: buy ETH at the
-        /// 2900 close with the late fill's 240 - 0.24 = 239.76, not drop it.
+        /// cancel: nothing yet. At t7 the cancel is final with 0.006 BTC
+        /// left: sell that rest at the 60000 close first (before, the
+        /// strategy bought ETH with the 239.76 and left the BTC unmanaged).
+        /// Once it fills (360 − 0.36 = 359.64), buy ETH at the 2900 close
+        /// with 239.76 + 359.64 = 599.40, as an uncancelled split sell would
+        /// have. Derived by hand, not owner-confirmed.
         #[test]
-        fn a_fill_that_beats_a_sell_cancel_is_bought_with() {
+        fn a_fill_that_beats_a_sell_cancel_finishes_the_sell() {
             let (mut s, mut ctx) =
                 start_with(limit_params(3), vec![held(&btc(), dec!(0.01), dec!(600))]);
             close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
@@ -1305,7 +1367,39 @@ mod tests {
             driver::set_cancelling_orders(&mut ctx, vec![]);
             assert_eq!(
                 close(s.as_mut(), &mut ctx, 7, dec!(60000), dec!(2900)),
-                vec![buy_eth(dec!(239.76), limit_at(dec!(2900)))]
+                vec![Signal::Submit {
+                    instrument: btc().id.clone(),
+                    side: Side::Sell,
+                    size: Size::Base(Qty::new(dec!(0.006))),
+                    kind: limit_at(dec!(60000)),
+                }]
+            );
+            let rest = part(
+                &btc(),
+                Side::Sell,
+                dec!(0.006),
+                dec!(60000),
+                Liquidity::Maker,
+            );
+            settle(s.as_mut(), &mut ctx, vec![], &[rest], dec!(0));
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 8, dec!(60000), dec!(2900)),
+                vec![buy_eth(dec!(599.40), limit_at(dec!(2900)))]
+            );
+        }
+
+        /// The rest is dust the venue wouldn't take (0.00001 BTC = 0.6 USDT,
+        /// under the 5 minimum): no rest-sell, buy with what was raised.
+        #[test]
+        fn a_dust_rest_is_left_and_the_proceeds_bought_with() {
+            let (mut s, mut ctx) = start(vec![held(&btc(), dec!(0.00001), dec!(0.6))]);
+            let state = saved(serde_json::json!({ "selling": {
+                "from": "binance:BTCUSDT", "to": "binance:ETHUSDT", "waited": 1,
+                "proceeds": "598.8" } }));
+            s.restore_state(state, &ctx).unwrap();
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000)),
+                vec![buy_eth(dec!(598.8), OrderKind::Market)]
             );
         }
 
