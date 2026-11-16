@@ -13,7 +13,10 @@
 //! reconcile cancels working orders, which genuinely changes what follows
 //! (unit tests cover how strategies restore from that). `grid` always has
 //! orders working, so it has no case here: `tests/grid.rs` checks that a
-//! restart after the reconcile rebuilds the same book.
+//! restart after the reconcile rebuilds the same book. Nor has
+//! `volatility_breakout`: flat it always has a buy stop working, long its
+//! exit, so no cut is idle. It is stateless (books + last bar), and its
+//! unit tests cover deciding from whatever the reconcile left.
 
 mod common;
 

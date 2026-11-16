@@ -1,0 +1,25 @@
+# volatility_breakout: Larry Williams' volatility breakout on one coin.
+# After each closed bar, a buy stop sits k x that bar's range above its
+# close; if the next bar trades through it, the coin is bought and sold at
+# that bar's close. Daily bars as Williams used them; k = 0.5 his usual
+# value; not tuned; edge unverified. Every trade pays two taker fees and
+# two slippages on a one-bar hold.
+#
+#   cargo run -p cli -- run --paper --config config/examples/volatility_breakout.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "volatility_breakout"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+k = "0.5"               # fraction of the last bar's range above its close
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"

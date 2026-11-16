@@ -502,8 +502,8 @@ Start. No/refused state: resume on most valuable sellable held coin
 (baselines from that eval), else buy `quote_amount`. Flat start (every
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
-(sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap)
-only version;
+(sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
+volatility_breakout) only version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
 `last_eval`; grid stage, gaps,
 dust. Pinned by
@@ -512,7 +512,9 @@ dust. Pinned by
 warm-up + same broker → fills identical to uninterrupted run. New strategy
 → add a case. Exception: grid always has orders working (no idle cut), so
 its property lives in `tests/grid.rs`: cut, cancel all (as reconcile),
-restore → rebuilds the identical book. Harness shared: `tests/common`.
+restore → rebuilds the identical book. volatility_breakout: no idle cut
+either (stop or exit always working); stateless, restart misses ≤ 1 bar's
+entry. Harness shared: `tests/common`.
 
 ## Other built-ins
 `buy_and_hold` — the benchmark every strategy is measured against: can't beat
@@ -559,6 +561,16 @@ ranges, needs `period + 1`). Flat and close > mean close + `entry_mult`·ATR
 with the window (not a ratchet: old high leaves → stop drops). ATR because
 noise is the constraint: fixed % too tight when volatile, too loose when
 calm. False breakout ≈ (entry_mult + exit_mult)·ATR + round-trip costs.
+
+`volatility_breakout` — Larry Williams, one coin, one-bar hold. Flat at a
+close → buy `StopMarket` at close + `k`·(high − low) of that bar (24/7:
+next open ≈ close; Williams used the open), quote → base at stop by risk
+(gap fill spends a bit more). Long at a close → market sell all. Unfilled
+stop cancelled + replaced same close (cancel routed first); live race can
+fill both → next close sells all. Cancelling order on coin / own sell
+working → nothing. Range 0 → no stop. Only built-in using stops (pins the
+stop path, `tests/volatility_breakout.rs`). Cost: 2 taker fees + 2
+slippages per trade; live stop at a fast breakout slips more than model.
 
 `dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
 SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
@@ -613,7 +625,8 @@ Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (atr_breakout, avwap, buy_and_hold, dca, donchian_breakout,
-               dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
+               dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend,
+               volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws;

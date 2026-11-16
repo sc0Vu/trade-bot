@@ -418,3 +418,18 @@ async fn atr_breakout_never_lets_the_future_change_the_past() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn volatility_breakout_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "volatility_breakout",
+        8,
+        "volatility_breakout",
+        r#"coin = "binance:BTCUSDT"
+           k = "0.5"
+           quote_amount = "1010"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}

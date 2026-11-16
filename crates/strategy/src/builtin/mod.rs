@@ -49,6 +49,7 @@ pub mod momentum_rotation;
 pub mod ratio_hop;
 pub mod rsi_reversion;
 pub mod sma_trend;
+pub mod volatility_breakout;
 
 #[cfg(test)]
 pub(crate) mod test_support {
