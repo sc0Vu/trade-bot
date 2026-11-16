@@ -1,0 +1,28 @@
+# bollinger_reversion: one coin. Buys a close below the lower Bollinger
+# band (k standard deviations under the period mean), sells once the close
+# is back above the mean. Bets on ranges; in a downtrend the mean falls with
+# the price and it holds a long way down (no stop). Textbook 20 / 2; not
+# tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/bollinger_reversion.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "bollinger_reversion"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+period = 20             # closes in the mean and deviation
+k = "2"                 # standard deviations below the mean to buy
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

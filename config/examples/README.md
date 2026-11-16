@@ -13,6 +13,7 @@ One complete, runnable config per built-in strategy:
 | `atr_breakout.toml` | one coin, ATR-band breakout, ATR trailing stop |
 | `vol_target.toml` | one coin, sized down when volatile, up when calm |
 | `volatility_breakout.toml` | one coin, buy stop above the last bar's range, one-bar hold |
+| `bollinger_reversion.toml` | one coin, buy below the lower band, sell above the mean |
 | `rsi_reversion.toml` | one coin, buy oversold / sell overbought |
 | `momentum_rotation.toml` | several coins, hold the strongest |
 | `rebalance.toml` | fixed weights (half BTC, half cash), traded back on drift |

@@ -503,7 +503,7 @@ Start. No/refused state: resume on most valuable sellable held coin
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
-volatility_breakout, rebalance, vol_target) only version;
+volatility_breakout, rebalance, vol_target, bollinger_reversion) only version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
 `last_eval`; grid stage, gaps,
 dust. Pinned by
@@ -607,6 +607,12 @@ to the bottom (no stop, by design). Optional `trend_period` (Connors RSI-2):
 buy only if close > SMA(trend_period closes incl. current; too few → no buy);
 gates entries only, never exits. Dust = cash; no decision while order open.
 
+`bollinger_reversion` — `rsi_reversion` skeleton. Window `period` closes incl.
+current: mid = mean, var = population variance. Flat and close < mid −
+`k`·sd → buy; long and close > mid → sell. Band test without sqrt: close <
+mid and (mid − close)² > k²·var (exact; on the band ≠ below). Same knife
+risk as rsi_reversion (no stop).
+
 `avwap` — `sma_trend` skeleton, anchored VWAP instead of SMA. AVWAP =
 Σ quote_volume / Σ volume from anchor bar through current (exact via
 `Instrument::price_for`, not typical-price approx). `anchor` required:
@@ -646,9 +652,10 @@ rising). Edge unverified.
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (atr_breakout, avwap, buy_and_hold, dca, donchian_breakout,
-               dual_ma_cross, grid, momentum_rotation, ratio_hop, rebalance, rsi_reversion,
-               sma_trend, vol_target, volatility_breakout)
+  strategy/    Strategy trait, Context, inventory registry, built-ins (atr_breakout, avwap,
+               bollinger_reversion, buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid,
+               momentum_rotation, ratio_hop, rebalance, rsi_reversion, sma_trend, vol_target,
+               volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
                return_sd = sample sd of simple returns, approx. sqrt: sizing only)

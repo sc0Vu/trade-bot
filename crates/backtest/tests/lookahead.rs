@@ -466,3 +466,19 @@ async fn vol_target_never_lets_the_future_change_the_past() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn bollinger_reversion_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "rsi_reversion",
+        7,
+        "bollinger_reversion",
+        r#"coin = "binance:BTCUSDT"
+           period = 3
+           k = "1"
+           quote_amount = "850.9"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}

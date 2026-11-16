@@ -293,6 +293,18 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "bollinger_reversion",
+            fixture: "rsi_reversion",
+            coins: BTC,
+            bars: 7,
+            params: r#"coin = "binance:BTCUSDT"
+                period = 3
+                k = "1"
+                quote_amount = "850.9"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "rsi_reversion",
             fixture: "rsi_reversion",
             coins: BTC,

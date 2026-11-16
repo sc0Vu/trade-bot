@@ -210,6 +210,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
           <tr><td>vol_target</td><td>Volatility clustering: holds less while swings are wide, more when calm.</td><td>Turning points: buys back late after a crash; trades as volatility moves.</td></tr>
           <tr><td>volatility_breakout</td><td>A move past k × the last bar's range continuing within the bar (buy stop, one-bar hold).</td><td>Choppy markets: every false trigger pays a full round trip of fees and slippage.</td></tr>
           <tr><td>avwap</td><td>Price holding above its anchored VWAP.</td><td>Chop around the anchor.</td></tr>
+          <tr><td>bollinger_reversion</td><td>Ranges: buys below the lower band, sells back above the mean.</td><td>Downtrends: the mean falls with the price (no stop).</td></tr>
           <tr><td>rsi_reversion</td><td>Ranges: buys oversold, sells overbought.</td><td>Sustained downtrends (no stop, by design; optional trend filter only gates buys).</td></tr>
           <tr><td>momentum_rotation</td><td>Recent winners among several coins keep winning.</td><td>Sharp reversals, choppy leadership.</td></tr>
           <tr><td>rebalance</td><td>Swings that come back: trades fixed weights back after drift, selling rises and buying falls.</td><td>One-way trends: keeps selling the winner.</td></tr>
