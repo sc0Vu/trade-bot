@@ -91,6 +91,11 @@ struct Cash {
 /// goes negative. Orders on an instrument quoted in another asset are
 /// refused. Without a balance nothing is refused for lack of quote.
 ///
+/// A delisting (`MarketEvent::Delisting`) is what the venue does at its
+/// time: open orders on the instrument are cancelled, and new ones
+/// refused. Without that, an order on a coin that stopped trading would
+/// wait for ever for a candle that never comes.
+///
 /// Given an [`OrderGate`] ([`PaperBroker::with_gate`]) it also refuses what
 /// the gate says the venue would (a halted market). The gate decides only
 /// submit and cancel: orders already resting keep settling.
@@ -105,6 +110,11 @@ pub struct PaperBroker {
     /// Open time of the latest candle settled per instrument: tells which
     /// pending sales can still fill at a given open.
     last_open: HashMap<InstrumentId, Timestamp>,
+    /// Delistings announced (`MarketEvent::Delisting`): from this time the
+    /// venue cancels the instrument's orders and refuses new ones.
+    delisting: HashMap<InstrumentId, Timestamp>,
+    /// Time of the latest event settled.
+    now: Option<Timestamp>,
     positions: HashMap<InstrumentId, Position>,
     cash: Option<Cash>,
     /// Latest close per instrument: prices market orders for the balance
@@ -130,6 +140,8 @@ impl PaperBroker {
             pending: Vec::new(),
             deferred: Vec::new(),
             last_open: HashMap::new(),
+            delisting: HashMap::new(),
+            now: None,
             positions: HashMap::new(),
             cash: None,
             last_close: HashMap::new(),
@@ -261,6 +273,24 @@ impl PaperBroker {
             })
             .map(|p| self.expected_proceeds(&p.order))
             .sum()
+    }
+
+    /// Drops the orders on instruments delisted by `now`, as the venue
+    /// cancels them.
+    fn expire_delisted(&mut self, now: Timestamp) {
+        let gone = |id: &InstrumentId, d: &HashMap<InstrumentId, Timestamp>| {
+            d.get(id).is_some_and(|at| now >= *at)
+        };
+        let delisting = &self.delisting;
+        self.pending.retain(|p| {
+            let keep = !gone(&p.order.instrument, delisting);
+            if !keep {
+                tracing::warn!(order = %p.order.id, instrument = %p.order.instrument, "instrument delisted; order cancelled");
+            }
+            keep
+        });
+        self.deferred
+            .retain(|d| !gone(&d.pending.order.instrument, delisting));
     }
 
     /// Every order not yet filled: pending, and buys waiting for a sale.
@@ -469,6 +499,11 @@ impl Broker for PaperBroker {
             g.check_submit(&order.instrument)
                 .map_err(ExchangeError::Rejected)?;
         }
+        if let (Some(at), Some(now)) = (self.delisting.get(&order.instrument), self.now)
+            && now >= *at
+        {
+            return Err(ExchangeError::Rejected("instrument delisted"));
+        }
         crate::check_open_count(
             self.instruments
                 .get(&order.instrument)
@@ -515,6 +550,14 @@ impl Broker for PaperBroker {
     }
 
     async fn settle(&mut self, event: &MarketEvent) -> Result<Vec<Fill>, ExchangeError> {
+        if let MarketEvent::Delisting { instrument, at, .. } = event {
+            match at {
+                Some(at) => self.delisting.insert(instrument.clone(), *at),
+                None => self.delisting.remove(instrument),
+            };
+        }
+        self.now = Some(event.ts());
+        self.expire_delisted(event.ts());
         let MarketEvent::Candle(candle) = event else {
             return Ok(Vec::new());
         };
@@ -1294,5 +1337,53 @@ mod tests {
                 .unwrap();
             assert!(rejected(b.submit(buy_with("o-5", dec!(5), 1)).await));
         });
+    }
+
+    /// A delisting announced for 3h: a sell resting on BTC stays open while
+    /// the coin trades, is cancelled by the first event at or after 3h
+    /// (as the venue does), and a new order after that is refused.
+    #[test]
+    fn a_delisting_cancels_orders_and_refuses_new_ones() {
+        let mut b = cashed(dec!(1000), dec!(0));
+        futures_block(async {
+            b.settle(&ev(0, ["100", "100", "100", "100"]))
+                .await
+                .unwrap();
+            b.submit(market("o-1", Side::Buy, dec!(1), 0))
+                .await
+                .unwrap();
+            b.settle(&ev(1, ["100", "100", "100", "100"]))
+                .await
+                .unwrap();
+            b.submit(limit_sell("o-2", dec!(0.5), dec!(200)))
+                .await
+                .unwrap();
+            let announce = MarketEvent::Delisting {
+                instrument: btcusdt().id.clone(),
+                at: Some(Timestamp::from_millis(3 * HOUR)),
+                ts: Timestamp::from_millis(2 * HOUR - 1),
+            };
+            b.settle(&announce).await.unwrap();
+            assert_eq!(b.open_orders().len(), 1, "still trading");
+            b.settle(&ev(2, ["100", "100", "100", "100"]))
+                .await
+                .unwrap();
+            assert_eq!(b.open_orders().len(), 1, "closes at 3h - 1 ms");
+            b.settle(&ev(3, ["100", "100", "100", "100"]))
+                .await
+                .unwrap();
+            assert!(b.open_orders().is_empty());
+            assert!(rejected(
+                b.submit(limit_sell("o-3", dec!(0.5), dec!(200))).await
+            ));
+        });
+    }
+
+    fn limit_sell(id: &str, qty: rust_decimal::Decimal, price: rust_decimal::Decimal) -> Order {
+        Order::new(OrderSpec {
+            side: Side::Sell,
+            ..limit_buy(id, qty, price).into()
+        })
+        .unwrap()
     }
 }
