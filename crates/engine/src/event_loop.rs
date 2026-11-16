@@ -163,6 +163,7 @@ async fn run_inner<P: Provider + ?Sized>(
         next_order: 1,
         report: RunReport::default(),
         exit_cancelled: HashSet::new(),
+        exit_sells: HashSet::new(),
     };
 
     strategy.on_start(&mut ctx);
@@ -293,6 +294,8 @@ struct Run<'a> {
     report: RunReport,
     /// Orders the delisting exit already asked to cancel.
     exit_cancelled: HashSet<OrderId>,
+    /// The delisting exit's own sells: waited for, never cancelled.
+    exit_sells: HashSet<OrderId>,
 }
 
 impl Run<'_> {
@@ -305,8 +308,8 @@ impl Run<'_> {
         id.unwrap_or_else(|_| unreachable!("generated order id is valid"))
     }
 
-    /// The engine's own exit from instruments being delisted: once `now`
-    /// is within `config.delist_exit` of an instrument's delisting, cancel
+    /// The engine's own exit from instruments being delisted: while `now`
+    /// is within `config.delist_exit` before an instrument's delisting, cancel
     /// every order on it still working (once each), and when none is
     /// working or being cancelled, sell the lot-rounded holding at market
     /// if the venue would take it (dust stays). Runs after the strategy's
@@ -328,7 +331,9 @@ impl Run<'_> {
             let Some(at) = ctx.delisting(id) else {
                 continue;
             };
-            if now.as_millis() < at.as_millis().saturating_sub(lead) {
+            // The window ends at the delisting: after it the venue refuses
+            // every order, and what's left stays where it is.
+            if now.as_millis() < at.as_millis().saturating_sub(lead) || now >= at {
                 continue;
             }
             let working: Vec<OrderId> = self
@@ -338,6 +343,9 @@ impl Run<'_> {
                 .filter(|o| o.instrument == *id)
                 .map(|o| o.id.clone())
                 .collect();
+            if working.iter().any(|o| self.exit_sells.contains(o)) {
+                continue; // our sell is working: wait for it
+            }
             for oid in &working {
                 if !self.exit_cancelled.insert(oid.clone()) {
                     continue;
@@ -388,6 +396,7 @@ impl Run<'_> {
                     match self.broker.submit(order).await {
                         Ok(_) => {
                             tracing::warn!(order = %self.broker.client_order_id(&oid), instrument = %id, "delisting: selling the holding");
+                            self.exit_sells.insert(oid);
                             Ok(())
                         }
                         Err(e) => Err(refusal(e)?),
@@ -1337,6 +1346,28 @@ mod tests {
             ]
         );
         assert!(r.positions[0].is_flat());
+        assert!(r.rejections.is_empty(), "{:?}", r.rejections);
+    }
+
+    /// Announced too late to sell in time: lead 1h, delisting at 5h, the
+    /// exit's one chance is c4 (closes 5h - 1 ms); its sell would fill at
+    /// c5's open, but by then the venue has delisted the coin and cancels
+    /// it. After 5h the engine sends nothing more (no refusal each event):
+    /// the holding is stuck, as it would be live.
+    #[tokio::test]
+    async fn after_the_delisting_the_engine_stops_trying() {
+        let mut events = flat_bars(0, 4);
+        events.push(delisting(Some(5 * HOUR), 4 * HOUR - 1));
+        events.extend(flat_bars(4, 9));
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let config = EngineConfig {
+            delist_exit: Duration::from_secs(3600),
+            ..config()
+        };
+        let r = run(&provider, s.as_mut(), params, &config).await.unwrap();
+        assert_eq!(r.fills.len(), 1, "only the buy");
+        assert_eq!(r.positions[0].qty(), Qty::new(dec!(10)));
         assert!(r.rejections.is_empty(), "{:?}", r.rejections);
     }
 
