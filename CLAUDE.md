@@ -134,9 +134,10 @@ enum MarketEvent { Candle(Candle), Quote(Quote),
                    CorporateAction(CorpAction) /*, Expiry(InstrumentId) deferred */ }
 // CorpAction is empty enum in v1 → variant unconstructible until equities.
 // MarketEvent::ts(): candle → close_time (bar known), never open_time.
-// Backfill(Candle): live-only late bar (warm-up / reconnect gap) → engine adds
-// to history, default on_event ignores (not a decision), paper broker doesn't
-// settle on it. Only deliberate live/backtest difference: backtest has no outages.
+// Backfill(Candle): late bar (live: warm-up / reconnect gap; backtest: warm-up
+// before --from) → engine adds to history, default on_event ignores (not a
+// decision), paper broker doesn't settle on it. Only deliberate live/backtest
+// difference: backtest has no outages.
 
 trait Strategy: Send {
     fn name(&self) -> &str;
@@ -416,7 +417,11 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    Filters are today's, not historical — approximation (older, finer-tick
    prices: slipped fills rounded to today's coarser tick, e.g. SOL 2021 at
    ~1.84 with tick 0.01 ≈ 0.5% worse per taker fill). `KlineFeed` merges
-   instruments ordered by (close_time, id).
+   instruments ordered by (close_time, id). Warm-up like `run`: CLI backtest
+   replays the last `--history-len` cached bars before `--from` first as
+   `Backfill` (`BacktestProvider::warm_up_from_cache` / `with_warmup`;
+   fewer cached → stderr warning); report starts at `--from`. Pinned by
+   `tests/warmup.rs` (start at t3 + warm-up = fills of start at t0).
    `BacktestProvider` = cached feed + PaperBroker(NextOpenFillModel), through
    `engine::run`; `run_backtest` → `Report` (all `Decimal`). Report keeps own
    cash ledger (broker has none) replaying fills vs candles; equity = cash +

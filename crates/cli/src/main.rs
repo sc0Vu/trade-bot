@@ -332,7 +332,9 @@ struct BacktestArgs {
     /// that cost.
     #[arg(long, value_parser = parse_decimal)]
     slippage_bps: Decimal,
-    /// Candles of history kept per instrument for the strategy.
+    /// Candles of history kept per instrument for the strategy. As many
+    /// cached bars before `--from` are replayed first as warm-up (history,
+    /// no decisions), as `run` does before trading.
     #[arg(long, default_value_t = 500)]
     history_len: usize,
     #[arg(long, default_value = "data")]
@@ -361,8 +363,9 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         .collect();
     let fees = RateFee::new(a.fee, a.fee, FeeAsset::Received).context("fee must be in [0, 1)")?;
     let slippage = BpsSlippage::new(a.slippage_bps).context("slippage must be >= 0")?;
+    let dir = DataDir::new(a.data_dir);
     let provider = BacktestProvider::from_cache(
-        &DataDir::new(a.data_dir),
+        &dir,
         &ids,
         a.interval,
         a.from,
@@ -372,7 +375,18 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
             slippage,
             initial_cash: Notional::new(a.initial_cash),
         },
-    )?;
+    )?
+    // As `run` warms up `history_len` bars before its first decision.
+    .warm_up_from_cache(&dir, a.interval, a.from, a.history_len)?;
+    for (id, n) in provider.warmup_bars() {
+        if n < a.history_len {
+            eprintln!(
+                "warning: {id}: {n} of {} warm-up bars cached before --from; the first \
+                 decisions see a shorter history than a live run would (fetch-data from earlier)",
+                a.history_len
+            );
+        }
+    }
     let mut strategy = strategy::build(&a.strategy, &params)?;
     let config = EngineConfig {
         whitelist: ids,

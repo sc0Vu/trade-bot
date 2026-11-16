@@ -13,13 +13,29 @@ pub struct KlineFeed {
     events: std::vec::IntoIter<MarketEvent>,
 }
 
+/// Close time, then instrument id: the order bars became known.
+fn sort(candles: &mut [Candle]) {
+    candles.sort_by(|a, b| (a.close_time, &a.instrument).cmp(&(b.close_time, &b.instrument)));
+}
+
 impl KlineFeed {
-    pub fn new(mut candles: Vec<Candle>) -> Self {
-        candles.sort_by(|a, b| (a.close_time, &a.instrument).cmp(&(b.close_time, &b.instrument)));
+    pub fn new(candles: Vec<Candle>) -> Self {
+        Self::with_warmup(Vec::new(), candles)
+    }
+
+    /// `warmup` (bars before the backtest's start) replayed first as
+    /// `MarketEvent::Backfill`, then `candles` as `MarketEvent::Candle`,
+    /// as a live run warms up before its first decision: backfilled bars
+    /// join the strategy's history but are no decision, and the broker
+    /// doesn't settle against them.
+    pub fn with_warmup(mut warmup: Vec<Candle>, mut candles: Vec<Candle>) -> Self {
+        sort(&mut warmup);
+        sort(&mut candles);
         Self {
-            events: candles
+            events: warmup
                 .into_iter()
-                .map(MarketEvent::Candle)
+                .map(MarketEvent::Backfill)
+                .chain(candles.into_iter().map(MarketEvent::Candle))
                 .collect::<Vec<_>>()
                 .into_iter(),
         }
@@ -63,5 +79,25 @@ mod tests {
             (1, "ETHUSDT"),
         ];
         assert_eq!(order, expect.map(|(i, s)| (i, s.to_owned())).to_vec());
+    }
+
+    /// Warm-up bars come first, as backfill, in close-time order; then the
+    /// backtest's own bars as candles.
+    #[tokio::test]
+    async fn warmup_is_replayed_first_as_backfill() {
+        let btc = btcusdt().id.clone();
+        let mut feed = KlineFeed::with_warmup(
+            vec![candle(&btc, 1, ["1"; 4]), candle(&btc, 0, ["1"; 4])],
+            vec![candle(&btc, 2, ["1"; 4])],
+        );
+        let mut got = Vec::new();
+        while let Some(e) = feed.next().await.unwrap() {
+            got.push(match e {
+                MarketEvent::Backfill(c) => ("backfill", c.open_time.as_millis() / 3_600_000),
+                MarketEvent::Candle(c) => ("candle", c.open_time.as_millis() / 3_600_000),
+                _ => unreachable!(),
+            });
+        }
+        assert_eq!(got, vec![("backfill", 0), ("backfill", 1), ("candle", 2)]);
     }
 }

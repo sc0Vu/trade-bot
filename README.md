@@ -229,6 +229,10 @@ cargo run -p cli -- backtest --strategy ratio_hop --params p.toml \
 public market-data host into `data/` (gitignored), and fetches only the
 ranges it doesn't have yet. `--slippage-bps` is required and has no
 default: a market order never fills at the price the decision saw.
+Like a live run, a backtest first replays the last `--history-len` bars
+(default 500) before `--from` as warm-up, so its first decision sees a full
+history; fetch from earlier than `--from` to have them (it warns if they
+aren't cached).
 
 `--venue max` does the same against MAX (MaiCoin): `max:BTCUSDT`,
 `max:BTCTWD` and the other MAX markets, from 1m bars up (MAX has no 1s

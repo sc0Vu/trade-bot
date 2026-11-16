@@ -180,8 +180,14 @@ trait Broker {
 | | Backtest | Live |
 |---|---|---|
 | Provider | `BacktestProvider` | `BinanceSpotProvider` |
-| Feed | Cached klines, merged across instruments by (close time, id) | `KlineStream`: Binance WebSocket, closed bars only |
+| Feed | Cached klines, merged across instruments by (close time, id); the last `history_len` bars before the start replayed first as `Backfill` | `KlineStream`: Binance WebSocket, closed bars only; warms up with the last `history_len` bars as `Backfill` |
 | Broker | `PaperBroker` with a pluggable `FillModel`, `SlippageModel`, `FeeModel` | `BinanceBroker` over signed REST |
+
+Both warm up the same way, so a backtest's first decision sees the
+history a live run's would: without it, a strategy needing N bars sat out
+the first N bars of every backtest, in cash, which flattered it in a
+falling market and handicapped it in a rising one. The report starts at
+the backtest's start; warm-up bars are no part of it.
 
 The paper broker and the Binance broker refuse the same things before
 submitting (unknown instrument, reused id, selling more than the holding

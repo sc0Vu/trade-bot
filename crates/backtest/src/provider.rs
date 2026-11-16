@@ -26,6 +26,9 @@ pub struct PaperConfig {
 pub struct BacktestProvider {
     instruments: Vec<Instrument>,
     candles: Vec<Candle>,
+    /// Bars before the start, replayed first as backfill (history, no
+    /// decisions, no fills).
+    warmup: Vec<Candle>,
     paper: PaperConfig,
 }
 
@@ -34,8 +37,54 @@ impl BacktestProvider {
         Self {
             instruments,
             candles,
+            warmup: Vec::new(),
             paper,
         }
+    }
+
+    /// Replays `candles` (bars before the backtest's first) as warm-up:
+    /// they reach the strategy's history as backfill, as a live run's
+    /// warm-up does, so the first decision sees the same history live
+    /// would. The report starts after them.
+    pub fn with_warmup(mut self, candles: Vec<Candle>) -> Self {
+        self.warmup = candles;
+        self
+    }
+
+    /// [`with_warmup`](Self::with_warmup) from the cache: per instrument,
+    /// the last `bars` cached candles opening before `from`. Fewer if the
+    /// cache doesn't reach back that far; see
+    /// [`warmup_bars`](Self::warmup_bars).
+    pub fn warm_up_from_cache(
+        self,
+        dir: &DataDir,
+        interval: Interval,
+        from: Timestamp,
+        bars: usize,
+    ) -> Result<Self, DataError> {
+        let start = from.as_millis().saturating_sub(
+            i64::try_from(bars)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(interval.as_millis()),
+        );
+        let mut warmup = Vec::new();
+        for i in &self.instruments {
+            let before = dir.load_klines(&i.id, interval, Timestamp::from_millis(start), from)?;
+            let skip = before.len().saturating_sub(bars);
+            warmup.extend(before.into_iter().skip(skip));
+        }
+        Ok(self.with_warmup(warmup))
+    }
+
+    /// Warm-up bars per instrument, in instrument order.
+    pub fn warmup_bars(&self) -> Vec<(InstrumentId, usize)> {
+        self.instruments
+            .iter()
+            .map(|i| {
+                let n = self.warmup.iter().filter(|c| c.instrument == i.id).count();
+                (i.id.clone(), n)
+            })
+            .collect()
     }
 
     /// Loads `ids` at `interval` with `from <= open_time < to` from the
@@ -57,7 +106,8 @@ impl BacktestProvider {
         Ok(Self::new(instruments, candles, paper))
     }
 
-    /// The candles this provider replays, in no particular order.
+    /// The candles this provider replays as decisions (warm-up excluded),
+    /// in no particular order.
     pub fn candles(&self) -> &[Candle] {
         &self.candles
     }
@@ -83,7 +133,10 @@ impl Provider for BacktestProvider {
     }
 
     async fn market_data(&self) -> Result<Box<dyn MarketData>, ExchangeError> {
-        Ok(Box::new(KlineFeed::new(self.candles.clone())))
+        Ok(Box::new(KlineFeed::with_warmup(
+            self.warmup.clone(),
+            self.candles.clone(),
+        )))
     }
 
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
