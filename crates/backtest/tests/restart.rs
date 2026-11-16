@@ -172,6 +172,7 @@ async fn run_case(c: &Case) {
 
 const BTC: &[&str] = &["binance:BTCUSDT"];
 const BTC_ETH: &[&str] = &["binance:BTCUSDT", "binance:ETHUSDT"];
+const BTC_ETH_SOL: &[&str] = &["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"];
 
 #[tokio::test]
 async fn every_strategy_survives_a_restart() {
@@ -325,6 +326,19 @@ async fn every_strategy_survives_a_restart() {
                 capital = "10000"
                 period = 4
                 entry_z = "1"
+                band = "0.05"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
+            strategy: "top_k_momentum",
+            fixture: "top_k_momentum",
+            coins: BTC_ETH_SOL,
+            bars: 12,
+            params: r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"]
+                k = 2
+                lookback = 2
+                capital = "9000"
                 band = "0.05"
                 fee = "0.001"
                 slippage_bps = "10""#,

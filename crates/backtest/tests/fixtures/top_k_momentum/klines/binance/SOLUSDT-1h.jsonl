@@ -1,0 +1,12 @@
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":0,"close_time":3599999,"open":"50","high":"50","low":"50","close":"50","volume":"1","quote_volume":"50"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":3600000,"close_time":7199999,"open":"50","high":"50","low":"49","close":"49","volume":"1","quote_volume":"49"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":7200000,"close_time":10799999,"open":"49","high":"49","low":"48","close":"48","volume":"1","quote_volume":"48"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":10800000,"close_time":14399999,"open":"48","high":"49","low":"48","close":"49","volume":"1","quote_volume":"49"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":14400000,"close_time":17999999,"open":"49","high":"51","low":"49","close":"51","volume":"1","quote_volume":"51"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":18000000,"close_time":21599999,"open":"51","high":"53","low":"51","close":"53","volume":"1","quote_volume":"53"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":21600000,"close_time":25199999,"open":"53","high":"55","low":"53","close":"55","volume":"1","quote_volume":"55"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":25200000,"close_time":28799999,"open":"55","high":"56","low":"55","close":"56","volume":"1","quote_volume":"56"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":28800000,"close_time":32399999,"open":"56","high":"56","low":"55","close":"55","volume":"1","quote_volume":"55"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":32400000,"close_time":35999999,"open":"55","high":"55","low":"53","close":"53","volume":"1","quote_volume":"53"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":36000000,"close_time":39599999,"open":"53","high":"53","low":"52","close":"52","volume":"1","quote_volume":"52"}
+{"instrument":"binance:SOLUSDT","interval":"1h","open_time":39600000,"close_time":43199999,"open":"52","high":"52","low":"51","close":"51","volume":"1","quote_volume":"51"}

@@ -1,0 +1,29 @@
+# top_k_momentum: rank several coins by their return over `lookback` bars
+# and hold the best k (that beat min_momentum) at 1/k of capital each; an
+# empty slot stays USDT. Bets recent winners keep winning; fails on sharp
+# reversals and churning leadership. Not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/top_k_momentum.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT", "binance:BNBUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "top_k_momentum"
+
+[strategy.params]
+coins = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT", "binance:BNBUSDT"]
+k = 2                   # hold the best 2, each at half of capital
+lookback = 30           # daily bars the return is ranked over
+min_momentum = "0"      # only coins that rose over the lookback
+capital = "1000"        # USDT the strategy manages (its starting cash)
+band = "0.05"           # trade back once a weight is 5 points off
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 60

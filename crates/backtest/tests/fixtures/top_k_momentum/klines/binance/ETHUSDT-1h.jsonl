@@ -1,0 +1,12 @@
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":0,"close_time":3599999,"open":"10","high":"10","low":"10","close":"10","volume":"1","quote_volume":"10"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":3600000,"close_time":7199999,"open":"10","high":"10.2","low":"10","close":"10.2","volume":"1","quote_volume":"10.2"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":7200000,"close_time":10799999,"open":"10.2","high":"10.5","low":"10.2","close":"10.5","volume":"1","quote_volume":"10.5"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":10800000,"close_time":14399999,"open":"10.5","high":"10.5","low":"10.4","close":"10.4","volume":"1","quote_volume":"10.4"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":14400000,"close_time":17999999,"open":"10.4","high":"10.4","low":"10.1","close":"10.1","volume":"1","quote_volume":"10.1"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":18000000,"close_time":21599999,"open":"10.1","high":"10.1","low":"9.9","close":"9.9","volume":"1","quote_volume":"9.9"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":21600000,"close_time":25199999,"open":"9.9","high":"10","low":"9.9","close":"10","volume":"1","quote_volume":"10"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":25200000,"close_time":28799999,"open":"10","high":"10.3","low":"10","close":"10.3","volume":"1","quote_volume":"10.3"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":28800000,"close_time":32399999,"open":"10.3","high":"10.6","low":"10.3","close":"10.6","volume":"1","quote_volume":"10.6"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":32400000,"close_time":35999999,"open":"10.6","high":"10.8","low":"10.6","close":"10.8","volume":"1","quote_volume":"10.8"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":36000000,"close_time":39599999,"open":"10.8","high":"10.8","low":"10.7","close":"10.7","volume":"1","quote_volume":"10.7"}
+{"instrument":"binance:ETHUSDT","interval":"1h","open_time":39600000,"close_time":43199999,"open":"10.7","high":"10.7","low":"10.6","close":"10.6","volume":"1","quote_volume":"10.6"}

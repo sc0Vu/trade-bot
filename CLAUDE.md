@@ -526,6 +526,7 @@ backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
 volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross,
+top_k_momentum,
 pair_reversion,
 tsmom,
 risk_parity) only
@@ -653,6 +654,13 @@ Held = weight 1 of `capital`, other 0 → switch = sell + buy with est.
 proceeds, one eval. Stateless. Plain ratio, not log. Always long the
 pair's common move (no short); ratio trends → keeps buying the loser.
 
+`top_k_momentum` — `momentum_rotation` with k slots on `portfolio`
+machinery. ≥ 2 coins (one quote), 1 ≤ `k` < coins. Rank by close /
+close[`lookback` ago] − 1 (stable: tie → listed first); best k with return
+> `min_momentum` (default 0, > −1) get 1/k of `capital`, empty slot = cash.
+Once per close time all in, idle; any weight > `band` off → all back to
+target (rotation = sell + buy from est. proceeds, one eval). Stateless.
+
 `tsmom` — Moskowitz/Ooi/Pedersen time-series momentum, long-only,
 `portfolio` machinery, ≥ 1 coin (one quote). Per coin: close /
 close[`lookback` ago] − 1 > 0 (= 0 → out) → min(`max_weight`, `target_vol`
@@ -725,7 +733,7 @@ crates/
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
                buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, macd_cross,
                momentum_rotation, pair_reversion, ratio_hop, rebalance, risk_parity, rsi_reversion,
-               sma_trend, trailing_stop, tsmom, vol_target, volatility_breakout)
+               sma_trend, top_k_momentum, trailing_stop, tsmom, vol_target, volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
                return_sd = sample sd of simple returns, approx. sqrt: sizing only;
