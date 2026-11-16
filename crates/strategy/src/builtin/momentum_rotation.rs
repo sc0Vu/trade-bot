@@ -163,7 +163,8 @@ impl MomentumRotation {
             .p
             .coins
             .iter()
-            .filter(|id| Some(*id) != target)
+            // A coin already delisted can't be sold: it stays where it is.
+            .filter(|id| Some(*id) != target && !ctx.delisted(id))
             .filter_map(|id| {
                 Self::held(ctx, id).map(|units| Signal::Submit {
                     instrument: id.clone(),

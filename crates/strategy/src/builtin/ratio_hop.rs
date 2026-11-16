@@ -413,6 +413,13 @@ impl RatioHop {
     }
 
     fn consider_rotation(&mut self, ctx: &Context, a: &InstrumentId) -> Vec<Signal> {
+        if ctx.delisted(a) {
+            // Held into its delisting (no notice, or nothing to rotate
+            // into): it can't be sold any more, so nothing can rotate.
+            tracing::warn!(strategy = NAME, coin = %a, "held coin delisted; ratio_hop stopped");
+            self.phase = Phase::Stopped;
+            return Vec::new();
+        }
         let Some(units) = Self::sellable(ctx, a).filter(|u| u.is_positive()) else {
             return Vec::new();
         };

@@ -151,8 +151,10 @@ pub(crate) fn own_cash<'a>(
 /// minimum notional) is left out. A coin scheduled for delisting
 /// (`Context::delisting`) is targeted at 0, whatever its weight: it is
 /// sold now, on the strategy's terms, rather than by the engine's exit
-/// before the delisting, and never bought. Needs every coin's instrument
-/// and last close; `None` without them.
+/// before the delisting, and never bought. Once past its delisting it can't
+/// be traded at all: its holding counts at its last close and no order is
+/// placed on it. Needs every coin's instrument and last close; `None`
+/// without them.
 pub(crate) fn rebalance(
     ctx: &Context,
     targets: &[Target],
@@ -210,7 +212,9 @@ pub(crate) fn rebalance(
     let mut out = Vec::new();
     let mut available = cash;
     let mut wants: Vec<(&Row, Decimal)> = Vec::new();
-    for r in &rows {
+    // A coin already delisted can't be traded: its holding stays in the
+    // total at its last close, and no order is placed on it.
+    for r in rows.iter().filter(|r| !ctx.delisted(&r.t.coin)) {
         let delta = r.t.weight * total - r.value;
         if delta.is_sign_negative() && !delta.is_zero() {
             let Ok(q) = r.inst.qty_for(Notional::new(-delta), r.close) else {
@@ -573,5 +577,27 @@ pub(crate) mod tests {
             got,
             Some(vec![sell(btc(), dec!(50)), buy(eth(), dec!(125))])
         );
+    }
+
+    /// BTC is past its delisting (stuck holding of 50 at 110 = 5500): no
+    /// order on it. It still counts in the total (10500), so ETH goes to
+    /// 0.25 of it: 2625, buy 125 from the 2500 cash.
+    #[test]
+    fn a_delisted_coin_is_never_traded() {
+        let mut ctx = ctx();
+        driver::set_position(&mut ctx, position(&btc(), dec!(50), dec!(5000), dec!(0)));
+        driver::set_position(&mut ctx, position(&eth(), dec!(250), dec!(2500), dec!(0)));
+        driver::push_candle(&mut ctx, candle(0, "110"));
+        driver::push_candle(&mut ctx, eth_candle(0, "10"));
+        driver::set_delisting(&mut ctx, btc(), Some(Timestamp::from_millis(1)));
+        driver::set_now(&mut ctx, Timestamp::from_millis(2));
+        let got = rebalance(
+            &ctx,
+            &half_half(),
+            Notional::new(dec!(10000)),
+            dec!(0.05),
+            dec!(0.002),
+        );
+        assert_eq!(got, Some(vec![buy(eth(), dec!(125))]));
     }
 }
