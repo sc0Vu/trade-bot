@@ -22,7 +22,12 @@
 //!   fetched one by one; at short intervals a bar closes in between, and a
 //!   later coin's extra bar queued ahead of the stream would make time run
 //!   backwards. The stream delivers those bars instead. A warm-up fetches
-//!   a few bars extra per coin so each still gets its full `warmup`.
+//!   a few bars extra per coin so each still gets its full `warmup`. A
+//!   coin whose newest bar is more than [`NOT_TRADING`] behind the
+//!   freshest coin's isn't trading (halted, suspended) and doesn't bound
+//!   the cutoff: otherwise one halted coin would cut every other coin's
+//!   warm-up, or a reconnect's gap, back to when it stopped, and those
+//!   bars would be lost (the stream only brings new ones).
 //!
 //! Missed bars are merged across coins by (close time, instrument), the
 //! order the backtest feed uses. Errors other than feed errors (a
@@ -44,6 +49,10 @@ const MAX_GAP: usize = 1000;
 /// bars once those past the cutoff are left to the stream: room for that
 /// many bars to close while the coins are fetched.
 const WARMUP_SLACK: usize = 60;
+/// How far a coin's newest bar may trail the freshest coin's before the
+/// coin counts as not trading. Fetching every coin takes seconds, so a
+/// trading coin is never this far behind; a halted one soon is.
+pub const NOT_TRADING: Duration = Duration::from_secs(15 * 60);
 
 /// Opens a live stream of closed candles.
 #[async_trait]
@@ -129,8 +138,9 @@ impl ReconnectingFeed {
         let live = self.connector.connect().await?;
         let mut missed: Vec<Candle> = Vec::new();
         // Newest bar each coin is known to have closed by, fetched or
-        // already emitted; the oldest of them bounds the backfill.
-        let mut cutoff: Option<Timestamp> = None;
+        // already emitted; the oldest of the trading ones bounds the
+        // backfill.
+        let mut newest_by: Vec<Timestamp> = Vec::new();
         for id in &self.ids {
             let since = self.last.get(id).copied();
             if !first && since.is_none() {
@@ -146,10 +156,17 @@ impl ReconnectingFeed {
             };
             let bars = self.source.recent(id, since, max).await?;
             if let Some(newest) = bars.last().map(|c| c.close_time).or(since) {
-                cutoff = Some(cutoff.map_or(newest, |c| c.min(newest)));
+                newest_by.push(newest);
             }
             missed.extend(bars);
         }
+        let freshest = newest_by.iter().max().copied();
+        let lag = i64::try_from(NOT_TRADING.as_millis()).unwrap_or(i64::MAX);
+        let cutoff = newest_by
+            .iter()
+            .filter(|t| freshest.is_some_and(|f| t.as_millis() >= f.as_millis() - lag))
+            .min()
+            .copied();
         // Coins are fetched one after another, so a later fetch can hold a
         // bar that closed after an earlier one returned. Queued, it would
         // precede the earlier coin's copy of that bar arriving on the
@@ -567,6 +584,31 @@ mod tests {
                 "C:ETHUSDT@4",
                 "C:BTCUSDT@5",
                 "C:ETHUSDT@5"
+            ]
+        );
+    }
+
+    /// ETH stopped trading long ago (its newest bar is 0; BTC's is 40, and
+    /// bars here are 1 minute apart, so ETH is 40 minutes behind): it
+    /// doesn't bound the warm-up, and BTC gets its full 3 bars, not none.
+    #[tokio::test(start_paused = true)]
+    async fn a_halted_coin_doesnt_cut_the_others_warmup() {
+        let conns = Connections::default();
+        conns.push(Ok(live(vec![bar("BTCUSDT", 41)], None)));
+        let mut f = feed(
+            &conns,
+            vec![("BTCUSDT", (0..=40).collect()), ("ETHUSDT", vec![0])],
+            &["BTCUSDT", "ETHUSDT"],
+            3,
+        );
+        assert_eq!(
+            take(&mut f, 5).await,
+            vec![
+                "B:ETHUSDT@0",
+                "B:BTCUSDT@38",
+                "B:BTCUSDT@39",
+                "B:BTCUSDT@40",
+                "C:BTCUSDT@41"
             ]
         );
     }
