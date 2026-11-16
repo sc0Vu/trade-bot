@@ -291,6 +291,20 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "tsmom",
+            fixture: "tsmom",
+            coins: BTC_ETH,
+            bars: 12,
+            params: r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
+                capital = "10000"
+                lookback = 3
+                target_vol = "1.5"
+                vol_period = 3
+                band = "0.05"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "vol_target",
             fixture: "vol_target",
             coins: BTC,

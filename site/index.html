@@ -209,6 +209,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
           <tr><td>donchian_breakout</td><td>Breakouts beyond the prior channel continuing.</td><td>False breakouts in ranges.</td></tr>
           <tr><td>atr_breakout</td><td>Moves larger than recent volatility (ATR) becoming trends; ATR trailing stop.</td><td>Volatility spikes in ranges: each false breakout gives back the ATR band plus costs.</td></tr>
           <tr><td>vol_target</td><td>Volatility clustering: holds less while swings are wide, more when calm.</td><td>Turning points: buys back late after a crash; trades as volatility moves.</td></tr>
+          <tr><td>tsmom</td><td>Each coin's own trend persisting (positive return over the lookback), sized to a volatility target.</td><td>Chop (round trips on false signals) and turning points (lags by up to the lookback).</td></tr>
           <tr><td>volatility_breakout</td><td>A move past k × the last bar's range continuing within the bar (buy stop, one-bar hold).</td><td>Choppy markets: every false trigger pays a full round trip of fees and slippage.</td></tr>
           <tr><td>avwap</td><td>Price holding above its anchored VWAP.</td><td>Chop around the anchor.</td></tr>
           <tr><td>bollinger_reversion</td><td>Ranges: buys below the lower band, sells back above the mean.</td><td>Downtrends: the mean falls with the price (no stop).</td></tr>

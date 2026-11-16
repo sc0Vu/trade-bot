@@ -526,6 +526,7 @@ backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
 volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross,
+tsmom,
 risk_parity) only
 version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
@@ -632,6 +633,14 @@ decision. Once per close time all coins in, idle (`portfolio::idle`).
 Naive (no correlation). Lowers concentration, predicts nothing; trails the
 winner; trades as relative vol moves.
 
+`tsmom` — Moskowitz/Ooi/Pedersen time-series momentum, long-only,
+`portfolio` machinery, ≥ 1 coin (one quote). Per coin: close /
+close[`lookback` ago] − 1 > 0 (= 0 → out) → min(`max_weight`, `target_vol`
+/ annualized `return_sd` over `vol_period`) / N, else 0; needs
+max(lookback, vol_period) + 1 closes for every coin. Once per close time
+all in, idle. Trend + vol targeting = the two drawdown cutters our
+backtests found. Chop, lag, trades as vol moves.
+
 `dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
 SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
 cross event: first bar with `slow_period` closes buys at once if fast on top.
@@ -696,7 +705,7 @@ crates/
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
                buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, macd_cross,
                momentum_rotation, ratio_hop, rebalance, risk_parity, rsi_reversion, sma_trend,
-               vol_target, volatility_breakout)
+               tsmom, vol_target, volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
                return_sd = sample sd of simple returns, approx. sqrt: sizing only;

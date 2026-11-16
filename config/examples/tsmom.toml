@@ -1,0 +1,31 @@
+# tsmom: time-series momentum, long-only. Each coin on its own: held while
+# its return over `lookback` bars is positive, sized to a volatility
+# target, out otherwise. Bets trends persist; loses in chop, lags turns.
+# Lookback and vol window are common textbook values, not tuned; edge
+# unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/tsmom.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "tsmom"
+
+[strategy.params]
+coins = ["binance:BTCUSDT", "binance:ETHUSDT"]   # one quote asset
+capital = "1000"        # USDT the strategy manages (its starting cash)
+lookback = 90           # daily bars the trend is measured over (~3 months)
+target_vol = "0.5"      # annualized, per coin, before the 1/N split
+vol_period = 30         # daily returns per volatility estimate
+max_weight = "1"        # most of a coin's 1/N share
+band = "0.05"           # trade back once a weight is 5 points off
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 120       # >= max(lookback, vol_period) + 1
