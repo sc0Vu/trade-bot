@@ -503,7 +503,7 @@ Start. No/refused state: resume on most valuable sellable held coin
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
-volatility_breakout, rebalance) only version;
+volatility_breakout, rebalance, vol_target) only version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
 `last_eval`; grid stage, gaps,
 dust. Pinned by
@@ -584,6 +584,14 @@ to target, market, sells first; buys ≤ cash + sells' est. proceeds
 dropped. Volatility harvesting: sells rises, buys falls; trails a one-way
 trend; costs per rebalance.
 
+`vol_target` — one coin, `rebalance` machinery (`portfolio`, own cash from
+books) with a moving weight: min(`max_weight` ≤ 1, `target_vol` /
+(`indicator::return_sd` over `vol_period` returns × √(bars per 365-day
+year of candle interval))); vol 0 → max. Each bar, nothing working: trade
+to weight if > `band` off. Approx sqrt sets weight only; orders exact.
+Bets on volatility clustering (cuts drawdown, not a return forecast);
+late after crashes; trades as vol moves.
+
 `dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
 SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
 cross event: first bar with `slow_period` closes buys at once if fast on top.
@@ -638,9 +646,10 @@ crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (atr_breakout, avwap, buy_and_hold, dca, donchian_breakout,
                dual_ma_cross, grid, momentum_rotation, ratio_hop, rebalance, rsi_reversion,
-               sma_trend, volatility_breakout)
+               sma_trend, vol_target, volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
-               true ranges, not Wilder: Wilder depends on where bounded history starts)
+               true ranges, not Wilder: Wilder depends on where bounded history starts;
+               return_sd = sample sd of simple returns, approx. sqrt: sizing only)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws;
                max (MaiCoin: public data + kline ws so far)
   engine/      shared event loop (backtest + live)

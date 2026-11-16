@@ -51,6 +51,7 @@ pub mod ratio_hop;
 pub mod rebalance;
 pub mod rsi_reversion;
 pub mod sma_trend;
+pub mod vol_target;
 pub mod volatility_breakout;
 
 #[cfg(test)]

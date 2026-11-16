@@ -1,0 +1,31 @@
+# vol_target: hold one coin at a weight that aims the portfolio at a target
+# volatility: target_vol / the coin's recent annualized volatility, capped
+# at max_weight. Calm: holds more; wide swings: holds less, which cuts most
+# of the drawdown that comes with them. Predicts no returns; trades as
+# volatility moves the weight past the band; buys back late after a crash.
+# Not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/vol_target.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "vol_target"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+capital = "1000"        # USDT the strategy manages (its starting cash)
+target_vol = "0.4"      # 40% a year; BTC has mostly run at 40-80%
+vol_period = 30         # daily returns measured; needs 31 candles
+max_weight = "1"        # never more than all of capital (spot)
+band = "0.1"            # trade once the weight is 10 points off target
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

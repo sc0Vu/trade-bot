@@ -448,3 +448,21 @@ async fn rebalance_never_lets_the_future_change_the_past() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn vol_target_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "vol_target",
+        12,
+        "vol_target",
+        r#"coin = "binance:BTCUSDT"
+           capital = "2000"
+           target_vol = "0.8"
+           vol_period = 3
+           max_weight = "0.9"
+           band = "0.05"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}

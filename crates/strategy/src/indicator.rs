@@ -51,6 +51,45 @@ where
     Some(sum / Decimal::from(period))
 }
 
+/// Per-bar volatility: the sample standard deviation of the last `period`
+/// close-to-close simple returns (`close / previous close − 1`), the newest
+/// ending at the current bar. A fraction per bar; annualize by multiplying
+/// by √(bars per year).
+///
+/// Needs `period + 1` candles; `None` with fewer, or for a `period` under 2
+/// (one return has no spread). Simple returns rather than log returns:
+/// `Decimal` has no exact logarithm, and over one bar the two differ by
+/// about half the squared return. The square root is `Decimal`'s
+/// iterative approximation, so the result is close, not exact; use it to
+/// size or filter, never as a money amount.
+pub fn return_sd<'a, I>(candles: I, period: usize) -> Option<Decimal>
+where
+    I: DoubleEndedIterator<Item = &'a Candle> + ExactSizeIterator,
+{
+    use rust_decimal::MathematicalOps;
+    if period < 2 || candles.len() < period + 1 {
+        return None;
+    }
+    let closes: Vec<Decimal> = candles
+        .rev()
+        .take(period + 1)
+        .map(|c| c.close.get())
+        .collect();
+    // Newest first: each pair is (close, the close before it).
+    let returns: Vec<Decimal> = closes
+        .windows(2)
+        .map(|w| w[0] / w[1] - Decimal::ONE)
+        .collect();
+    let n = Decimal::from(period);
+    let mean = returns.iter().sum::<Decimal>() / n;
+    let var = returns
+        .iter()
+        .map(|r| (*r - mean) * (*r - mean))
+        .sum::<Decimal>()
+        / (n - Decimal::ONE);
+    var.sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +186,38 @@ mod tests {
         assert_eq!(atr(h.iter(), 2), Some(dec!(2)));
         assert_eq!(atr(h.iter(), 0), None);
         assert_eq!(atr([].iter(), 1), None);
+    }
+
+    fn closes(prices: &[&str]) -> Vec<Candle> {
+        prices
+            .iter()
+            .enumerate()
+            .map(|(i, p)| bar(i as i64, p, p, p, p))
+            .collect()
+    }
+
+    /// Returns +10%, −10%, 0: mean 0, sample variance (0.01 + 0.01 + 0) / 2
+    /// = 0.01, sd 0.1. The 50 before them is outside a period of 3.
+    #[test]
+    fn return_sd_is_the_sample_sd_of_the_last_returns() {
+        let h = closes(&["50", "100", "110", "99", "99"]);
+        assert_eq!(return_sd(h.iter(), 3), Some(dec!(0.1)));
+    }
+
+    /// Steady growth has no spread; flat prices neither.
+    #[test]
+    fn return_sd_of_a_constant_return_is_zero() {
+        let h = closes(&["100", "110", "121", "133.1"]);
+        assert_eq!(return_sd(h.iter(), 3), Some(dec!(0)));
+        let h = closes(&["100", "100", "100"]);
+        assert_eq!(return_sd(h.iter(), 2), Some(dec!(0)));
+    }
+
+    #[test]
+    fn return_sd_needs_period_plus_one_and_at_least_two_returns() {
+        let h = closes(&["100", "110", "99"]);
+        assert_eq!(return_sd(h.iter(), 3), None);
+        assert_eq!(return_sd(h.iter(), 1), None, "one return has no spread");
+        assert!(return_sd(h.iter(), 2).is_some());
     }
 }

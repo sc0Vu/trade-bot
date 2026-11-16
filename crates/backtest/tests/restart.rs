@@ -279,6 +279,20 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "vol_target",
+            fixture: "vol_target",
+            coins: BTC,
+            bars: 12,
+            params: r#"coin = "binance:BTCUSDT"
+                capital = "2000"
+                target_vol = "0.8"
+                vol_period = 3
+                max_weight = "0.9"
+                band = "0.05"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "rsi_reversion",
             fixture: "rsi_reversion",
             coins: BTC,
