@@ -1,0 +1,27 @@
+# macd_cross: one coin, long while the MACD line (EMA fast − EMA slow) is
+# above its signal line, cash below. Turns earlier than dual_ma_cross, so
+# whipsaws more in ranges. Appel's 12 / 26 / 9; not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/macd_cross.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "macd_cross"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+fast_period = 12
+slow_period = 26
+signal_period = 9       # needs 3 x slow + signal = 87 candles of history
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

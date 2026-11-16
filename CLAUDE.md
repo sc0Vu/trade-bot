@@ -503,7 +503,8 @@ Start. No/refused state: resume on most valuable sellable held coin
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
-volatility_breakout, rebalance, vol_target, bollinger_reversion) only version;
+volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross) only
+version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
 `last_eval`; grid stage, gaps,
 dust. Pinned by
@@ -546,6 +547,13 @@ first), buy target if not held. Entry = fixed `quote_amount`, not sale
 proceeds: losing hop can't afford entry (backtest and live refuse,
 `-2010`; stays cash). Bets winners persist; fails on sharp reversals, choppy
 leadership. Dust = cash.
+
+`macd_cross` — `dual_ma_cross` skeleton, level rule. MACD = EMA(fast) −
+EMA(slow), signal = EMA(signal) of MACD; flat and MACD > signal → buy, long
+and < → sell, equal → nothing. EMAs over fixed window of newest
+3·slow + signal closes, mean-seeded (`indicator::ema_series`; whole-history
+EMA would depend on where bounded history starts; seed weight < 1% at
+12/26/9). `1 ≤ fast < slow`, signal ≥ 1. Whipsaws in ranges, lags turns.
 
 `donchian_breakout` — `sma_trend` skeleton. Channel = highest high / lowest low
 of `channel_period` candles *before* current (needs `channel_period + 1`).
@@ -654,11 +662,12 @@ crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (atr_breakout, avwap,
                bollinger_reversion, buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid,
-               momentum_rotation, ratio_hop, rebalance, rsi_reversion, sma_trend, vol_target,
+               macd_cross, momentum_rotation, ratio_hop, rebalance, rsi_reversion, sma_trend, vol_target,
                volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
-               return_sd = sample sd of simple returns, approx. sqrt: sizing only)
+               return_sd = sample sd of simple returns, approx. sqrt: sizing only;
+               ema_series = mean-seeded EMA, callers pass a fixed newest window)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws;
                max (MaiCoin: public data + kline ws so far)
   engine/      shared event loop (backtest + live)

@@ -46,6 +46,7 @@ pub mod dca;
 pub mod donchian_breakout;
 pub mod dual_ma_cross;
 pub mod grid;
+pub mod macd_cross;
 pub mod momentum_rotation;
 mod portfolio;
 pub mod ratio_hop;

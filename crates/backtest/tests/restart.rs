@@ -305,6 +305,19 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "macd_cross",
+            fixture: "macd_cross",
+            coins: BTC,
+            bars: 12,
+            params: r#"coin = "binance:BTCUSDT"
+                fast_period = 1
+                slow_period = 2
+                signal_period = 2
+                quote_amount = "1061.1"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "rsi_reversion",
             fixture: "rsi_reversion",
             coins: BTC,

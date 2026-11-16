@@ -205,6 +205,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
           <tr><td>dca</td><td>Spreading entry over time (hour, day, week, month).</td><td>Removes timing risk, not direction risk; buys all the way down.</td></tr>
           <tr><td>sma_trend</td><td>Trends: long above the SMA, cash below.</td><td>Ranges cause whipsaws.</td></tr>
           <tr><td>dual_ma_cross</td><td>Trends: long while the fast average is above the slow one.</td><td>Ranges and lag.</td></tr>
+          <tr><td>macd_cross</td><td>Trends: long while MACD is above its signal line.</td><td>Ranges (turns early, whipsaws) and lag at turns.</td></tr>
           <tr><td>donchian_breakout</td><td>Breakouts beyond the prior channel continuing.</td><td>False breakouts in ranges.</td></tr>
           <tr><td>atr_breakout</td><td>Moves larger than recent volatility (ATR) becoming trends; ATR trailing stop.</td><td>Volatility spikes in ranges: each false breakout gives back the ATR band plus costs.</td></tr>
           <tr><td>vol_target</td><td>Volatility clustering: holds less while swings are wide, more when calm.</td><td>Turning points: buys back late after a crash; trades as volatility moves.</td></tr>

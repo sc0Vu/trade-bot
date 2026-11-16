@@ -90,6 +90,33 @@ where
     var.sqrt()
 }
 
+/// Exponential moving average of `values` (oldest first) with smoothing
+/// α = 2 / (period + 1), seeded with the simple mean of the first `period`
+/// values. Element `i` of the result is the EMA ending at
+/// `values[period − 1 + i]`; empty if there are fewer than `period` values
+/// or `period` is 0.
+///
+/// An EMA never forgets its seed, only discounts it by (1 − α) a step, so
+/// callers pass a fixed window of the newest values rather than the whole
+/// history: the result is then the same in a backtest, a live run and a
+/// restart's warm-up, and differs from an EMA seeded long ago by at most
+/// the seed's error times (1 − α)^(window − period).
+pub fn ema_series(values: &[Decimal], period: usize) -> Vec<Decimal> {
+    if period == 0 || values.len() < period {
+        return Vec::new();
+    }
+    let n = Decimal::from(period);
+    let alpha = Decimal::TWO / (n + Decimal::ONE);
+    let mut ema = values[..period].iter().sum::<Decimal>() / n;
+    let mut out = Vec::with_capacity(values.len() - period + 1);
+    out.push(ema);
+    for v in &values[period..] {
+        ema += alpha * (*v - ema);
+        out.push(ema);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +246,20 @@ mod tests {
         assert_eq!(return_sd(h.iter(), 3), None);
         assert_eq!(return_sd(h.iter(), 1), None, "one return has no spread");
         assert!(return_sd(h.iter(), 2).is_some());
+    }
+
+    /// 1..5, period 2: α = 2/3, seed mean(1, 2) = 1.5, then
+    /// 1.5 + 2/3·(3 − 1.5) = 2.5, 3.5, 4.5.
+    #[test]
+    fn ema_series_seeds_with_the_mean_then_smooths() {
+        let v = [dec!(1), dec!(2), dec!(3), dec!(4), dec!(5)];
+        assert_eq!(
+            ema_series(&v, 2),
+            vec![dec!(1.5), dec!(2.5), dec!(3.5), dec!(4.5)]
+        );
+        // Period 1: α = 1, the values themselves.
+        assert_eq!(ema_series(&v, 1), v.to_vec());
+        assert!(ema_series(&v, 6).is_empty());
+        assert!(ema_series(&v, 0).is_empty());
     }
 }

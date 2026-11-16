@@ -9,6 +9,7 @@ One complete, runnable config per built-in strategy:
 | `dca.toml` | one coin, a fixed buy every period, hold |
 | `sma_trend.toml` | one coin, long above its moving average |
 | `dual_ma_cross.toml` | one coin, long while the fast average is above the slow |
+| `macd_cross.toml` | one coin, long while MACD is above its signal |
 | `donchian_breakout.toml` | one coin, channel breakouts |
 | `atr_breakout.toml` | one coin, ATR-band breakout, ATR trailing stop |
 | `vol_target.toml` | one coin, sized down when volatile, up when calm |

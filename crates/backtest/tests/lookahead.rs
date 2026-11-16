@@ -482,3 +482,20 @@ async fn bollinger_reversion_never_lets_the_future_change_the_past() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn macd_cross_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "macd_cross",
+        12,
+        "macd_cross",
+        r#"coin = "binance:BTCUSDT"
+           fast_period = 1
+           slow_period = 2
+           signal_period = 2
+           quote_amount = "1061.1"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}

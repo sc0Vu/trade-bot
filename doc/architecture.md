@@ -63,7 +63,7 @@ MarketData ──MarketEvent──> Engine loop ──> Strategy.on_event() ─�
 | Crate | Role | Depends on |
 |---|---|---|
 | `core` (package `bot-core`) | Money newtypes, ids, `Instrument`, `Candle`, `Order`, `Fill`, `Position`, `MarketEvent`, `Signal`. No I/O. | — |
-| `strategy` | `Strategy` trait, `Context`, registry, indicators (ATR, return volatility), built-in strategies | core |
+| `strategy` | `Strategy` trait, `Context`, registry, indicators (ATR, return volatility, EMA), built-in strategies | core |
 | `storage` | Repository traits and their SeaORM implementation | core, migration |
 | `exchange` | `Provider` / `MarketData` / `Broker` traits, the paper broker, the Binance client | core, storage |
 | `engine` | The event loop and risk checks | core, strategy, exchange |
