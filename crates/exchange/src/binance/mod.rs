@@ -4,6 +4,7 @@
 //! [`user_stream`] says which of the account's orders changed.
 
 mod broker;
+pub mod delist;
 pub mod feed;
 mod fees;
 pub mod limits;

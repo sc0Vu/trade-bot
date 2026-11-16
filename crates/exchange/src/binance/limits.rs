@@ -39,6 +39,8 @@ pub fn weight(method: Method, path: &str, query: &str) -> u64 {
         (_, "/api/v3/myTrades") if has("orderId") => 5,
         (_, "/api/v3/openOrders") if has("symbol") => 6,
         (_, "/api/v3/openOrders") => 80,
+        // Binance's docs (Wallet, "Get Spot Delist Schedule"): IP weight 100.
+        (_, "/sapi/v1/spot/delist-schedule") => 100,
         _ => 20,
     }
 }
@@ -129,6 +131,7 @@ mod tests {
         assert_eq!(weight(Method::Post, "/api/v3/order", ""), 1);
         assert_eq!(weight(Method::Delete, "/api/v3/order", ""), 1);
         assert_eq!(weight(g, "/api/v3/openOrders", ""), 80);
+        assert_eq!(weight(g, "/sapi/v1/spot/delist-schedule", ""), 100);
         // "orderIdX" is not "orderId".
         assert_eq!(weight(g, "/api/v3/myTrades", "orderIdX=1"), 20);
     }

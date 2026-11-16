@@ -285,7 +285,9 @@ make run-paper
 
 When a coin the bot trades is scheduled for delisting, the bot stops
 buying it at once and sells what it holds `delist_exit_hours` (default 24)
-before the delisting, whatever the strategy does.
+before the delisting, whatever the strategy does. A live run reads the
+schedule from Binance every hour; Binance publishes it on its live host
+only, so testnet and demo runs never see one.
 
 What a run does:
 

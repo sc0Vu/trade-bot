@@ -386,6 +386,23 @@ impl SignedClient {
         .await
     }
 
+    /// Request with the API key but no signature (Binance's `MARKET_DATA`
+    /// security type, e.g. the delist schedule).
+    pub async fn keyed(
+        &self,
+        method: Method,
+        path: &str,
+        params: &[(&str, String)],
+    ) -> Result<Value, ExchangeError> {
+        self.call(HttpRequest {
+            method,
+            path: path.into(),
+            query: query(params),
+            api_key: Some(self.creds.key.clone()),
+        })
+        .await
+    }
+
     /// Signed request: `params`, then `recvWindow` and `timestamp`, then
     /// `signature` over all of it.
     pub async fn signed(

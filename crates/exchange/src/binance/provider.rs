@@ -1,3 +1,4 @@
+use super::delist::{BinanceSchedule, DelistWatch};
 use super::feed::{ReconnectingFeed, RestKlines, WsConnector};
 use super::limits;
 use super::reconcile::{Orphans, Phase, Reconciled, reconcile};
@@ -12,6 +13,11 @@ use async_trait::async_trait;
 use bot_core::{AssetClass, Instrument, InstrumentId, Interval};
 use serde::Deserialize;
 use std::sync::Arc;
+
+/// How often a live run polls Binance's delisting schedule: hourly. At
+/// weight 100 that is under 0.03% of the minute budget, and Binance
+/// announces delistings days ahead.
+pub const DELIST_POLL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Which Binance spot environment to trade on. Each takes its own keys:
 /// a key from one is refused (`-2015`) by the others.
@@ -160,6 +166,13 @@ impl BinanceSpotProvider {
         reconcile(&client, &instruments, &*self.books, Phase::Exit).await
     }
 
+    /// Whether the feed polls the delisting schedule: on the live network
+    /// against its real host only (demo and testnet don't serve it; an
+    /// overridden host would be someone else's).
+    fn watches_delistings(&self) -> bool {
+        self.config.network == Network::Live && self.config.rest_url.is_none()
+    }
+
     async fn client(&self) -> Result<SignedClient, ExchangeError> {
         let mut client = SignedClient::new(
             self.config.rest_url(),
@@ -212,12 +225,34 @@ impl Provider for BinanceSpotProvider {
                 .with_limiter(self.limiter.clone()),
             interval: self.config.interval,
         };
-        Ok(Box::new(ReconnectingFeed::new(
+        let feed: Box<dyn MarketData> = Box::new(ReconnectingFeed::new(
             Box::new(connector),
             Box::new(source),
             self.universe.clone(),
             self.config.warmup,
             self.config.max_outage,
+        ));
+        if !self.watches_delistings() {
+            tracing::info!(
+                "delisting schedule not watched: Binance publishes it on the live host only"
+            );
+            return Ok(feed);
+        }
+        let client = SignedClient::new(
+            self.config.rest_url(),
+            Box::new(ReqwestTransport::new(self.config.http_timeout)?),
+            self.creds.clone(),
+            Box::new(SystemClock),
+        )
+        .with_limiter(self.limiter.clone());
+        Ok(Box::new(DelistWatch::new(
+            feed,
+            Box::new(BinanceSchedule(client)),
+            "binance"
+                .parse()
+                .map_err(|e| ExchangeError::Decode(format!("{e}")))?,
+            self.universe.clone(),
+            DELIST_POLL,
         )))
     }
 
@@ -356,5 +391,23 @@ mod tests {
             "{}",
             p.run_tag()
         );
+    }
+
+    /// Only a live run against Binance's own host watches the schedule:
+    /// demo and testnet answer 404, an overridden host isn't Binance's.
+    #[tokio::test]
+    async fn only_live_watches_delistings() {
+        let db = crate::test_db::TempDb::new().await;
+        let watches = |c: BinanceConfig| {
+            BinanceSpotProvider::new(c, Credentials::new("k", "s"), vec![], db.store.clone())
+                .watches_delistings()
+        };
+        assert!(watches(cfg(Network::Live)));
+        assert!(!watches(cfg(Network::Demo)));
+        assert!(!watches(cfg(Network::Testnet)));
+        assert!(!watches(BinanceConfig {
+            rest_url: Some("http://localhost:1".into()),
+            ..cfg(Network::Live)
+        }));
     }
 }

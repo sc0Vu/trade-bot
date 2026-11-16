@@ -330,6 +330,14 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `exchange.network = "live"` + `--i-understand` (`cli::gate`, all combos
    tested); fake-money run refuses `*.binance.com` URL overrides except the
    two demo hosts.
+   Delisting schedule (`binance::delist`): live network on Binance's own host
+   only (demo/testnet 404, checked 2026-11-17) → `DelistWatch` wraps the feed,
+   polls `GET /sapi/v1/spot/delist-schedule` (`SignedClient::keyed`: key, no
+   signature; weight 100 per docs) before first event + every `DELIST_POLL`
+   (1h); whitelisted coin newly scheduled / moved → `Delisting { at }`, off
+   the list before its time → `at: None`; stamped with next market event's
+   ts (never wall clock: backfill after reconnect is older); poll failure =
+   warning. Not yet exercised against the live host (no live key here).
    Rate limits (`exchange::rate_limit`, `binance::limits`): sliding-window
    log, not bucket (Binance windows fixed; full bucket = ~2× limit across a
    reset). Budget 80% of weight 6000/min, orders 100/10s, 200k/day; one
