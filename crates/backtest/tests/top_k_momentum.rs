@@ -88,8 +88,8 @@ async fn report() -> Report {
 ///   turned negative: its slot stays cash); t7 ETH + SOL; t8 ETH only;
 ///   t9 BTC + ETH; t11 BTC only (decided on the last bar: never fills).
 /// Each rotation sells first and funds the buy from the estimated
-/// proceeds; when both fill at one open the buy may come first (coin
-/// order), which the broker allows.
+/// proceeds; at one open the buy waits for the sale even when its coin's
+/// candle is replayed first (t8, t10), so fills come out sale first.
 #[tokio::test]
 async fn holds_the_two_strongest_and_rotates_as_leadership_moves() {
     let r = engine_run().await;
@@ -118,12 +118,12 @@ async fn holds_the_two_strongest_and_rotates_as_leadership_moves() {
             row(5, "SOLUSDT", Side::Buy, dec!(51.06), dec!(86.523)),
             row(6, "BTCUSDT", Side::Sell, dec!(100.89), dec!(42.98252)),
             row(6, "SOLUSDT", Side::Sell, dec!(52.94), dec!(2.262)),
-            row(8, "ETHUSDT", Side::Buy, dec!(10.311), dec!(444.43187)),
             row(8, "SOLUSDT", Side::Sell, dec!(55.94), dec!(2.338)),
+            row(8, "ETHUSDT", Side::Buy, dec!(10.311), dec!(444.43187)),
             row(9, "ETHUSDT", Side::Sell, dec!(10.589), dec!(9.68139)),
             row(9, "SOLUSDT", Side::Sell, dec!(54.94), dec!(81.836)),
-            row(10, "BTCUSDT", Side::Buy, dec!(102.11), dec!(45.46214)),
             row(10, "ETHUSDT", Side::Sell, dec!(10.789), dec!(4.46654)),
+            row(10, "BTCUSDT", Side::Buy, dec!(102.11), dec!(45.46214)),
         ]
     );
     let q: Vec<Qty> = r.positions.iter().map(|p| p.qty()).collect();

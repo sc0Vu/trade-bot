@@ -26,11 +26,9 @@ pub struct Report {
     pub realized_pnl: Notional,
     /// Lowest cash balance after the fills of any one instant, starting at
     /// `initial_cash`. Fills sharing a timestamp are simultaneous (one
-    /// open, several coins), so cash is read after all of them: the broker
-    /// lets a buy spend what a market sell filling at the same open raises
-    /// (a rotation, as live, where the sell is sent first and fills at
-    /// once), and which coin's candle the backtest happens to replay first
-    /// must not decide the figure. The broker refuses buys it can't cover,
+    /// open, several coins), so cash is read after all of them: the order
+    /// the backtest replays coins in must not decide the figure. The
+    /// broker refuses buys it can't cover,
     /// so this stays at or above zero; negative would mean quote spent
     /// that wasn't there, a broker bug this independent ledger exists to
     /// expose.

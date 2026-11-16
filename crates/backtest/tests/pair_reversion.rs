@@ -87,8 +87,9 @@ async fn report() -> Report {
 ///   t4: ratio 10.4 above the mean by > 1 sd → ETH cheap → buy 10000 ETH;
 ///       fills t5 open 10 → 10.010: 999.00099.
 ///   t6: ratio 9.6 → BTC cheap → sell all ETH, buy BTC with the estimated
-///       proceeds; both fill at t7's open (BTC's candle first: the buy
-///       fills before the sale funding it, as the broker allows).
+///       proceeds; both fill at t7's open. BTC's candle is replayed first,
+///       but the buy waits for the sale funding it and fills after it,
+///       as live.
 ///   t8: ratio 10.4 → ETH cheap again → switch back (fills t9).
 ///   t9–t11: inside the band → keep ETH.
 #[tokio::test]
@@ -113,8 +114,8 @@ async fn switches_into_whichever_coin_is_cheap() {
         got,
         vec![
             row(5, "ETHUSDT", Side::Buy, dec!(10.010), dec!(999.00099)),
-            row(7, "BTCUSDT", Side::Buy, dec!(100.10), dec!(99.49112)),
             row(7, "ETHUSDT", Side::Sell, dec!(10.189), dec!(998.00198)),
+            row(7, "BTCUSDT", Side::Buy, dec!(100.10), dec!(99.49112)),
             row(9, "BTCUSDT", Side::Sell, dec!(103.89), dec!(99.39162)),
             row(9, "ETHUSDT", Side::Buy, dec!(10.311), dec!(1019.73364)),
         ]
@@ -126,9 +127,7 @@ async fn switches_into_whichever_coin_is_cheap() {
     assert_eq!(e.realized_pnl().get().round_dp(12), dec!(158.473712426160));
 }
 
-/// Cash 0.40855450398 + 0.00000888·97 + 1018.71391537·10. The t7 buy
-/// fills before the sale funding it, yet min_cash never dips below zero:
-/// fills of one instant count together.
+/// Cash 0.40855450398 + 0.00000888·97 + 1018.71391537·10.
 #[tokio::test]
 async fn report_matches_the_simulated_run() {
     let r = report().await;

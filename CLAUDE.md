@@ -422,8 +422,8 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    cash ledger (broker has none) replaying fills vs candles; equity = cash +
    holdings at latest close, once per close time. Max drawdown = fraction of
    running peak (starts at initial cash). `min_cash` = lowest cash after each
-   instant's fills (same ts = simultaneous: rotation buy may precede its
-   funding sell in replay order); report ledger independent of broker → negative = broker let overspend through (bug).
+   instant's fills (same ts = simultaneous; replay order must not decide
+   it); report ledger independent of broker → negative = broker let overspend through (bug).
    `BacktestProvider` takes `initial_cash` = PaperBroker balance (first
    instrument's quote; other-quoted orders refused) = report start. Closed trade = sell; win = realized
    delta > 0. Sharpe = mean/sample-sd of per-bar equity returns × √(bars/yr,
@@ -476,9 +476,13 @@ Candle = four prices, can't tell whether high or low first. So:
   higher) slipped + taker fee (no close yet → refused). Available =
   balance − reservations + pending market sells' expected proceeds (last
   close slipped, less fee): live market sell fills at once, buy right
-  after spends it (rotations). Resting limit sells not counted. At fill
-  buy re-checked on actual cost (sale raised less / cancelled) → dropped
-  unfilled; cash never negative.
+  after spends it (rotations). Resting limit sells not counted. Sells
+  never refused for quote. At fill buy checked vs ACTUAL cash (balance −
+  other reservations, no unfilled sale counted); short but same-open
+  market sells not yet settled (their coin's candle later in replay) would
+  cover → buy waits (`deferred`, still open/cancellable), fills after them
+  at its own candle, ts = that open; else / instant over → dropped
+  unfilled (live `-2010`). Fills in live order, cash never negative.
 - **intra-bar ambiguity**: stop and target both in one candle →
   model can't know which first, assumes worse. Finer-timeframe
   replay = future. Backtest P&L = model output, never promise.

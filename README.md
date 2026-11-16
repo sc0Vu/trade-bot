@@ -442,8 +442,9 @@ deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and aler
   params; changing a strategy's params (say, its coin list) starts it fresh.
 - The backtest broker trades from `--initial-cash` in one quote asset and
   refuses buys it can't cover, as Binance would. A buy placed right after
-  a market sell may count that sale's expected proceeds (last close); if
-  the sale raises less, the buy is dropped unfilled at the next bar.
+  a market sell may count that sale's expected proceeds (last close); at
+  the next open it fills after the sale, and if the sale raised less than
+  the buy costs, the buy is dropped unfilled (live: `-2010`).
 - BNB fees are valued at the BNB price in the trade's minute, an
   approximation, because Binance doesn't report its conversion rate.
 - MySQL is supported by the storage layer but untested.

@@ -90,6 +90,8 @@ async fn report() -> Report {
 ///       weight → buy BTC, sell ETH (both fill at t5).
 ///   t5: BTC +20% → its weight falls → sell; t6, t7: weights swing back
 ///       and forth; t8: BTC calm again → buy BTC, sell ETH.
+/// Where a buy's coin sorts before the sale funding it (t5, t9), the buy
+/// waits for the sale at the same open and fills after it.
 /// Budgets truncate at 8 dp, so the approximate root can't move a fill
 /// unless a budget lands within ~1e-20 of a truncation edge.
 #[tokio::test]
@@ -115,15 +117,15 @@ async fn trades_both_ways_as_relative_volatility_moves() {
         vec![
             row(3, "BTCUSDT", Side::Buy, dec!(101.11), dec!(32.43991)),
             row(3, "ETHUSDT", Side::Buy, dec!(10.211), dec!(658.11379)),
-            row(5, "BTCUSDT", Side::Buy, dec!(120.12), dec!(19.40676)),
             row(5, "ETHUSDT", Side::Sell, dec!(10.089), dec!(233.60458)),
+            row(5, "BTCUSDT", Side::Buy, dec!(120.12), dec!(19.40676)),
             row(6, "BTCUSDT", Side::Sell, dec!(95.90), dec!(40.95795)),
             row(7, "BTCUSDT", Side::Sell, dec!(99.90), dec!(6.28200)),
             row(7, "ETHUSDT", Side::Buy, dec!(9.910), dec!(459.03966)),
             row(8, "BTCUSDT", Side::Sell, dec!(100.89), dec!(4.51712)),
             row(8, "ETHUSDT", Side::Buy, dec!(10.010), dec!(47.54292)),
-            row(9, "BTCUSDT", Side::Buy, dec!(100.10), dec!(35.99087)),
             row(9, "ETHUSDT", Side::Sell, dec!(10.089), dec!(360.57456)),
+            row(9, "BTCUSDT", Side::Buy, dec!(100.10), dec!(35.99087)),
         ]
     );
     let (b, e) = (&r.positions[0], &r.positions[1]);

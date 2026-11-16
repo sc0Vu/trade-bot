@@ -224,9 +224,15 @@ can spend (its quote budget, its notional at the limit, or a market buy's
 notional at the last close plus slippage). A pending market sell's
 expected proceeds count as available: live, a market sell fills at once,
 so a buy placed right after it can spend them, and rotating strategies
-rely on that. When a buy fills, its actual cost is checked again, and if
-it no longer fits (the sale raised less, or was cancelled) the buy is
-dropped unfilled, so cash never goes negative. A finer
+rely on that. A sell is never refused for lack of quote. When a buy
+fills, its actual cost is checked against actual cash, counting no sale
+that hasn't filled yet. A backtest replays one coin's candle at a time, so
+at one open a rotation's buy can come due before the sale funding it (its
+coin sorts first); it then waits for the market sells filling at that
+same open, and fills after them at its own candle's price, as live, where
+the sale goes first. If it still doesn't fit (the sale raised less, or
+was cancelled) it is dropped unfilled, as Binance would refuse it
+(`-2010`), so cash never goes negative. A finer
 `VolumeFillModel` (capping fills at a share of bar volume) can be plugged in
 later; the engine and strategies never see which model is in use.
 
@@ -239,11 +245,9 @@ All figures are exact decimals:
 - **Maximum drawdown** is a fraction of the running peak, which starts at
   the initial cash.
 - **`min_cash`** is the lowest cash after the fills of any one instant.
-  Fills with the same timestamp (several coins at one open) count
-  together: the broker lets a buy spend what a market sell at the same
-  open raises, as live, where the sell goes first and fills at once, so
-  cash read between two simultaneous fills would depend only on which
-  coin's candle the backtest replays first. The report's ledger is
+  Fills with the same timestamp (several coins at one open) are
+  simultaneous and count together, so the order the backtest replays
+  coins in can't decide the figure. The report's ledger is
   independent of the broker's balance, so a negative value would expose a
   broker that let an overspend through.
 - **A closed trade** is a sell, and it counts as a win if its realized P&L

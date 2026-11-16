@@ -3,7 +3,7 @@ use crate::{Broker, ExchangeError};
 use async_trait::async_trait;
 use bot_core::{
     Asset, Candle, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent, Notional,
-    Order, OrderId, OrderKind, Position, Price, Qty, Side, Size,
+    Order, OrderId, OrderKind, Position, Price, Qty, Side, Size, Timestamp,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,6 +24,24 @@ struct Pending {
     /// Quote held back for this buy (zero for sells): the most it can
     /// spend, set at submit.
     reserved: Notional,
+}
+
+/// A buy whose fill came due at an open but which only fits once market
+/// sales filling at that same open have landed: it waits for them, within
+/// that instant, and then fills at its own candle's price (see
+/// [`PaperBroker`]).
+struct Deferred {
+    pending: Pending,
+    candle: Candle,
+    exec: Execution,
+}
+
+/// What became of an order the fill model said fills now.
+enum Outcome {
+    Filled(Fill),
+    /// A buy waiting for same-instant sales (cash only).
+    Defer,
+    Dropped,
 }
 
 /// The one quote balance the broker trades from.
@@ -57,12 +75,21 @@ struct Cash {
 /// market sells (last close, slipped, less fee): live, a market sell fills
 /// at once, so a buy placed right after can spend what it raised, and
 /// rotating strategies depend on that. Resting limit sells don't count;
-/// they may never fill. When a buy fills, its actual cost is checked
-/// again against what is then available (an expected sale may have
-/// raised less, or been cancelled) and the buy is dropped unfilled if it
-/// no longer fits, so cash never goes negative. Orders on an instrument
-/// quoted in another asset are refused. Without a balance nothing is
-/// refused for lack of quote.
+/// they may never fill. A sell is never refused for lack of quote.
+///
+/// When a buy fills, its actual cost is checked against actual cash: the
+/// balance less what other pending buys reserve, with no sale counted
+/// before it has filled. Live, the sale goes first and fills at once, and
+/// the buy then spends what it really raised. A backtest replays one coin's
+/// candle at a time, so at one open a rotation's buy can come due before
+/// the sale funding it (the coin bought sorts first). Such a buy waits:
+/// it is held until the market sells that fill at the same open have
+/// landed, then filled at its own candle's price and stamped with that
+/// open, after them. If it still doesn't fit (a sale raised less than
+/// expected, or was cancelled), it is dropped unfilled, as a live venue
+/// refuses it (`-2010`). So fills come out in live order and cash never
+/// goes negative. Orders on an instrument quoted in another asset are
+/// refused. Without a balance nothing is refused for lack of quote.
 ///
 /// Given an [`OrderGate`] ([`PaperBroker::with_gate`]) it also refuses what
 /// the gate says the venue would (a halted market). The gate decides only
@@ -73,6 +100,11 @@ pub struct PaperBroker {
     slippage: Box<dyn SlippageModel>,
     fees: Box<dyn FeeModel>,
     pending: Vec<Pending>,
+    /// Buys waiting for a same-instant sale; see the type docs.
+    deferred: Vec<Deferred>,
+    /// Open time of the latest candle settled per instrument: tells which
+    /// pending sales can still fill at a given open.
+    last_open: HashMap<InstrumentId, Timestamp>,
     positions: HashMap<InstrumentId, Position>,
     cash: Option<Cash>,
     /// Latest close per instrument: prices market orders for the balance
@@ -96,6 +128,8 @@ impl PaperBroker {
             slippage,
             fees,
             pending: Vec::new(),
+            deferred: Vec::new(),
+            last_open: HashMap::new(),
             positions: HashMap::new(),
             cash: None,
             last_close: HashMap::new(),
@@ -186,17 +220,55 @@ impl PaperBroker {
     /// Quote a new buy may spend now: balance, less pending reservations,
     /// plus the expected proceeds of pending market sells.
     fn available(&self) -> Notional {
-        let Some(cash) = &self.cash else {
-            return Notional::ZERO;
-        };
-        let mut free = cash.balance;
+        let mut free = self.spendable();
         for p in &self.pending {
-            free -= p.reserved;
             if p.order.side == Side::Sell && p.order.kind == OrderKind::Market {
                 free += self.expected_proceeds(&p.order);
             }
         }
         free
+    }
+
+    /// Quote a buy filling now may spend: the balance less what the other
+    /// waiting buys reserve. No sale counts before it has filled.
+    fn spendable(&self) -> Notional {
+        let Some(cash) = &self.cash else {
+            return Notional::ZERO;
+        };
+        let reserved: Notional = self
+            .pending
+            .iter()
+            .chain(self.deferred.iter().map(|d| &d.pending))
+            .map(|p| p.reserved)
+            .sum();
+        cash.balance - reserved
+    }
+
+    /// Expected proceeds of pending market sells that can still fill at
+    /// the open `at`: decided before it, on an instrument whose candle for
+    /// `at` hasn't been settled yet.
+    fn incoming(&self, at: Timestamp) -> Notional {
+        self.pending
+            .iter()
+            .filter(|p| {
+                p.order.side == Side::Sell
+                    && p.order.kind == OrderKind::Market
+                    && p.order.created_at < at
+                    && self
+                        .last_open
+                        .get(&p.order.instrument)
+                        .is_none_or(|t| *t < at)
+            })
+            .map(|p| self.expected_proceeds(&p.order))
+            .sum()
+    }
+
+    /// Every order not yet filled: pending, and buys waiting for a sale.
+    fn all_open(&self) -> impl Iterator<Item = &Order> {
+        self.pending
+            .iter()
+            .map(|p| &p.order)
+            .chain(self.deferred.iter().map(|d| &d.pending.order))
     }
 
     /// What a pending market sell should raise at the last close, slipped,
@@ -259,8 +331,19 @@ impl PaperBroker {
         Some(q)
     }
 
-    fn execute(&mut self, order: &Order, candle: &Candle, exec: super::Execution) -> Option<Fill> {
-        let instrument = self.instruments.get(&order.instrument)?;
+    /// Fills `order` at `candle` as `exec` says, if cash allows: a buy that
+    /// doesn't fit actual cash waits (`Defer`) when `may_wait` and sales
+    /// filling at this same open would cover it, else is dropped.
+    fn execute(
+        &mut self,
+        order: &Order,
+        candle: &Candle,
+        exec: super::Execution,
+        may_wait: bool,
+    ) -> Outcome {
+        let Some(instrument) = self.instruments.get(&order.instrument) else {
+            return Outcome::Dropped;
+        };
         // A limit never fills worse than its limit: slippage on a taker
         // limit fill (marketable at the open) stops at the limit price.
         let price = cap_at_limit(order, self.slippage.apply(instrument, order.side, exec));
@@ -271,7 +354,7 @@ impl PaperBroker {
                 Some(q) => q,
                 None => {
                     tracing::warn!(order = %order.id, "quote budget too small at fill price; order dropped");
-                    return None;
+                    return Outcome::Dropped;
                 }
             },
         };
@@ -296,15 +379,21 @@ impl PaperBroker {
             Ok(f) => f,
             Err(e) => {
                 tracing::warn!(order = %order.id, error = %e, "paper fill invalid; order dropped");
-                return None;
+                return Outcome::Dropped;
             }
         };
         let notional = instrument.notional(fill.qty, fill.price);
         let quote_fee = quote_part(&fill.fee);
-        if order.side == Side::Buy && self.cash.is_some() && notional + quote_fee > self.available()
-        {
-            tracing::warn!(order = %order.id, "insufficient balance at fill; order dropped");
-            return None;
+        if order.side == Side::Buy && self.cash.is_some() {
+            let cost = notional + quote_fee;
+            let now = self.spendable();
+            if cost > now {
+                if may_wait && cost <= now + self.incoming(candle.open_time) {
+                    return Outcome::Defer;
+                }
+                tracing::warn!(order = %order.id, "insufficient balance at fill; order dropped");
+                return Outcome::Dropped;
+            }
         }
         let position = self
             .positions
@@ -312,7 +401,7 @@ impl PaperBroker {
             .or_insert_with(|| Position::flat(order.instrument.clone()));
         if let Err(e) = position.apply(&fill, instrument) {
             tracing::warn!(order = %order.id, error = %e, "paper fill rejected by position; order dropped");
-            return None;
+            return Outcome::Dropped;
         }
         if let Some(cash) = &mut self.cash {
             match order.side {
@@ -320,7 +409,29 @@ impl PaperBroker {
                 Side::Sell => cash.balance += notional - quote_fee,
             }
         }
-        Some(fill)
+        Outcome::Filled(fill)
+    }
+
+    /// Retries the buys waiting for a sale, in order, as of the candle
+    /// opening at `now`: one whose open is earlier gets its last chance
+    /// (its instant is over: fill if it fits, else drop); one at `now`
+    /// fills once it fits and keeps waiting while sales may still land.
+    fn retry_deferred(&mut self, now: Timestamp) -> Vec<Fill> {
+        let mut fills = Vec::new();
+        let mut i = 0;
+        while i < self.deferred.len() {
+            let d = self.deferred.remove(i);
+            let may_wait = d.candle.open_time >= now;
+            match self.execute(&d.pending.order, &d.candle, d.exec, may_wait) {
+                Outcome::Filled(f) => fills.push(f),
+                Outcome::Defer => {
+                    self.deferred.insert(i, d);
+                    i += 1;
+                }
+                Outcome::Dropped => {}
+            }
+        }
+        fills
     }
 }
 
@@ -351,7 +462,7 @@ impl Broker for PaperBroker {
         if !self.instruments.contains_key(&order.instrument) {
             return Err(ExchangeError::UnknownInstrument(order.instrument.clone()));
         }
-        if self.pending.iter().any(|p| p.order.id == order.id) {
+        if self.all_open().any(|o| o.id == order.id) {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
         if let Some(g) = &self.gate {
@@ -362,7 +473,7 @@ impl Broker for PaperBroker {
             self.instruments
                 .get(&order.instrument)
                 .ok_or_else(|| ExchangeError::UnknownInstrument(order.instrument.clone()))?,
-            self.pending.iter().map(|p| &p.order),
+            self.all_open(),
             &order,
         )?;
         if let (Side::Sell, Size::Base(qty)) = (order.side, order.size) {
@@ -372,7 +483,9 @@ impl Broker for PaperBroker {
             }
         }
         let reserved = self.reservation(&order)?;
-        if reserved > self.available() {
+        // A sale needs no quote, even when a cancelled sale left less
+        // available than the buys sized against it reserve.
+        if order.side == Side::Buy && reserved > self.available() {
             return Err(ExchangeError::Rejected("insufficient balance"));
         }
         let id = order.id.clone();
@@ -392,9 +505,10 @@ impl Broker for PaperBroker {
             g.check_cancel(&p.order.instrument)
                 .map_err(ExchangeError::Rejected)?;
         }
-        let before = self.pending.len();
+        let before = self.pending.len() + self.deferred.len();
         self.pending.retain(|p| p.order.id != id);
-        if self.pending.len() == before {
+        self.deferred.retain(|d| d.pending.order.id != id);
+        if self.pending.len() + self.deferred.len() == before {
             return Err(ExchangeError::UnknownOrder(id));
         }
         Ok(())
@@ -404,7 +518,8 @@ impl Broker for PaperBroker {
         let MarketEvent::Candle(candle) = event else {
             return Ok(Vec::new());
         };
-        let mut fills = Vec::new();
+        // Buys from an earlier open still waiting: that instant is over.
+        let mut fills = self.retry_deferred(candle.open_time);
         // In place, so a filling order is checked against the orders still
         // pending around it.
         let mut i = 0;
@@ -419,7 +534,15 @@ impl Broker for PaperBroker {
             match self.fill_model.evaluate(&p.order, p.state, candle) {
                 Decision::Fill(exec) => {
                     let p = self.pending.remove(i);
-                    fills.extend(self.execute(&p.order, candle, exec));
+                    match self.execute(&p.order, candle, exec, true) {
+                        Outcome::Filled(f) => fills.push(f),
+                        Outcome::Defer => self.deferred.push(Deferred {
+                            pending: p,
+                            candle: candle.clone(),
+                            exec,
+                        }),
+                        Outcome::Dropped => {}
+                    }
                 }
                 Decision::Trigger => {
                     self.pending[i].state = OrderState {
@@ -437,8 +560,12 @@ impl Broker for PaperBroker {
                 }
             }
         }
+        self.last_open
+            .insert(candle.instrument.clone(), candle.open_time);
         self.last_close
             .insert(candle.instrument.clone(), candle.close);
+        // This candle's sales have landed: waiting buys may fit now.
+        fills.extend(self.retry_deferred(candle.open_time));
         Ok(fills)
     }
 
@@ -450,7 +577,7 @@ impl Broker for PaperBroker {
     }
 
     fn open_orders(&self) -> Vec<Order> {
-        self.pending.iter().map(|p| p.order.clone()).collect()
+        self.all_open().cloned().collect()
     }
 }
 
@@ -1000,5 +1127,172 @@ mod tests {
         assert!(ExchangeError::Rejected("market is cancel-only").is_order_rejection());
         b.cancel(OrderId::new("o-1").unwrap()).await.unwrap();
         assert!(b.open_orders().is_empty());
+    }
+
+    // --- a rotation across two coins at one open ---
+
+    fn ethusdt() -> Instrument {
+        Instrument::new(InstrumentSpec {
+            id: "binance:ETHUSDT".parse().unwrap(),
+            base: bot_core::Asset::new("ETH").unwrap(),
+            ..btcusdt().into()
+        })
+        .unwrap()
+    }
+
+    fn eth_ev(i: i64, open: &str, close: &str) -> MarketEvent {
+        let c = candle(i, [open, open.max(close), open.min(close), close]);
+        MarketEvent::Candle(
+            Candle::new(bot_core::CandleSpec {
+                instrument: ethusdt().id.clone(),
+                ..c.into()
+            })
+            .unwrap(),
+        )
+    }
+
+    fn on(o: Order, id: &InstrumentId) -> Order {
+        Order::new(OrderSpec {
+            instrument: id.clone(),
+            ..o.into()
+        })
+        .unwrap()
+    }
+
+    /// No fees or slippage; cash 1000. t1: holds 10 ETH bought at 100,
+    /// cash 0, and decides a rotation: sell the 10 ETH, buy 1000 of BTC.
+    fn rotating() -> PaperBroker {
+        let mut b = PaperBroker::new(
+            vec![btcusdt(), ethusdt()],
+            Box::new(NextOpenFillModel),
+            Box::new(BpsSlippage::zero()),
+            Box::new(RateFee::new(dec!(0), dec!(0), FeeAsset::Received).unwrap()),
+        )
+        .with_cash(btcusdt().quote.clone(), Notional::new(dec!(1000)));
+        let eth = ethusdt().id.clone();
+        futures_block(async {
+            b.settle(&ev(0, ["200", "200", "200", "200"]))
+                .await
+                .unwrap();
+            b.settle(&eth_ev(0, "100", "100")).await.unwrap();
+            b.submit(on(market("o-1", Side::Buy, dec!(10), 0), &eth))
+                .await
+                .unwrap();
+            b.settle(&ev(1, ["200", "200", "200", "200"]))
+                .await
+                .unwrap();
+            let f = b.settle(&eth_ev(1, "100", "100")).await.unwrap();
+            assert_eq!(f.len(), 1);
+            assert_eq!(b.cash(), Some(Notional::ZERO));
+            b.submit(on(market("o-2", Side::Sell, dec!(10), 1), &eth))
+                .await
+                .unwrap();
+            b.submit(buy_with("o-3", dec!(1000), 1)).await.unwrap();
+        });
+        b
+    }
+
+    fn futures_block<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// BTC's candle comes first at t2 (coin order), but the buy can't be
+    /// paid before the sale lands: it waits (still open), then fills after
+    /// the sale, at BTC's open 200 (5 BTC), stamped t2's open. Cash 0 -> 1000
+    /// -> 0, never below.
+    #[test]
+    fn a_rotation_buy_waits_for_the_sale_at_the_same_open() {
+        let mut b = rotating();
+        futures_block(async {
+            let first = b
+                .settle(&ev(2, ["200", "200", "200", "200"]))
+                .await
+                .unwrap();
+            assert!(first.is_empty(), "nothing paid for it yet");
+            assert_eq!(b.open_orders().len(), 2);
+            let then = b.settle(&eth_ev(2, "100", "100")).await.unwrap();
+            let got: Vec<_> = then
+                .iter()
+                .map(|f| (f.order_id.to_string(), f.qty))
+                .collect();
+            assert_eq!(
+                got,
+                vec![
+                    ("o-2".to_owned(), Qty::new(dec!(10))),
+                    ("o-3".to_owned(), Qty::new(dec!(5))),
+                ]
+            );
+            assert_eq!(then[1].ts, Timestamp::from_millis(2 * HOUR));
+            assert_eq!(then[1].price, Price::new(dec!(200)));
+            assert_eq!(b.cash(), Some(Notional::ZERO));
+            assert!(b.open_orders().is_empty());
+        });
+    }
+
+    /// ETH opens at 99: the sale raises 990, the 1000 buy no longer fits
+    /// and is dropped, as a live venue would refuse it (-2010). Cash 990.
+    #[test]
+    fn a_rotation_buy_the_sale_cant_pay_for_is_dropped() {
+        let mut b = rotating();
+        futures_block(async {
+            b.settle(&ev(2, ["200", "200", "200", "200"]))
+                .await
+                .unwrap();
+            let fills = b.settle(&eth_ev(2, "99", "99")).await.unwrap();
+            assert_eq!(fills.len(), 1);
+            assert_eq!(fills[0].side, Side::Sell);
+            assert_eq!(b.cash(), Some(Notional::new(dec!(990))));
+            assert!(b.open_orders().is_empty());
+        });
+    }
+
+    /// A waiting buy can be cancelled; one whose sale has no candle at its
+    /// open gets its last chance at the next open, and is dropped.
+    #[test]
+    fn a_waiting_buy_can_be_cancelled_or_runs_out_of_time() {
+        let mut b = rotating();
+        futures_block(async {
+            b.settle(&ev(2, ["200", "200", "200", "200"]))
+                .await
+                .unwrap();
+            b.cancel(OrderId::new("o-3").unwrap()).await.unwrap();
+            let fills = b.settle(&eth_ev(2, "100", "100")).await.unwrap();
+            assert_eq!(fills.len(), 1);
+            assert_eq!(b.cash(), Some(Notional::new(dec!(1000))));
+        });
+
+        let mut b = rotating();
+        futures_block(async {
+            b.settle(&ev(2, ["200", "200", "200", "200"]))
+                .await
+                .unwrap();
+            // ETH's t2 candle never comes; BTC's t3 does.
+            let fills = b
+                .settle(&ev(3, ["200", "200", "200", "200"]))
+                .await
+                .unwrap();
+            assert!(fills.is_empty());
+            assert_eq!(b.open_orders().len(), 1, "only the sale is left");
+            assert_eq!(b.cash(), Some(Notional::ZERO));
+        });
+    }
+
+    /// The buy was sized against a sale since cancelled: available is now
+    /// 0 - 1000. A new sale is still accepted (it needs no quote); before,
+    /// "insufficient balance" refused it and left the strategy unable to
+    /// sell at all.
+    #[test]
+    fn a_sale_is_never_refused_for_lack_of_quote() {
+        let mut b = rotating();
+        futures_block(async {
+            b.cancel(OrderId::new("o-2").unwrap()).await.unwrap();
+            b.submit(on(market("o-4", Side::Sell, dec!(10), 1), &ethusdt().id))
+                .await
+                .unwrap();
+            assert!(rejected(b.submit(buy_with("o-5", dec!(5), 1)).await));
+        });
     }
 }
