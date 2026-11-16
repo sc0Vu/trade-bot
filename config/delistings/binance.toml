@@ -12,3 +12,15 @@
 # announced = 2024-01-01T00:00:00Z
 # at = 2024-01-15T03:00:00Z
 # source = "https://www.binance.com/en/support/announcement/..."
+
+# EOS token swap and rebrand to Vaulta (A), 1 EOS -> 1 A: Binance removed
+# every EOS spot pair and cancelled pending EOS orders at 03:00 UTC on
+# 2025-05-26. Published 2025-05-14; the time of day isn't given, so the end
+# of that day is used (later can't leak the future). A swap, not a loss:
+# the backtest sells EOS before it, as a holder could have; the A series
+# that followed is a new listing.
+[[delisting]]
+symbol = "EOSUSDT"
+announced = 2025-05-14T23:59:00Z
+at = 2025-05-26T03:00:00Z
+source = "https://www.binance.com/en/support/announcement/1e89a9ca957c4b0ca7502e60b993e201"
