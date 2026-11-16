@@ -204,6 +204,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
           <tr><td>buy_and_hold</td><td>Nothing: the benchmark. Buys once, holds forever.</td><td>The coin falls.</td></tr>
           <tr><td>dca</td><td>Spreading entry over time (hour, day, week, month).</td><td>Removes timing risk, not direction risk; buys all the way down.</td></tr>
           <tr><td>sma_trend</td><td>Trends: long above the SMA, cash below.</td><td>Ranges cause whipsaws.</td></tr>
+          <tr><td>trailing_stop</td><td>Capping the fall from the best close: sells a set % off the peak, buys back a set % off the trough.</td><td>Chop: sells near lows, rebuys higher; crashes gap past the stop.</td></tr>
           <tr><td>dual_ma_cross</td><td>Trends: long while the fast average is above the slow one.</td><td>Ranges and lag.</td></tr>
           <tr><td>macd_cross</td><td>Trends: long while MACD is above its signal line.</td><td>Ranges (turns early, whipsaws) and lag at turns.</td></tr>
           <tr><td>donchian_breakout</td><td>Breakouts beyond the prior channel continuing.</td><td>False breakouts in ranges.</td></tr>

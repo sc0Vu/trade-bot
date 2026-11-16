@@ -1,0 +1,25 @@
+# trailing_stop: buy-and-hold with a trailing exit. Sells once the close
+# falls trail_pct below its best close since entry, buys back once it
+# rises reentry_pct above its lowest close since the exit. Caps drawdown;
+# in chop it sells low and rebuys higher. Not tuned; edge unverified:
+# compare against buy_and_hold on the same coin.
+#
+#   cargo run -p cli -- run --paper --config config/examples/trailing_stop.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "trailing_stop"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+quote_amount = "100"    # USDT per entry (quote-budget market buy)
+trail_pct = "0.2"       # sell 20% below the best close since entry
+reentry_pct = "0.1"     # buy back 10% above the lowest close since exit
+fee = "0.001"
+slippage_bps = "5"

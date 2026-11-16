@@ -54,6 +54,7 @@ pub mod rebalance;
 pub mod risk_parity;
 pub mod rsi_reversion;
 pub mod sma_trend;
+pub mod trailing_stop;
 pub mod tsmom;
 pub mod vol_target;
 pub mod volatility_breakout;

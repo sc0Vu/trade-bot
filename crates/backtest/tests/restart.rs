@@ -305,6 +305,18 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "trailing_stop",
+            fixture: "trailing_stop",
+            coins: BTC,
+            bars: 12,
+            params: r#"coin = "binance:BTCUSDT"
+                quote_amount = "1000"
+                trail_pct = "0.1"
+                reentry_pct = "0.05"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "vol_target",
             fixture: "vol_target",
             coins: BTC,

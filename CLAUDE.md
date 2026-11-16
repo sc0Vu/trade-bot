@@ -530,7 +530,7 @@ tsmom,
 risk_parity) only
 version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
-`last_eval`; grid stage, gaps,
+`last_eval`; trailing_stop `started` + track (side, extreme, last close time); grid stage, gaps,
 dust. Pinned by
 `crates/backtest/tests/restart.rs`: every strategy, every idle cut point
 (no working order): run₁ + save → fresh strategy + restore + Backfill
@@ -626,6 +626,16 @@ to weight if > `band` off. Approx sqrt sets weight only; orders exact.
 Bets on volatility clustering (cuts drawdown, not a return forecast);
 late after crashes; trades as vol moves.
 
+`trailing_stop` — one coin, stateful. First candle flat → buy
+`quote_amount` (already long → trail). Long (books: sellable, dust = out):
+peak = highest close since long; close ≤ peak·(1 − `trail_pct`) → market
+sell all. Out: trough = lowest close since out; close ≥ trough·(1 +
+`reentry_pct`) → buy `quote_amount`. Side flip in books (or refusal) →
+track restarts from current close (no `-2010` loop). Each decision folds
+every history bar newer than last folded close time → Backfill (restart
+warm-up, reconnect gap) still moves the peak. Restore takes state as is
+(side flip handled by next decision). Drawdown cap; chop = round trips.
+
 `risk_parity` — `rebalance` machinery, ≥ 2 coins (one quote), weights
 moving: `exposure`·(1/sd_i)/Σ(1/sd_j), sd = `indicator::return_sd` over
 `vol_period` returns (per-bar: ratios need no annualizing); any sd 0 → no
@@ -705,7 +715,7 @@ crates/
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
                buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, macd_cross,
                momentum_rotation, ratio_hop, rebalance, risk_parity, rsi_reversion, sma_trend,
-               tsmom, vol_target, volatility_breakout)
+               trailing_stop, tsmom, vol_target, volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
                return_sd = sample sd of simple returns, approx. sqrt: sizing only;
