@@ -525,7 +525,8 @@ Start. No/refused state: resume on most valuable sellable held coin
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
-volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross) only
+volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross,
+risk_parity) only
 version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
 `last_eval`; grid stage, gaps,
@@ -624,6 +625,13 @@ to weight if > `band` off. Approx sqrt sets weight only; orders exact.
 Bets on volatility clustering (cuts drawdown, not a return forecast);
 late after crashes; trades as vol moves.
 
+`risk_parity` — `rebalance` machinery, ≥ 2 coins (one quote), weights
+moving: `exposure`·(1/sd_i)/Σ(1/sd_j), sd = `indicator::return_sd` over
+`vol_period` returns (per-bar: ratios need no annualizing); any sd 0 → no
+decision. Once per close time all coins in, idle (`portfolio::idle`).
+Naive (no correlation). Lowers concentration, predicts nothing; trails the
+winner; trades as relative vol moves.
+
 `dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
 SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
 cross event: first bar with `slow_period` closes buys at once if fast on top.
@@ -685,10 +693,10 @@ Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, `script` (feature `rhai`:
-               script strategies), built-ins (atr_breakout, avwap,
-               bollinger_reversion, buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid,
-               macd_cross, momentum_rotation, ratio_hop, rebalance, rsi_reversion, sma_trend, vol_target,
-               volatility_breakout)
+               script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
+               buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, macd_cross,
+               momentum_rotation, ratio_hop, rebalance, risk_parity, rsi_reversion, sma_trend,
+               vol_target, volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
                return_sd = sample sd of simple returns, approx. sqrt: sizing only;

@@ -64,8 +64,8 @@ user_stream = true
 [strategy]
 # A registered strategy: atr_breakout, avwap, bollinger_reversion,
 # buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, macd_cross,
-# momentum_rotation, ratio_hop, rebalance, rsi_reversion, sma_trend,
-# vol_target, volatility_breakout; or "rhai" (a build with the `rhai`
+# momentum_rotation, ratio_hop, rebalance, risk_parity, rsi_reversion,
+# sma_trend, vol_target, volatility_breakout; or "rhai" (a build with the `rhai`
 # feature) to run a script named by strategy.params.script.
 # config/examples/ has a complete config for each.
 name = "ratio_hop"

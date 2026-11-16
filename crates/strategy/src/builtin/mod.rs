@@ -51,6 +51,7 @@ pub mod momentum_rotation;
 mod portfolio;
 pub mod ratio_hop;
 pub mod rebalance;
+pub mod risk_parity;
 pub mod rsi_reversion;
 pub mod sma_trend;
 pub mod vol_target;

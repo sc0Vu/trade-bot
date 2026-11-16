@@ -1,0 +1,29 @@
+# risk_parity: several coins, each weighted by the inverse of its recent
+# volatility, so no one coin dominates the swings. Traded back with market
+# orders once a weight drifts past the band. Predicts no returns: it lowers
+# concentration. Ignores correlation (high between coins); holds little of
+# a volatile coin in its rallies. Not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/risk_parity.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "risk_parity"
+
+[strategy.params]
+coins = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"]   # one quote asset
+capital = "1000"        # USDT the strategy manages (its starting cash)
+vol_period = 30         # daily returns per volatility estimate; <= engine.history_len - 1
+exposure = "1"          # fraction of capital in coins; the rest stays USDT
+band = "0.05"           # trade back once a weight is 5 points off
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 60

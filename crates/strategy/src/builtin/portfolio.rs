@@ -1,5 +1,6 @@
-//! Holding target weights of a fixed capital: shared by `rebalance` and
-//! `vol_target`.
+//! Holding target weights of a fixed capital: shared by every strategy
+//! that holds weights rather than fixed amounts (`rebalance`, `vol_target`
+//! and the ones after them).
 //!
 //! A strategy can't see the account balance (invariant 5: only positions,
 //! history, orders), and the account may hold more than the strategy is
@@ -67,6 +68,54 @@ impl Backoff {
         self.skip -= 1;
         true
     }
+}
+
+/// True when nothing the strategy placed on any of `coins` can still fill:
+/// none open, none being cancelled. A portfolio decision made while an
+/// order works would double it.
+pub(crate) fn idle<'a>(ctx: &Context, coins: impl IntoIterator<Item = &'a InstrumentId>) -> bool {
+    coins.into_iter().all(|id| {
+        ctx.open_orders(id).next().is_none() && ctx.cancelling_orders(id).next().is_none()
+    })
+}
+
+/// The fee plus slippage fraction one market trade is assumed to cost.
+pub(crate) fn trade_cost(fee: Decimal, slippage_bps: Decimal) -> Decimal {
+    fee + slippage_bps / Decimal::from(10_000)
+}
+
+/// Checks the params every portfolio strategy shares; the reason on error.
+pub(crate) fn check_common(
+    capital: Notional,
+    band: Decimal,
+    fee: Decimal,
+    slippage_bps: Decimal,
+) -> Result<(), &'static str> {
+    if !capital.is_positive() {
+        return Err("capital must be positive");
+    }
+    if band <= Decimal::ZERO || band >= Decimal::ONE {
+        return Err("band must be in (0, 1)");
+    }
+    if fee < Decimal::ZERO || fee >= Decimal::ONE {
+        return Err("fee must be in [0, 1)");
+    }
+    if slippage_bps < Decimal::ZERO || slippage_bps >= Decimal::from(10_000) {
+        return Err("slippage_bps must be in [0, 10000)");
+    }
+    Ok(())
+}
+
+/// Refuses an empty coin list or one naming a coin twice.
+pub(crate) fn check_coins(coins: &[InstrumentId], at_least: usize) -> Result<(), String> {
+    if coins.len() < at_least {
+        return Err(format!("coins must name at least {at_least}"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    if let Some(dup) = coins.iter().find(|c| !seen.insert(*c)) {
+        return Err(format!("coins names {dup} twice"));
+    }
+    Ok(())
 }
 
 /// A coin and the fraction of the portfolio's value it should be.
@@ -422,6 +471,50 @@ pub(crate) mod tests {
             dec!(0.002),
         );
         assert_eq!(got, Some(vec![buy(btc(), dec!(5))]));
+    }
+
+    #[test]
+    fn idle_means_nothing_open_or_cancelling() {
+        let mut ctx = ctx();
+        assert!(idle(&ctx, [&btc(), &eth()]));
+        let o = bot_core::Order::new(bot_core::OrderSpec {
+            id: bot_core::OrderId::new("o-1").unwrap(),
+            instrument: eth(),
+            side: Side::Buy,
+            size: Size::Quote(Notional::new(dec!(10))),
+            kind: OrderKind::Market,
+            created_at: Timestamp::from_millis(0),
+        })
+        .unwrap();
+        driver::set_cancelling_orders(&mut ctx, vec![o.clone()]);
+        assert!(!idle(&ctx, [&btc(), &eth()]));
+        assert!(idle(&ctx, [&btc()]));
+        driver::set_cancelling_orders(&mut ctx, vec![]);
+        driver::set_open_orders(&mut ctx, vec![o]);
+        assert!(!idle(&ctx, [&eth()]));
+    }
+
+    #[test]
+    fn common_checks() {
+        let ok = |c: &str, b: &str, f: &str, s: &str| {
+            check_common(
+                Notional::new(c.parse().unwrap()),
+                b.parse().unwrap(),
+                f.parse().unwrap(),
+                s.parse().unwrap(),
+            )
+            .is_ok()
+        };
+        assert!(ok("100", "0.05", "0.001", "5"));
+        assert!(!ok("0", "0.05", "0.001", "5"));
+        assert!(!ok("100", "0", "0.001", "5"));
+        assert!(!ok("100", "1", "0.001", "5"));
+        assert!(!ok("100", "0.05", "1", "5"));
+        assert!(!ok("100", "0.05", "0.001", "10000"));
+        assert_eq!(trade_cost(dec!(0.001), dec!(10)), dec!(0.002));
+        assert!(check_coins(&[btc(), eth()], 2).is_ok());
+        assert!(check_coins(&[btc()], 2).is_err());
+        assert!(check_coins(&[btc(), btc()], 1).is_err());
     }
 
     #[test]
