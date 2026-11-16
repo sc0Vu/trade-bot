@@ -10,6 +10,7 @@ One complete, runnable config per built-in strategy:
 | `sma_trend.toml` | one coin, long above its moving average |
 | `dual_ma_cross.toml` | one coin, long while the fast average is above the slow |
 | `donchian_breakout.toml` | one coin, channel breakouts |
+| `atr_breakout.toml` | one coin, ATR-band breakout, ATR trailing stop |
 | `rsi_reversion.toml` | one coin, buy oversold / sell overbought |
 | `momentum_rotation.toml` | several coins, hold the strongest |
 | `ratio_hop.toml` | several coins, rotate when units ratchet up |

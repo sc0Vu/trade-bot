@@ -1,0 +1,29 @@
+# atr_breakout: one coin. Buys a close more than entry_mult ATRs above the
+# average of the last `period` closes; sells a close more than exit_mult
+# ATRs below the highest high of those bars (a chandelier stop). ATR scales
+# both thresholds to recent noise. LeBeau's 22-bar, 3-ATR stop; not tuned;
+# edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/atr_breakout.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "atr_breakout"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+period = 22             # needs period + 1 candles of history
+entry_mult = "1"        # ATRs above the average to buy
+exit_mult = "3"         # ATRs below the window's high to sell
+quote_amount = "100"
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

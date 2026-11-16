@@ -241,6 +241,19 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "atr_breakout",
+            fixture: "atr_breakout",
+            coins: BTC,
+            bars: 9,
+            params: r#"coin = "binance:BTCUSDT"
+                period = 3
+                entry_mult = "0.5"
+                exit_mult = "1"
+                quote_amount = "954.99"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "rsi_reversion",
             fixture: "rsi_reversion",
             coins: BTC,

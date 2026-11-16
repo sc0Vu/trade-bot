@@ -137,6 +137,7 @@ is deserialized into that strategy's own typed struct.
 
 | Name | What it does |
 |---|---|
+| `atr_breakout` | One coin, long or flat. Buys when the close is more than `entry_mult` average true ranges (ATR) above its `period`-bar average, sells when it falls `exit_mult` ATRs below the highest high of those bars. ATR sizes both thresholds to recent volatility, so noise alone crosses neither. Bets breakouts become trends; each false breakout loses about (`entry_mult` + `exit_mult`) ATRs plus costs. |
 | `avwap` | One coin, long or flat. Holds while the close is above its anchored VWAP (the exact average price of all trading since the start of the day, week or month, or since a recent swing low or high), cash below. |
 | `buy_and_hold` | The benchmark. Buys one coin once with a fixed quote amount on its first candle, then holds forever. A strategy that can't beat it on the same coin after costs has no edge. |
 | `dca` | Dollar-cost averaging. Buys a fixed quote amount of one coin once per UTC hour, day, week or month (optionally at most `max_buys` times) and holds. No prediction: spreading the entry removes the risk of buying everything at a top, not the coin's direction; it keeps buying all the way down a decline. Each buy pays a fee and slippage. |

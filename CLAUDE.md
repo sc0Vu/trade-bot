@@ -502,7 +502,8 @@ Start. No/refused state: resume on most valuable sellable held coin
 (baselines from that eval), else buy `quote_amount`. Flat start (every
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
-(sma_trend, dual_ma_cross, donchian_breakout, rsi_reversion, avwap) only version;
+(sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap)
+only version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
 `last_eval`; grid stage, gaps,
 dust. Pinned by
@@ -549,6 +550,15 @@ of `channel_period` candles *before* current (needs `channel_period + 1`).
 Flat and close > high → buy; long and close < low → sell; edge → nothing.
 Excluding current bar = what makes rule satisfiable (close ≤ own high), not
 lookahead (bar closed). Bets breakouts continue; whipsaws in ranges.
+
+`atr_breakout` — `sma_trend` skeleton, volatility-scaled. Window = last
+`period` bars incl. current; ATR = `indicator::atr` (simple mean of true
+ranges, needs `period + 1`). Flat and close > mean close + `entry_mult`·ATR
+(Keltner-style) → buy; long and close < window's highest high −
+`exit_mult`·ATR (chandelier, LeBeau) → sell; edge → nothing. Stop rolls
+with the window (not a ratchet: old high leaves → stop drops). ATR because
+noise is the constraint: fixed % too tight when volatile, too loose when
+calm. False breakout ≈ (entry_mult + exit_mult)·ATR + round-trip costs.
 
 `dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
 SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
@@ -602,7 +612,7 @@ rising). Edge unverified.
 Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
-  strategy/    Strategy trait, Context, inventory registry, built-ins (avwap, buy_and_hold, dca, donchian_breakout,
+  strategy/    Strategy trait, Context, inventory registry, built-ins (atr_breakout, avwap, buy_and_hold, dca, donchian_breakout,
                dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts)

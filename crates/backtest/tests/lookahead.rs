@@ -401,3 +401,20 @@ async fn donchian_breakout_never_lets_the_future_change_the_past() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn atr_breakout_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "atr_breakout",
+        9,
+        "atr_breakout",
+        r#"coin = "binance:BTCUSDT"
+           period = 3
+           entry_mult = "0.5"
+           exit_mult = "1"
+           quote_amount = "954.99"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}
