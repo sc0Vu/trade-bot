@@ -103,13 +103,15 @@ impl TopKMomentum {
     }
 
     /// 1/k for each of the best `k` coins beating `min_momentum`, 0 for the
-    /// rest; `None` until every coin has `lookback + 1` closes.
+    /// rest; `None` until every coin has `lookback + 1` closes. A coin
+    /// scheduled for delisting isn't ranked: its slot goes to the next.
     fn targets(&self, ctx: &Context) -> Option<Vec<Target>> {
         let mut ranked: Vec<(usize, Decimal)> = self
             .p
             .coins
             .iter()
             .enumerate()
+            .filter(|(_, coin)| ctx.delisting(coin).is_none())
             .map(|(i, coin)| {
                 let hist = ctx.history(coin);
                 if hist.len() < self.p.lookback + 1 {
@@ -342,6 +344,26 @@ mod tests {
             vec![
                 buy(&btcusdt().id, dec!(1500)),
                 buy(&ethusdt().id, dec!(1500))
+            ]
+        );
+
+        // ETH (+20%, the best) scheduled for delisting: not ranked, so the
+        // two slots go to BTC (+10%) and SOL (+5%).
+        let mut s = build(NAME, &params_with(2, "")).unwrap();
+        let mut ctx = self::ctx();
+        s.on_start(&mut ctx);
+        driver::set_delisting(
+            &mut ctx,
+            ethusdt().id.clone(),
+            Some(bot_core::Timestamp::from_millis(1 << 40)),
+        );
+        bars(s.as_mut(), &mut ctx, 0, &[("100", "10", "50")]);
+        let got = bars(s.as_mut(), &mut ctx, 1, &[("110", "12", "52.5")]);
+        assert_eq!(
+            got,
+            vec![
+                buy(&btcusdt().id, dec!(1500)),
+                buy(&solusdt().id, dec!(1500))
             ]
         );
     }

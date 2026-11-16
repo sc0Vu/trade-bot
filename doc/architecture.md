@@ -147,7 +147,10 @@ itself cancels the strategy's orders on the coin and, once none is
 working, sells the holding at market, retrying each event until flat.
 The engine does this, not each strategy, so no strategy can forget to.
 Strategies also see the schedule (`Context::delisting`) and can leave
-earlier on their own terms. A backtest replays the same event, so the
+earlier on their own terms; the built-ins do. Multi-coin strategies stop
+waiting for a coin's candle once it is delisted (waiting would halt them
+for good), target it at 0 and choose among the rest; `ratio_hop` rotates
+out of it even below its ratchet; `grid` winds down. A backtest replays the same event, so the
 exit is part of every backtest too.
 
 **Errors.** A risk refusal, or a venue refusing *one order* (paper refusals,

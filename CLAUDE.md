@@ -567,6 +567,15 @@ restore → rebuilds the identical book. volatility_breakout: no idle cut
 either (stop or exit always working); stateless, restart misses ≤ 1 bar's
 entry. Harness shared: `tests/common`.
 
+Delisting in strategies (engine exit is the backstop): `rebalance::completes`
+skips coins past their delisting (else multi-coin strategies halt for good);
+`portfolio::rebalance` targets any delisting coin at 0 (sold at announcement);
+risk_parity renormalizes over the rest; top_k_momentum / momentum_rotation
+don't rank it; pair_reversion never switches into it; ratio_hop leaves a held
+delisting coin for the best other one without beating its baseline, never
+rotates into one; grid winds down via its stop path. Single-coin built-ins:
+risk refuses their buys, engine exit sells.
+
 ## Other built-ins
 `buy_and_hold` — the benchmark every strategy is measured against: can't beat
 it on same coin after costs → no edge. Params `coin`, `quote_amount`, `fee`,

@@ -143,9 +143,14 @@ impl MomentumRotation {
         else {
             return Vec::new();
         };
-        // Strictly greater: a tie goes to the coin listed first.
+        // Strictly greater: a tie goes to the coin listed first. A coin
+        // scheduled for delisting is never the target (and so, if held,
+        // sold below).
         let mut best: Option<(&InstrumentId, Decimal)> = None;
-        for (id, r) in returns {
+        for (id, r) in returns
+            .into_iter()
+            .filter(|(id, _)| ctx.delisting(id).is_none())
+        {
             if best.is_none_or(|(_, b)| r > b) {
                 best = Some((id, r));
             }
@@ -227,12 +232,7 @@ impl Strategy for MomentumRotation {
         if self.stopped || !self.p.coins.contains(&c.instrument) || self.last_eval == Some(t) {
             return Vec::new();
         }
-        let complete = self
-            .p
-            .coins
-            .iter()
-            .all(|id| ctx.last_candle(id).is_some_and(|l| l.close_time == t));
-        if !complete {
+        if !super::rebalance::completes(ctx, c, self.p.coins.iter()) {
             return Vec::new();
         }
         self.last_eval = Some(t);
@@ -439,6 +439,24 @@ mod tests {
         assert_eq!(
             bar(s.as_mut(), &mut ctx, 2, "110", "12"),
             vec![buy(&ethusdt())]
+        );
+    }
+
+    /// ETH leads but is scheduled for delisting: BTC, the best of the rest,
+    /// is bought instead.
+    #[test]
+    fn never_targets_a_delisting_coin() {
+        let (mut s, mut ctx) = start("");
+        driver::set_delisting(
+            &mut ctx,
+            ethusdt().id.clone(),
+            Some(Timestamp::from_millis(1 << 40)),
+        );
+        bar(s.as_mut(), &mut ctx, 0, "100", "10");
+        bar(s.as_mut(), &mut ctx, 1, "100", "10");
+        assert_eq!(
+            bar(s.as_mut(), &mut ctx, 2, "110", "12"),
+            vec![buy(&btcusdt())]
         );
     }
 

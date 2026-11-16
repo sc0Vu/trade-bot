@@ -348,7 +348,11 @@ impl Grid {
                     return Vec::new();
                 }
                 let units = inst.round_qty(ctx.position(&self.p.coin).qty());
-                self.stop("stop_price reached");
+                self.stop(if ctx.delisting(&self.p.coin).is_some() {
+                    "delisting scheduled"
+                } else {
+                    "stop_price reached"
+                });
                 if inst.check_market(units, close, Side::Sell).is_err() {
                     return Vec::new();
                 }
@@ -362,7 +366,9 @@ impl Grid {
             }
             Stage::Running => {}
         }
-        if self.p.stop_price.is_some_and(|s| close < s) {
+        // A delisting scheduled for the coin winds the grid down like the
+        // stop: it can't keep a book on a coin that stops trading.
+        if self.p.stop_price.is_some_and(|s| close < s) || ctx.delisting(&self.p.coin).is_some() {
             self.stage = Stage::Stopping;
             let cancels: Vec<Signal> = ctx
                 .open_orders(&self.p.coin)
@@ -1058,6 +1064,23 @@ mod tests {
             }]
         );
         assert!(bar(s.as_mut(), &mut ctx, 4, "100").is_empty());
+    }
+
+    /// A delisting scheduled for the coin winds the grid down like the stop:
+    /// cancel every order at the next close.
+    #[test]
+    fn a_delisting_winds_the_grid_down() {
+        let (mut s, mut ctx) = start(params(""));
+        let opening = bar(s.as_mut(), &mut ctx, 0, "100");
+        let o = accept(s.as_mut(), &mut ctx, &opening, 1);
+        driver::set_open_orders(&mut ctx, o.clone());
+        driver::set_delisting(
+            &mut ctx,
+            btcusdt().id.clone(),
+            Some(bot_core::Timestamp::from_millis(1 << 40)),
+        );
+        let ids: Vec<Signal> = o.iter().map(|o| Signal::Cancel(o.id.clone())).collect();
+        assert_eq!(bar(s.as_mut(), &mut ctx, 1, "100"), ids);
     }
 
     /// Fresh start holding 1 BTC at 100: the gap above the price (100 to

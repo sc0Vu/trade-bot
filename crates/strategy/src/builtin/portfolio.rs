@@ -148,8 +148,11 @@ pub(crate) fn own_cash<'a>(
 /// fee plus slippage fraction, less a tick per unit for rounding), scaled
 /// down together if that isn't enough: a live venue would refuse the
 /// excess (`-2010`). A trade the venue's filters would refuse (dust, under
-/// minimum notional) is left out. Needs every coin's instrument and last
-/// close; `None` without them.
+/// minimum notional) is left out. A coin scheduled for delisting
+/// (`Context::delisting`) is targeted at 0, whatever its weight: it is
+/// sold now, on the strategy's terms, rather than by the engine's exit
+/// before the delisting, and never bought. Needs every coin's instrument
+/// and last close; `None` without them.
 pub(crate) fn rebalance(
     ctx: &Context,
     targets: &[Target],
@@ -164,6 +167,18 @@ pub(crate) fn rebalance(
         held: Qty,
         value: Decimal,
     }
+    let leaving: Vec<Target> = targets
+        .iter()
+        .map(|t| Target {
+            coin: t.coin.clone(),
+            weight: if ctx.delisting(&t.coin).is_some() {
+                Decimal::ZERO
+            } else {
+                t.weight
+            },
+        })
+        .collect();
+    let targets = &leaving[..];
     let rows: Vec<Row> = targets
         .iter()
         .map(|t| {
@@ -529,5 +544,34 @@ pub(crate) mod tests {
             dec!(0.002),
         );
         assert_eq!(got, None);
+    }
+
+    /// As `trades_everything_back_once_one_coin_leaves_the_band` at 110 /
+    /// 10 (in band), but BTC is scheduled for delisting: its target is 0, so
+    /// all 50 BTC is sold now and ETH goes to its 0.25 of the 10500 total
+    /// (2625: buy 125), funded by the sale.
+    #[test]
+    fn a_delisting_coin_is_targeted_at_zero() {
+        let mut ctx = ctx();
+        driver::set_position(&mut ctx, position(&btc(), dec!(50), dec!(5000), dec!(0)));
+        driver::set_position(&mut ctx, position(&eth(), dec!(250), dec!(2500), dec!(0)));
+        driver::push_candle(&mut ctx, candle(0, "110"));
+        driver::push_candle(&mut ctx, eth_candle(0, "10"));
+        driver::set_delisting(
+            &mut ctx,
+            btc(),
+            Some(Timestamp::from_millis(1_000 * 3_600_000)),
+        );
+        let got = rebalance(
+            &ctx,
+            &half_half(),
+            Notional::new(dec!(10000)),
+            dec!(0.05),
+            dec!(0.002),
+        );
+        assert_eq!(
+            got,
+            Some(vec![sell(btc(), dec!(50)), buy(eth(), dec!(125))])
+        );
     }
 }

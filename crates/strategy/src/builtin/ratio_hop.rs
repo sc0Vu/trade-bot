@@ -428,18 +428,25 @@ impl RatioHop {
             return Vec::new();
         }
         let need = Decimal::ONE + self.p.scout_margin;
+        // Held coin scheduled for delisting: leave for the best other coin
+        // even if it doesn't beat its baseline (the ratchet can't hold a
+        // coin that stops trading). Never rotate into one.
+        let leaving = ctx.delisting(a).is_some();
         let best = self
             .p
             .coins
             .iter()
-            .filter(|b| *b != a && !self.in_freefall(ctx, b))
+            .filter(|b| *b != a && !self.in_freefall(ctx, b) && ctx.delisting(b).is_none())
             .filter_map(|b| {
                 let est = self.estimate(ctx, a, units, b)?;
                 let base = *self.baseline.get(b)?;
-                (base.is_positive() && est > base * need).then(|| (est / base, b))
+                (base.is_positive() && (leaving || est > base * need)).then(|| (est / base, b))
             })
             .max_by(|x, y| x.0.cmp(&y.0));
         let Some((_, b)) = best else {
+            if leaving {
+                tracing::warn!(strategy = NAME, coin = %a, "held coin is being delisted and no other coin qualifies; the engine will sell it");
+            }
             return Vec::new();
         };
         let b = b.clone();
@@ -660,12 +667,7 @@ impl Strategy for RatioHop {
         if !self.p.coins.contains(&c.instrument) || self.last_eval == Some(t) {
             return out;
         }
-        let complete = self
-            .p
-            .coins
-            .iter()
-            .all(|id| ctx.last_candle(id).is_some_and(|l| l.close_time == t));
-        if !complete {
+        if !super::rebalance::completes(ctx, c, self.p.coins.iter()) {
             return out;
         }
         self.last_eval = Some(t);
@@ -1385,6 +1387,30 @@ mod tests {
             assert_eq!(
                 close(s.as_mut(), &mut ctx, 8, dec!(60000), dec!(2900)),
                 vec![buy_eth(dec!(599.40), limit_at(dec!(2900)))]
+            );
+        }
+
+        /// Holding BTC with baselines set and prices unchanged: no ratio
+        /// beats its baseline, so normally nothing. With BTC scheduled for
+        /// delisting it leaves anyway: sell all the BTC (market).
+        #[test]
+        fn a_delisting_held_coin_is_left_without_beating_the_baseline() {
+            let (mut s, mut ctx) = start(vec![held(&btc(), dec!(0.01), dec!(600))]);
+            close(s.as_mut(), &mut ctx, 0, dec!(60000), dec!(3000));
+            assert!(close(s.as_mut(), &mut ctx, 1, dec!(60000), dec!(3000)).is_empty());
+            driver::set_delisting(
+                &mut ctx,
+                btc().id.clone(),
+                Some(Timestamp::from_millis(1 << 40)),
+            );
+            assert_eq!(
+                close(s.as_mut(), &mut ctx, 2, dec!(60000), dec!(3000)),
+                vec![Signal::Submit {
+                    instrument: btc().id.clone(),
+                    side: Side::Sell,
+                    size: Size::Base(Qty::new(dec!(0.01))),
+                    kind: OrderKind::Market,
+                }]
             );
         }
 

@@ -212,7 +212,10 @@ impl Strategy for PairReversion {
         let Some(signal) = self.signal(ctx) else {
             return Vec::new();
         };
-        let Some(target) = signal.or_else(|| self.held(ctx)) else {
+        // Never switch into a coin scheduled for delisting; one held is
+        // targeted at 0 by `portfolio::rebalance` and sold.
+        let leaving = |i: &usize| ctx.delisting(&coins[*i]).is_some();
+        let Some(target) = signal.filter(|i| !leaving(i)).or_else(|| self.held(ctx)) else {
             return Vec::new();
         };
         if self.backoff.hold() {
@@ -363,6 +366,27 @@ mod tests {
         assert_eq!(check("1.5", "104"), Some(None));
         assert_eq!(check("1", "96"), Some(Some(0)));
         assert_eq!(check("1", "100"), Some(None));
+    }
+
+    /// The ratio says ETH is cheap, but ETH is scheduled for delisting:
+    /// nothing is bought (holding nothing, nothing to keep).
+    #[test]
+    fn never_switches_into_a_delisting_coin() {
+        let mut s = build(NAME, &params_with("")).unwrap();
+        let mut ctx = ctx();
+        s.on_start(&mut ctx);
+        driver::set_delisting(
+            &mut ctx,
+            ethusdt().id.clone(),
+            Some(bot_core::Timestamp::from_millis(1 << 40)),
+        );
+        bars(
+            s.as_mut(),
+            &mut ctx,
+            0,
+            &[("100", "10"), ("100", "10"), ("100", "10")],
+        );
+        assert!(bars(s.as_mut(), &mut ctx, 3, &[("104", "10")]).is_empty());
     }
 
     /// Flat, no signal → nothing. Then BTC jumps: ETH cheap → buy ETH with

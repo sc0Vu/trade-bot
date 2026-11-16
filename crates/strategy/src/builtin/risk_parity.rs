@@ -111,16 +111,23 @@ impl RiskParity {
     /// Inverse-volatility weights, scaled to `exposure`; `None` until every
     /// coin has `vol_period + 1` closes, or while one hasn't moved.
     fn targets(&self, ctx: &Context) -> Option<Vec<Target>> {
+        // A coin scheduled for delisting gets 0; the others share it all.
         let inverse: Vec<Decimal> = self
             .p
             .coins
             .iter()
             .map(|id| {
+                if ctx.delisting(id).is_some() {
+                    return Some(Decimal::ZERO);
+                }
                 let sd = indicator::return_sd(ctx.history(id), self.p.vol_period)?;
                 (!sd.is_zero()).then(|| Decimal::ONE / sd)
             })
             .collect::<Option<_>>()?;
         let total: Decimal = inverse.iter().sum();
+        if total.is_zero() {
+            return None; // every coin is leaving
+        }
         Some(
             self.p
                 .coins
@@ -307,6 +314,31 @@ mod tests {
         assert_eq!(t[0].weight.round_dp(6), dec!(0.2624));
         assert_eq!(t[1].weight.round_dp(6), dec!(0.5376));
         assert!((t[0].weight + t[1].weight - dec!(0.8)).abs() < dec!(1e-20));
+    }
+
+    /// BTC scheduled for delisting: 0, and ETH takes the whole exposure.
+    #[test]
+    fn a_delisting_coin_gets_nothing_and_the_rest_share_it_all() {
+        let s = RiskParity {
+            p: params_with(r#"exposure = "0.8""#).parse(NAME).unwrap(),
+            stopped: false,
+            backoff: Backoff::default(),
+        };
+        let mut ctx = ctx();
+        for (i, (b, e)) in [("100", "10"), ("110", "10.5"), ("99", "10")]
+            .into_iter()
+            .enumerate()
+        {
+            driver::push_candle(&mut ctx, candle(i as i64, b));
+            driver::push_candle(&mut ctx, eth_candle(i as i64, e));
+        }
+        driver::set_delisting(
+            &mut ctx,
+            btcusdt().id.clone(),
+            Some(Timestamp::from_millis(1 << 40)),
+        );
+        let t = s.targets(&ctx).unwrap();
+        assert_eq!((t[0].weight, t[1].weight), (dec!(0), dec!(0.8)));
     }
 
     #[test]
