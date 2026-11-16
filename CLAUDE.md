@@ -238,7 +238,8 @@ Any script error → `Strategy::fault` → run stops. Shared boundary in
 `script/mod.rs` (source, params split, envelope) for Lua/WASM later.
 Reference port `strategies/sma_trend.rhai` = built-in's fills exactly
 (`backtest/tests/rhai_script.rs`, 2000-bar walk, 3 param sets) + restart
-case. `make check` runs `FEATURES` (`strategy/rhai,backtest/rhai`).
+case. `make check` runs `FEATURES` (`strategy/rhai,backtest/rhai,cli/rhai`);
+`cli` feature `rhai` on in release binaries + container (no-recompile users).
 v1: `inventory` so strategy file self-registers (`inventory::submit!`); add
 one = add file — no central match — runs in backtest free.
 `strategy.params` generic table each strategy deserializes into own typed
@@ -706,12 +707,14 @@ config/        config.example.toml (committed); *.local.toml (gitignored). Env (
 data/          downloaded klines, per-network run dbs (gitignored)
 .github/       ci.yml (`make check` + deploy configs via each tool's image), release.yml
                (tag `v<workspace version>` → `trade-bot` for linux x86_64/arm64 gnu,
-               macOS arm64/x86_64, windows x86_64; `cli --features vendored-tls` =
-               static OpenSSL; archives + SHA256SUMS on a GitHub release), pages.yml
+               macOS arm64/x86_64, windows x86_64; `cli --features vendored-tls,rhai`
+               (static OpenSSL + script strategies; archive ships `strategies/`);
+               archives + SHA256SUMS on a GitHub release), pages.yml
                (site/ → GitHub Pages sc0vu.github.io/trade-bot on push to main)
 site/          static project page (one index.html, no build); strategy table and
                safety claims mirror README: keep in sync
-Dockerfile     debian + rustup (toolchain pin), system libssl; `run --paper` default,
+Dockerfile     debian + rustup (toolchain pin), system libssl, `--features rhai`
+               (+ `strategies/` at /app/strategies); `run --paper` default,
                books in volume /app/data; live only via typed command (invariant 7)
 render.yaml    worker, frankfurt (Binance 451s US IPs), disk /app/data (books survive;
                no overlapping instances), maxShutdownDelaySeconds 120 (close-out)

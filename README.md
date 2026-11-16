@@ -164,6 +164,54 @@ A strategy's only window to the world is its `Context`: positions, recent
 candles, open orders, params, and a way to submit signals. It never touches
 the broker, the network or the database.
 
+### Script strategies (Rhai)
+
+A strategy can also be a [Rhai](https://rhai.rs) script, loaded at startup,
+with no Rust and no recompiling. Release binaries and the container include
+it; from source, build with `--features rhai`.
+
+```toml
+[strategy]
+name = "rhai"
+[strategy.params]
+script = "strategies/sma_trend.rhai"   # relative to the working directory
+coin = "binance:BTCUSDT"               # the rest are the script's own params
+sma_period = 50
+quote_amount = "1000"
+fee = "0.001"
+slippage_bps = "5"
+```
+
+```rhai
+fn on_candle(ctx, c) {
+    let hist = ctx.history(c.instrument);
+    if hist.len() < 2 { return; }
+    let rising = c.close > hist[hist.len() - 2].close;
+    if rising && ctx.position(c.instrument).is_flat {
+        return market_buy_quote(c.instrument, 100.0);
+    }
+}
+```
+
+The script defines whichever hooks it needs (`on_start`, `on_candle`,
+`on_fill`, `on_order`, `on_rejected`, `check_params`, `restore`) and returns
+signals from them. The same rules hold as for compiled strategies:
+
+- **Exact money.** Scripts have no floats: `0.001` is an exact decimal.
+- **Sandboxed.** No files, network, clock or randomness, and a budget of
+  1,000,000 operations per call.
+- **A script error stops the run.** The bot never keeps trading on a
+  broken strategy.
+- **State survives restarts.** It is kept in `this` and is only restored
+  into the same script.
+
+`strategies/sma_trend.rhai` is a port of `sma_trend`. A test requires
+identical fills to the built-in, and a 2021–2026 daily BTC backtest gives the
+same report. Scripts are slower: that backtest took 3.1 s against 0.1 s in a
+debug build, most of it copying 500 bars of history into each call. That is
+fine for candle intervals, but don't expect native speed. The full API is
+documented in `crates/strategy/src/script/rhai.rs`.
+
 ## Backtesting
 
 ```sh
@@ -372,6 +420,7 @@ crates/
   api/        read-only HTTP API: status, positions, orders, trades
   cli/        the `cli` binary: fetch-data, backtest, run
 migration/    SeaORM schema migrations
+strategies/   script strategies (Rhai), e.g. sma_trend.rhai
 config/       config.example.toml and examples/ (committed); real configs are gitignored
 doc/          architecture notes
 deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and alert rules

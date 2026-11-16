@@ -35,6 +35,10 @@ migration.workspace = true
 [features]
 # Statically linked OpenSSL; release builds turn it on (see exchange).
 vendored-tls = ["exchange/vendored-tls"]
+# Strategies written as Rhai scripts (`strategy.name = "rhai"`). Release
+# binaries and the container turn it on: running a script without
+# recompiling is the point, and those users don't compile.
+rhai = ["strategy/rhai"]
 
 [dev-dependencies]
 rust_decimal_macros.workspace = true

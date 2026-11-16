@@ -20,7 +20,7 @@ INITIAL_CASH ?=
 
 CLI := cargo run -p cli --
 # Optional features `check` also covers, so code behind them can't rot.
-FEATURES := --features strategy/rhai,backtest/rhai
+FEATURES := --features strategy/rhai,backtest/rhai,cli/rhai
 
 .DEFAULT_GOAL := help
 .PHONY: help build test lint fmt fmt-check doc check \

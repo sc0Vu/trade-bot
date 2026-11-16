@@ -59,7 +59,7 @@ jobs:
 
       - name: Build
         shell: bash
-        run: cargo build --release --locked -p cli --features vendored-tls --target ${{ matrix.target }}
+        run: cargo build --release --locked -p cli --features vendored-tls,rhai --target ${{ matrix.target }}
 
       - name: Package
         id: package
@@ -73,6 +73,7 @@ jobs:
           cp README.md LICENSE "dist/$name/"
           cp config/config.example.toml "dist/$name/config/"
           cp -r config/examples "dist/$name/config/"
+          cp -r strategies "dist/$name/"
           cd dist
           if [[ -n "$exe" ]]; then
             7z a -tzip "$name.zip" "$name" > /dev/null

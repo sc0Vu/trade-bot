@@ -20,7 +20,7 @@ ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/ca
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 WORKDIR /src
 COPY . .
-RUN cargo build --release --locked -p cli \
+RUN cargo build --release --locked -p cli --features rhai \
  && cp target/release/cli /trade-bot
 
 FROM debian:trixie-slim
@@ -33,6 +33,7 @@ RUN apt-get update \
 COPY --from=build /trade-bot /usr/local/bin/trade-bot
 COPY config/config.example.toml /app/config/
 COPY config/examples /app/config/examples
+COPY strategies /app/strategies
 WORKDIR /app
 USER bot
 VOLUME /app/data
