@@ -257,6 +257,28 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "rebalance",
+            fixture: "rebalance",
+            coins: BTC,
+            bars: 8,
+            params: r#"weights = { "binance:BTCUSDT" = "0.5" }
+                capital = "2000"
+                band = "0.05"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
+            strategy: "rebalance",
+            fixture: "momentum_rotation",
+            coins: BTC_ETH,
+            bars: 8,
+            params: r#"weights = { "binance:BTCUSDT" = "0.4", "binance:ETHUSDT" = "0.4" }
+                capital = "2000"
+                band = "0.02"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "rsi_reversion",
             fixture: "rsi_reversion",
             coins: BTC,

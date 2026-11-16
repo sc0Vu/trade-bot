@@ -433,3 +433,18 @@ async fn volatility_breakout_never_lets_the_future_change_the_past() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn rebalance_never_lets_the_future_change_the_past() {
+    single_coin_property(
+        "rebalance",
+        8,
+        "rebalance",
+        r#"weights = { "binance:BTCUSDT" = "0.5" }
+           capital = "2000"
+           band = "0.05"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}

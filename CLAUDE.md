@@ -503,7 +503,7 @@ Start. No/refused state: resume on most valuable sellable held coin
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
-volatility_breakout) only version;
+volatility_breakout, rebalance) only version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
 `last_eval`; grid stage, gaps,
 dust. Pinned by
@@ -572,6 +572,18 @@ working → nothing. Range 0 → no stop. Only built-in using stops (pins the
 stop path, `tests/volatility_breakout.rs`). Cost: 2 taker fees + 2
 slippages per trade; live stop at a fast breakout slips more than model.
 
+`rebalance` — fixed `weights` (coin → fraction, sum ≤ 1, rest = cash, one
+quote asset else stopped at `on_start`) of `capital`. Strategy can't see
+balance (invariant 5) → own cash derived from books, stateless:
+`capital − Σ(cost_basis − realized_pnl)` = net quote spent since books
+empty (`builtin::portfolio`; BNB fee counted as quote → cash understated;
+prior trades on same coins shift it). Once per close time all coins in,
+nothing working/cancelling: any |weight − target| > `band` → all coins back
+to target, market, sells first; buys ≤ cash + sells' est. proceeds
+(close·(1 − fee − slip) − tick/unit), scaled together; filter-failing trades
+dropped. Volatility harvesting: sells rises, buys falls; trails a one-way
+trend; costs per rebalance.
+
 `dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
 SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
 cross event: first bar with `slow_period` closes buys at once if fast on top.
@@ -625,8 +637,8 @@ Cargo.toml              workspace
 crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, built-ins (atr_breakout, avwap, buy_and_hold, dca, donchian_breakout,
-               dual_ma_cross, grid, momentum_rotation, ratio_hop, rsi_reversion, sma_trend,
-               volatility_breakout)
+               dual_ma_cross, grid, momentum_rotation, ratio_hop, rebalance, rsi_reversion,
+               sma_trend, volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws;

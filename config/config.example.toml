@@ -64,7 +64,7 @@ user_stream = true
 [strategy]
 # A registered strategy: atr_breakout, avwap, buy_and_hold, dca,
 # donchian_breakout, dual_ma_cross, grid, momentum_rotation, ratio_hop,
-# rsi_reversion, sma_trend, volatility_breakout. config/examples/ has a
+# rebalance, rsi_reversion, sma_trend, volatility_breakout. config/examples/ has a
 # complete config for each.
 name = "ratio_hop"
 
