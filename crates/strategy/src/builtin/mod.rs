@@ -48,6 +48,7 @@ pub mod dual_ma_cross;
 pub mod grid;
 pub mod macd_cross;
 pub mod momentum_rotation;
+pub mod pair_reversion;
 mod portfolio;
 pub mod ratio_hop;
 pub mod rebalance;

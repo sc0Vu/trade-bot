@@ -317,6 +317,19 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "pair_reversion",
+            fixture: "pair_reversion",
+            coins: BTC_ETH,
+            bars: 12,
+            params: r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
+                capital = "10000"
+                period = 4
+                entry_z = "1"
+                band = "0.05"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "vol_target",
             fixture: "vol_target",
             coins: BTC,

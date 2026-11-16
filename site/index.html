@@ -216,6 +216,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
           <tr><td>bollinger_reversion</td><td>Ranges: buys below the lower band, sells back above the mean.</td><td>Downtrends: the mean falls with the price (no stop).</td></tr>
           <tr><td>rsi_reversion</td><td>Ranges: buys oversold, sells overbought.</td><td>Sustained downtrends (no stop, by design; optional trend filter only gates buys).</td></tr>
           <tr><td>momentum_rotation</td><td>Recent winners among several coins keep winning.</td><td>Sharp reversals, choppy leadership.</td></tr>
+          <tr><td>pair_reversion</td><td>Two coins' price ratio returning to its mean: holds the one that is cheap relative to the other.</td><td>The ratio trends: keeps switching into the coin that keeps getting cheaper.</td></tr>
           <tr><td>rebalance</td><td>Swings that come back: trades fixed weights back after drift, selling rises and buying falls.</td><td>One-way trends: keeps selling the winner.</td></tr>
           <tr><td>risk_parity</td><td>Spreading risk: weights coins by 1/volatility so no single coin dominates the swings.</td><td>One-way rallies in the volatile coin (holds little of it); ignores correlation.</td></tr>
           <tr><td>ratio_hop</td><td>Rotating coins only when units ratchet up after fees, with a freefall guard.</td><td>Maximizes units, not value.</td></tr>

@@ -1,0 +1,30 @@
+# pair_reversion: two coins, holds whichever is cheap relative to the
+# other. When the BTC/ETH price ratio sits more than entry_z standard
+# deviations from its mean, switches all of capital into the cheap coin.
+# Bets the ratio mean-reverts; loses when it trends (ETH/BTC fell through
+# most of 2022-2025). Always exposed to the pair's common move: spot can't
+# short. Not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/pair_reversion.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "pair_reversion"
+
+[strategy.params]
+coins = ["binance:BTCUSDT", "binance:ETHUSDT"]   # A, B: the ratio is A / B
+capital = "1000"        # USDT the strategy manages (its starting cash)
+period = 30             # daily bars in the ratio's mean and spread
+entry_z = "2"           # switch at 2 standard deviations from the mean
+band = "0.05"           # top up the held coin once 5 points below 100%
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 60

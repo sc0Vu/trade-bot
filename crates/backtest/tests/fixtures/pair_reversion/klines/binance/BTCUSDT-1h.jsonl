@@ -1,0 +1,12 @@
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":0,"close_time":3599999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":3600000,"close_time":7199999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":7200000,"close_time":10799999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":10800000,"close_time":14399999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":14400000,"close_time":17999999,"open":"104","high":"104","low":"104","close":"104","volume":"1","quote_volume":"104"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":18000000,"close_time":21599999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":21600000,"close_time":25199999,"open":"96","high":"96","low":"96","close":"96","volume":"1","quote_volume":"96"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":25200000,"close_time":28799999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":28800000,"close_time":32399999,"open":"104","high":"104","low":"104","close":"104","volume":"1","quote_volume":"104"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":32400000,"close_time":35999999,"open":"104","high":"104","low":"104","close":"104","volume":"1","quote_volume":"104"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":36000000,"close_time":39599999,"open":"100","high":"100","low":"100","close":"100","volume":"1","quote_volume":"100"}
+{"instrument":"binance:BTCUSDT","interval":"1h","open_time":39600000,"close_time":43199999,"open":"97","high":"97","low":"97","close":"97","volume":"1","quote_volume":"97"}

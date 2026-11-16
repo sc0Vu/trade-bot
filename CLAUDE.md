@@ -526,6 +526,7 @@ backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
 volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross,
+pair_reversion,
 tsmom,
 risk_parity) only
 version;
@@ -643,6 +644,15 @@ decision. Once per close time all coins in, idle (`portfolio::idle`).
 Naive (no correlation). Lowers concentration, predicts nothing; trails the
 winner; trades as relative vol moves.
 
+`pair_reversion` — exactly 2 coins A, B (one quote), `portfolio`
+machinery. Ratio r = close A / close B over last `period` aligned close
+times (misaligned → no decision); population var v, d = r_now − mean:
+d < 0 and d² > `entry_z`²·v → hold A; d > 0 and same → hold B (exact, no
+sqrt); else keep held (books: more valuable sellable coin; none → cash).
+Held = weight 1 of `capital`, other 0 → switch = sell + buy with est.
+proceeds, one eval. Stateless. Plain ratio, not log. Always long the
+pair's common move (no short); ratio trends → keeps buying the loser.
+
 `tsmom` — Moskowitz/Ooi/Pedersen time-series momentum, long-only,
 `portfolio` machinery, ≥ 1 coin (one quote). Per coin: close /
 close[`lookback` ago] − 1 > 0 (= 0 → out) → min(`max_weight`, `target_vol`
@@ -714,8 +724,8 @@ crates/
   strategy/    Strategy trait, Context, inventory registry, `script` (feature `rhai`:
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
                buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, macd_cross,
-               momentum_rotation, ratio_hop, rebalance, risk_parity, rsi_reversion, sma_trend,
-               trailing_stop, tsmom, vol_target, volatility_breakout)
+               momentum_rotation, pair_reversion, ratio_hop, rebalance, risk_parity, rsi_reversion,
+               sma_trend, trailing_stop, tsmom, vol_target, volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
                return_sd = sample sd of simple returns, approx. sqrt: sizing only;
