@@ -11,7 +11,9 @@ pub mod metrics;
 pub mod risk;
 
 pub use error::EngineError;
-pub use event_loop::{EngineConfig, Observer, Rejection, RunReport, Snapshot, run, run_observed};
+pub use event_loop::{
+    DEFAULT_DELIST_EXIT, EngineConfig, Observer, Rejection, RunReport, Snapshot, run, run_observed,
+};
 
 #[cfg(test)]
 pub(crate) mod tests_support;

@@ -54,6 +54,7 @@ async fn run(fixture: &str, limit_timeout: u32) -> Report {
     let config = EngineConfig {
         whitelist: ids(),
         history_len: 10,
+        ..Default::default()
     };
     run_backtest(&provider, s.as_mut(), params, &config, Interval::H1)
         .await
@@ -174,6 +175,7 @@ async fn stale_limit_is_repriced_to_the_new_close() {
     let config = EngineConfig {
         whitelist: ids(),
         history_len: 10,
+        ..Default::default()
     };
     let r = engine::run(&provider, s.as_mut(), params, &config)
         .await

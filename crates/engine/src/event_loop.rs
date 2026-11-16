@@ -2,18 +2,44 @@ use crate::EngineError;
 use crate::metrics as m;
 use crate::risk;
 use bot_core::{
-    Candle, Fill, InstrumentId, MarketEvent, Order, OrderId, Position, Signal, Timestamp,
+    Candle, Fill, InstrumentId, MarketEvent, Order, OrderId, OrderKind, Position, Side, Signal,
+    Size, Timestamp,
 };
 use exchange::{Broker, ExchangeError, InstrumentQuery, Provider};
+use std::collections::HashSet;
+use std::time::Duration;
 use strategy::{Context, Params, Strategy, driver};
 
-/// Run settings independent of venue and strategy.
+/// Run settings independent of venue and strategy. Build it with the
+/// fields you set and `..Default::default()` for the rest, so a new
+/// setting doesn't break every caller.
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
     /// The only instruments the run may trade.
     pub whitelist: Vec<InstrumentId>,
     /// Candles kept per instrument in the strategy's rolling history.
     pub history_len: usize,
+    /// How long before a scheduled delisting (`MarketEvent::Delisting`) the
+    /// engine itself cancels the strategy's orders on the instrument and
+    /// sells the holding at market, whatever the strategy does. New buys
+    /// are refused from the announcement on.
+    pub delist_exit: Duration,
+}
+
+/// Default for [`EngineConfig::delist_exit`]: a day, enough for a few
+/// tries if a sale is refused, well inside the notice Binance gives.
+pub const DEFAULT_DELIST_EXIT: Duration = Duration::from_secs(24 * 3600);
+
+impl Default for EngineConfig {
+    /// No instruments; `history_len` 500 (the CLI's default);
+    /// [`DEFAULT_DELIST_EXIT`].
+    fn default() -> Self {
+        Self {
+            whitelist: Vec::new(),
+            history_len: 500,
+            delist_exit: DEFAULT_DELIST_EXIT,
+        }
+    }
 }
 
 /// A signal that didn't reach the broker, and why. Rejections don't stop a
@@ -136,6 +162,7 @@ async fn run_inner<P: Provider + ?Sized>(
         broker: broker.as_mut(),
         next_order: 1,
         report: RunReport::default(),
+        exit_cancelled: HashSet::new(),
     };
 
     strategy.on_start(&mut ctx);
@@ -197,6 +224,15 @@ async fn run_inner<P: Provider + ?Sized>(
             run.report.fills.push(fill);
         }
 
+        if let MarketEvent::Delisting { instrument, at, .. } = &event {
+            match at {
+                Some(at) => {
+                    tracing::warn!(%instrument, at = %at, "delisting scheduled: no new buys; holding sold before")
+                }
+                None => tracing::info!(%instrument, "delisting withdrawn"),
+            }
+            driver::set_delisting(&mut ctx, instrument.clone(), *at);
+        }
         driver::set_now(&mut ctx, ts);
         // A backfilled candle is history like any other; whether it is a
         // decision is the strategy's `on_event` (the default says no).
@@ -211,6 +247,7 @@ async fn run_inner<P: Provider + ?Sized>(
         signals.extend(returned);
         run.route(&mut ctx, strategy, signals).await?;
         check_fault(strategy)?;
+        run.exit_delisting(&ctx, config).await?;
 
         if let Some(o) = observer.as_deref_mut() {
             o.on_snapshot(&Snapshot {
@@ -254,6 +291,8 @@ struct Run<'a> {
     broker: &'a mut dyn Broker,
     next_order: u64,
     report: RunReport,
+    /// Orders the delisting exit already asked to cancel.
+    exit_cancelled: HashSet<OrderId>,
 }
 
 impl Run<'_> {
@@ -264,6 +303,112 @@ impl Run<'_> {
         self.next_order += 1;
         // "o-" plus a u64 is at most 22 chars of [a-z0-9-]: always valid.
         id.unwrap_or_else(|_| unreachable!("generated order id is valid"))
+    }
+
+    /// The engine's own exit from instruments being delisted: once `now`
+    /// is within `config.delist_exit` of an instrument's delisting, cancel
+    /// every order on it still working (once each), and when none is
+    /// working or being cancelled, sell the lot-rounded holding at market
+    /// if the venue would take it (dust stays). Runs after the strategy's
+    /// signals on every event, so it retries until flat; the strategy
+    /// hears the fills like any other, but these orders aren't its signals
+    /// (no `on_order` / `on_rejected`). A refusal is recorded in the
+    /// report and logged; other broker errors stop the run, as for any
+    /// order.
+    async fn exit_delisting(
+        &mut self,
+        ctx: &Context,
+        config: &EngineConfig,
+    ) -> Result<(), EngineError> {
+        let Some(now) = ctx.now() else {
+            return Ok(());
+        };
+        let lead = i64::try_from(config.delist_exit.as_millis()).unwrap_or(i64::MAX);
+        for id in &config.whitelist {
+            let Some(at) = ctx.delisting(id) else {
+                continue;
+            };
+            if now.as_millis() < at.as_millis().saturating_sub(lead) {
+                continue;
+            }
+            let working: Vec<OrderId> = self
+                .broker
+                .open_orders()
+                .into_iter()
+                .filter(|o| o.instrument == *id)
+                .map(|o| o.id.clone())
+                .collect();
+            for oid in &working {
+                if !self.exit_cancelled.insert(oid.clone()) {
+                    continue;
+                }
+                tracing::warn!(order = %self.broker.client_order_id(oid), instrument = %id, "delisting: cancelling order");
+                if let Err(e) = self.broker.cancel(oid.clone()).await {
+                    let reason = format!("delisting exit: {}", refusal(e)?);
+                    self.reject(now, Signal::Cancel(oid.clone()), reason);
+                }
+            }
+            let cancelling = self
+                .broker
+                .cancelling_orders()
+                .iter()
+                .any(|o| o.instrument == *id);
+            if !working.is_empty() || cancelling {
+                continue; // sell once nothing else can fill
+            }
+            let (Some(inst), Some(last)) = (ctx.instrument(id), ctx.last_candle(id)) else {
+                continue;
+            };
+            let units = inst.round_qty(self.broker.position(id).qty());
+            if inst.check_market(units, last.close, Side::Sell).is_err() {
+                continue; // flat, or dust the venue won't take
+            }
+            let signal = Signal::Submit {
+                instrument: id.clone(),
+                side: Side::Sell,
+                size: Size::Base(units),
+                kind: OrderKind::Market,
+            };
+            let oid = self.mint_id();
+            let market = risk::MarketPrices {
+                last_close: Some(last.close),
+                average: None,
+            };
+            let outcome = match risk::to_order(
+                oid,
+                Some(inst),
+                Side::Sell,
+                Size::Base(units),
+                OrderKind::Market,
+                market,
+                now,
+            ) {
+                Ok(order) => {
+                    let oid = order.id.clone();
+                    match self.broker.submit(order).await {
+                        Ok(_) => {
+                            tracing::warn!(order = %self.broker.client_order_id(&oid), instrument = %id, "delisting: selling the holding");
+                            Ok(())
+                        }
+                        Err(e) => Err(refusal(e)?),
+                    }
+                }
+                Err(r) => Err(r.to_string()),
+            };
+            if let Err(reason) = outcome {
+                self.reject(now, signal, format!("delisting exit: {reason}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn reject(&mut self, at: Timestamp, signal: Signal, reason: String) {
+        tracing::warn!(%reason, "signal rejected");
+        self.report.rejections.push(Rejection {
+            at: Some(at),
+            signal,
+            reason,
+        });
     }
 
     /// Sends each signal through risk to the broker. A refused order is
@@ -288,6 +433,16 @@ impl Run<'_> {
                     }
                     Err(e) => Err(refusal(e)?),
                 },
+                Signal::Submit {
+                    instrument,
+                    side,
+                    size,
+                    kind,
+                } if *side == Side::Buy && ctx.delisting(instrument).is_some() => {
+                    metrics::counter!(m::REJECTED, "source" => "risk", "code" => "delisting")
+                        .increment(1);
+                    Err("instrument is scheduled for delisting: no new buys".to_owned())
+                }
                 Signal::Submit {
                     instrument,
                     side,
@@ -388,6 +543,7 @@ mod tests {
         EngineConfig {
             whitelist: vec![btcusdt().id.clone()],
             history_len: 10,
+            ..Default::default()
         }
     }
 
@@ -1109,6 +1265,132 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, EngineError::StrategyFault(_)));
+    }
+
+    fn delisting(at: Option<i64>, ts: i64) -> MarketEvent {
+        MarketEvent::Delisting {
+            instrument: btcusdt().id.clone(),
+            at: at.map(Timestamp::from_millis),
+            ts: Timestamp::from_millis(ts),
+        }
+    }
+
+    fn flat_bars(from: i64, to: i64) -> Vec<MarketEvent> {
+        (from..to)
+            .map(|i| MarketEvent::Candle(candle(i, ["100", "100", "100", "100"])))
+            .collect()
+    }
+
+    /// Announced before the first candle: buy_and_hold's buy is refused,
+    /// not fatal, and says why.
+    #[tokio::test]
+    async fn no_new_buys_once_a_delisting_is_announced() {
+        let mut events = vec![delisting(Some(100 * HOUR), 0)];
+        events.extend(flat_bars(0, 3));
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let r = run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        assert!(r.fills.is_empty());
+        assert_eq!(r.rejections.len(), 1);
+        assert!(
+            r.rejections[0].reason.contains("delisting"),
+            "{:?}",
+            r.rejections
+        );
+
+        // Withdrawn before the first candle: the buy goes through.
+        let mut events = vec![delisting(Some(100 * HOUR), 0), delisting(None, 0)];
+        events.extend(flat_bars(0, 3));
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let r = run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        assert_eq!(r.fills.len(), 1);
+    }
+
+    /// buy_and_hold bought 10 BTC at c1's open (no fees). Delisting
+    /// announced after c1, at 5h, exit lead 2h: from 3h on the engine
+    /// sells. c2 closes at 3h - 1 ms (too early); c3 at 4h - 1 ms sells 10,
+    /// filled at c4's open, before the delisting. buy_and_hold never sells:
+    /// the engine did.
+    #[tokio::test]
+    async fn the_engine_sells_before_the_delisting() {
+        let mut events = flat_bars(0, 2);
+        events.push(delisting(Some(5 * HOUR), 2 * HOUR - 1));
+        events.extend(flat_bars(2, 6));
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let config = EngineConfig {
+            delist_exit: Duration::from_secs(2 * 3600),
+            ..config()
+        };
+        let r = run(&provider, s.as_mut(), params, &config).await.unwrap();
+        let got: Vec<(i64, bot_core::Side, Qty)> = r
+            .fills
+            .iter()
+            .map(|f| (f.ts.as_millis() / HOUR, f.side, f.qty))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, bot_core::Side::Buy, Qty::new(dec!(10))),
+                (4, bot_core::Side::Sell, Qty::new(dec!(10))),
+            ]
+        );
+        assert!(r.positions[0].is_flat());
+        assert!(r.rejections.is_empty(), "{:?}", r.rejections);
+    }
+
+    /// A resting limit buy (far below the market, never fills) on an
+    /// instrument entering its exit window is cancelled by the engine; with
+    /// nothing held there is nothing to sell.
+    #[tokio::test]
+    async fn the_exit_cancels_working_orders_first() {
+        struct Rests(bool);
+        impl Strategy for Rests {
+            fn name(&self) -> &str {
+                "rests"
+            }
+            fn on_candle(&mut self, _: &mut Context, c: &bot_core::Candle) -> Vec<Signal> {
+                if std::mem::replace(&mut self.0, true) {
+                    return Vec::new();
+                }
+                vec![Signal::Submit {
+                    instrument: c.instrument.clone(),
+                    side: bot_core::Side::Buy,
+                    size: bot_core::Size::Base(Qty::new(dec!(1))),
+                    kind: bot_core::OrderKind::Limit {
+                        price: Price::new(dec!(50)),
+                        tif: bot_core::TimeInForce::Gtc,
+                    },
+                }]
+            }
+        }
+        struct LastOpen(usize);
+        impl Observer for LastOpen {
+            fn on_snapshot(&mut self, s: &Snapshot) {
+                self.0 = s.open_orders.len();
+            }
+        }
+        let mut events = flat_bars(0, 2);
+        events.push(delisting(Some(4 * HOUR), 2 * HOUR - 1));
+        events.extend(flat_bars(2, 4));
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let config = EngineConfig {
+            delist_exit: Duration::from_secs(2 * 3600),
+            ..config()
+        };
+        let mut seen = LastOpen(99);
+        run_observed(
+            &provider,
+            &mut Rests(false),
+            Params::default(),
+            &config,
+            &mut seen,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(seen.0, 0, "the resting buy was cancelled");
     }
 
     /// An order the venue hasn't confirmed cancelled yet leaves

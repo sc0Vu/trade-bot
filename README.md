@@ -274,6 +274,10 @@ export BINANCE_API_KEY=… BINANCE_API_SECRET=…   # better: from a gitignored 
 make run-paper
 ```
 
+When a coin the bot trades is scheduled for delisting, the bot stops
+buying it at once and sells what it holds `delist_exit_hours` (default 24)
+before the delisting, whatever the strategy does.
+
 What a run does:
 
 1. Checks the key with a read-only signed request before trading.

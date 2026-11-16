@@ -191,8 +191,8 @@ pub enum CorpAction {}
 /// Everything a strategy reacts to.
 ///
 /// Backtest replays this exact stream, so backtest/live parity holds for
-/// every variant, not only candles (invariant 3). v1 emits `Candle`, and a
-/// live feed also `Backfill` (history only; see the variant).
+/// every variant, not only candles (invariant 3). v1 emits `Candle`,
+/// `Backfill` (history only; see the variant) and `Delisting`.
 /// Non-exhaustive so strategies in other crates keep a fallback arm and
 /// survive new variants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,8 +203,9 @@ pub enum MarketEvent {
     /// feed fetches to warm up after a start, or to fill the gap after a
     /// reconnect (except the newest, which comes as `Candle`). The engine
     /// adds it to the strategy's history; the default `on_event` doesn't
-    /// decide on it, since its next open has long passed. A backtest never
-    /// emits it: it has no outages.
+    /// decide on it, since its next open has long passed. A backtest emits
+    /// it only for its warm-up, the bars before its start: it has no
+    /// outages.
     Backfill(Candle),
     Quote(Quote),
     /// Venue's trading session opened (equities). Carries its time so it
@@ -219,6 +220,18 @@ pub enum MarketEvent {
         ts: Timestamp,
     },
     CorporateAction(CorpAction),
+    /// The venue scheduled `instrument` to stop trading at `at` (a
+    /// delisting), or, with `at: None`, withdrew a schedule it had
+    /// announced. `ts` is when the bot learned it. From then on the engine
+    /// refuses new buys of the instrument, and from a set time before `at`
+    /// it cancels the strategy's orders on it and sells the holding, so
+    /// nothing is left in a coin that can no longer be sold. Strategies
+    /// see the schedule through `Context::delisting`.
+    Delisting {
+        instrument: InstrumentId,
+        at: Option<Timestamp>,
+        ts: Timestamp,
+    },
     // Expiry(InstrumentId): deferred with options
 }
 
@@ -230,7 +243,9 @@ impl MarketEvent {
         match self {
             Self::Candle(c) | Self::Backfill(c) => c.close_time,
             Self::Quote(q) => q.ts,
-            Self::SessionOpen { ts, .. } | Self::SessionClose { ts, .. } => *ts,
+            Self::SessionOpen { ts, .. }
+            | Self::SessionClose { ts, .. }
+            | Self::Delisting { ts, .. } => *ts,
             Self::CorporateAction(a) => match *a {},
         }
     }

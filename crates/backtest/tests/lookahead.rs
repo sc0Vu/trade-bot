@@ -99,6 +99,7 @@ async fn run(instruments: &[bot_core::Instrument], candles: Vec<Candle>) -> RunR
     let config = EngineConfig {
         whitelist: ids(),
         history_len: 10,
+        ..Default::default()
     };
     engine::run(&provider, s.as_mut(), params, &config)
         .await
@@ -180,6 +181,7 @@ async fn single_coin_property(fixture: &str, bars: i64, strategy: &str, params: 
             let config = EngineConfig {
                 whitelist: btc,
                 history_len: 10,
+                ..Default::default()
             };
             engine::run(&provider, s.as_mut(), params, &config)
                 .await
@@ -322,6 +324,7 @@ async fn momentum_rotation_never_lets_the_future_change_the_past() {
             let config = EngineConfig {
                 whitelist: ids(),
                 history_len: 10,
+                ..Default::default()
             };
             engine::run(&provider, s.as_mut(), params, &config)
                 .await

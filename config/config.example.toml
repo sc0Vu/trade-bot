@@ -97,6 +97,12 @@ limit_timeout = 3
 # Candles of history kept per instrument for the strategy. Must exceed
 # ratio_hop's freefall_candles.
 history_len = 500
+# Hours before a coin's scheduled delisting at which the engine itself
+# cancels orders on it and sells the holding at market, whatever the
+# strategy does; new buys are refused from the announcement on. On Binance
+# the schedule comes from the live API only (demo and testnet don't
+# publish it).
+delist_exit_hours = 24
 
 [db]
 # Where `run` keeps its books: orders sent, fills, holdings. Default: one

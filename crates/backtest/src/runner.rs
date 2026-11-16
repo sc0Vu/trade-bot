@@ -69,6 +69,7 @@ mod tests {
         let config = EngineConfig {
             whitelist: vec![id],
             history_len: 10,
+            ..Default::default()
         };
         let r = run_backtest(&provider, s.as_mut(), params, &config, Interval::H1)
             .await

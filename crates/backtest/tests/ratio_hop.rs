@@ -56,6 +56,7 @@ async fn run(freefall_pct: &str) -> Report {
     let config = EngineConfig {
         whitelist: ids(),
         history_len: 10,
+        ..Default::default()
     };
     run_backtest(&provider, s.as_mut(), params, &config, Interval::H1)
         .await

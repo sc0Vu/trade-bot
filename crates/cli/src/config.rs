@@ -298,12 +298,29 @@ pub struct StrategySection {
 pub struct EngineSection {
     #[serde(default = "five_hundred")]
     pub history_len: usize,
+    /// Hours before a scheduled delisting at which the engine itself sells
+    /// the holding (and cancels orders on the coin). New buys are refused
+    /// from the announcement on. Default 24.
+    #[serde(default = "twenty_four")]
+    pub delist_exit_hours: u64,
+}
+
+fn twenty_four() -> u64 {
+    24
+}
+
+impl EngineSection {
+    /// [`delist_exit_hours`](Self::delist_exit_hours) as a duration.
+    pub fn delist_exit(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.delist_exit_hours.saturating_mul(3600))
+    }
 }
 
 impl Default for EngineSection {
     fn default() -> Self {
         Self {
             history_len: five_hundred(),
+            delist_exit_hours: twenty_four(),
         }
     }
 }
@@ -515,6 +532,10 @@ mod tests {
             assert_eq!(c.exchange.network, Network::Testnet);
             assert_eq!(c.exchange.interval, Interval::M1);
             assert_eq!(c.engine.history_len, 500);
+            assert_eq!(
+                c.engine.delist_exit(),
+                std::time::Duration::from_secs(24 * 3600)
+            );
             assert_eq!(c.exchange.http_timeout_secs, 10);
             assert_eq!(c.exchange.max_outage_secs, 600);
             assert!(c.exchange.user_stream);

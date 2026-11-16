@@ -63,6 +63,7 @@ fn config() -> EngineConfig {
     EngineConfig {
         whitelist: ids(),
         history_len: 10,
+        ..Default::default()
     }
 }
 

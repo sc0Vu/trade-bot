@@ -55,6 +55,7 @@ async fn fills(p: &BacktestProvider) -> Vec<Fill> {
     let config = EngineConfig {
         whitelist: vec![btc()],
         history_len: 10,
+        ..Default::default()
     };
     engine::run(p, s.as_mut(), params, &config)
         .await
@@ -105,6 +106,7 @@ async fn warmup_takes_the_last_bars_before_the_start() {
     let config = EngineConfig {
         whitelist: vec![btc()],
         history_len: 10,
+        ..Default::default()
     };
     let r = run_backtest(&all, s.as_mut(), params, &config, Interval::H1)
         .await

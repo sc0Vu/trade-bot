@@ -23,6 +23,7 @@ pub struct Context {
     cancelling: Vec<Order>,
     history: HashMap<InstrumentId, VecDeque<Candle>>,
     history_len: usize,
+    delisting: HashMap<InstrumentId, Timestamp>,
     params: Params,
     outbox: Vec<Signal>,
 }
@@ -81,6 +82,24 @@ impl Context {
         self.history.get(id).and_then(VecDeque::back)
     }
 
+    /// When the venue will stop trading `id`, if it announced a delisting
+    /// (`MarketEvent::Delisting`). From the announcement the engine refuses
+    /// new buys of it, and from a set time before this it sells the
+    /// holding itself; at this time its candles stop. A strategy should
+    /// leave it before, and not wait for its candles once it has passed.
+    pub fn delisting(&self, id: &InstrumentId) -> Option<Timestamp> {
+        self.delisting.get(id).copied()
+    }
+
+    /// Whether `id` has stopped trading: delisted, and that time passed.
+    /// Its last candle is final; a strategy must not wait for another.
+    pub fn delisted(&self, id: &InstrumentId) -> bool {
+        match (self.delisting(id), self.now) {
+            (Some(at), Some(now)) => now >= at,
+            _ => false,
+        }
+    }
+
     pub fn params(&self) -> &Params {
         &self.params
     }
@@ -107,6 +126,7 @@ pub mod driver {
             cancelling: Vec::new(),
             history: HashMap::new(),
             history_len: history_len.max(1),
+            delisting: HashMap::new(),
             params,
             outbox: Vec::new(),
         }
@@ -146,6 +166,14 @@ pub mod driver {
         ctx.cancelling = orders;
     }
 
+    /// Records a delisting schedule for `id` (`None`: withdrawn).
+    pub fn set_delisting(ctx: &mut Context, id: InstrumentId, at: Option<Timestamp>) {
+        match at {
+            Some(at) => ctx.delisting.insert(id, at),
+            None => ctx.delisting.remove(&id),
+        };
+    }
+
     /// Drains queued signals in submission order.
     pub fn take_signals(ctx: &mut Context) -> Vec<Signal> {
         std::mem::take(&mut ctx.outbox)
@@ -177,6 +205,21 @@ mod tests {
         let mut ctx = driver::new(vec![], Params::default(), 10);
         driver::push_candle(&mut ctx, candle(0, "100"));
         assert_eq!(ctx.history(&btcusdt().id.clone()).len(), 0);
+    }
+
+    #[test]
+    fn delisting_is_known_and_passes_at_its_time() {
+        let mut ctx = driver::new(vec![btcusdt()], Params::default(), 1);
+        let id = btcusdt().id.clone();
+        assert_eq!(ctx.delisting(&id), None);
+        driver::set_delisting(&mut ctx, id.clone(), Some(Timestamp::from_millis(100)));
+        driver::set_now(&mut ctx, Timestamp::from_millis(99));
+        assert_eq!(ctx.delisting(&id), Some(Timestamp::from_millis(100)));
+        assert!(!ctx.delisted(&id));
+        driver::set_now(&mut ctx, Timestamp::from_millis(100));
+        assert!(ctx.delisted(&id));
+        driver::set_delisting(&mut ctx, id.clone(), None);
+        assert!(!ctx.delisted(&id), "withdrawn");
     }
 
     #[test]

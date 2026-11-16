@@ -145,6 +145,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     let engine_cfg = EngineConfig {
         whitelist: cfg.whitelist,
         history_len: cfg.engine.history_len,
+        delist_exit: cfg.engine.delist_exit(),
     };
     if network == Network::Live {
         eprintln!("LIVE: sending real orders to Binance mainnet");
@@ -245,6 +246,7 @@ async fn run_max_paper(cfg: config::Config) -> anyhow::Result<()> {
     let engine_cfg = EngineConfig {
         whitelist: cfg.whitelist,
         history_len: cfg.engine.history_len,
+        delist_exit: cfg.engine.delist_exit(),
     };
     telemetry::start(&cfg.metrics);
     let mut observer = telemetry::RunObserver {
@@ -391,6 +393,7 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
     let config = EngineConfig {
         whitelist: ids,
         history_len: a.history_len,
+        ..Default::default()
     };
     let report = run_backtest(&provider, strategy.as_mut(), params, &config, a.interval).await?;
     println!("{report}");

@@ -55,6 +55,7 @@ fn config() -> EngineConfig {
     EngineConfig {
         whitelist: vec![btc()],
         history_len: 10,
+        ..Default::default()
     }
 }
 

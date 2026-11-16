@@ -131,7 +131,15 @@ later adding additive, not rewrite:
 enum MarketEvent { Candle(Candle), Quote(Quote),
                    SessionOpen { venue: VenueId, ts: Timestamp },   // carry ts: orderable
                    SessionClose { venue: VenueId, ts: Timestamp },
-                   CorporateAction(CorpAction) /*, Expiry(InstrumentId) deferred */ }
+                   CorporateAction(CorpAction),
+                   Delisting { instrument, at: Option<Timestamp>, ts } /*, Expiry deferred */ }
+// Delisting: venue scheduled `instrument` to stop trading at `at` (None =
+// schedule withdrawn); ctx.delisting(id) / ctx.delisted(id) (now ≥ at). From
+// announcement risk refuses buys; from at − EngineConfig.delist_exit
+// (`[engine] delist_exit_hours`, default 24) engine::exit_delisting each event
+// cancels working orders on it (once each), then once none working/cancelling
+// market-sells the lot-rounded holding (dust stays); engine-own orders: no
+// on_order/on_rejected, refusals → RunReport. Same in backtest (parity).
 // CorpAction is empty enum in v1 → variant unconstructible until equities.
 // MarketEvent::ts(): candle → close_time (bar known), never open_time.
 // Backfill(Candle): late bar (live: warm-up / reconnect gap; backtest: warm-up
@@ -155,7 +163,7 @@ trait Strategy: Send {
 // open_orders (ids for Signal::Cancel; as of last settle), cancelling_orders
 // (cancelled, venue hasn't confirmed: may still fill; never cancel again),
 // history (≤ history_len closed candles, oldest first, ends at current event),
-// params, submit. Engine mutates via `strategy::driver` (strategy calling it
+// delisting(id), params, submit. Engine mutates via `strategy::driver` (strategy calling it
 // only corrupts own view; broker = source of truth).
 
 #[async_trait] trait MarketData { async fn next(&mut self) -> Result<Option<MarketEvent>>; } // feed error stops run
@@ -190,7 +198,9 @@ at t+1. Prevents deciding on close and trading at it.
 (2) `broker.settle(event)`; (3) each fill → ctx position from broker →
 `on_fill`, *before* event joins history (fill at open must not see that
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
-broker, `created_at` = event ts → `on_order` / `on_rejected`. Risk v1: whitelist, sizing (quote → base
+broker, `created_at` = event ts → `on_order` / `on_rejected`; (6) delisting exit.
+`EngineConfig { .. }` literals end `..Default::default()` (new fields break no caller).
+Risk v1: whitelist, no buys of a delisting instrument, sizing (quote → base
 at order price, except market buy keeps quote budget; market reference =
 last close rounded to tick against trader, buy up / sell down: market order
 sends no price, history under today's filters can be off tick), lot/tick

@@ -87,6 +87,7 @@ async fn fills(strategy: &str, params: &Params, candles: &[Candle]) -> Vec<Fill>
     let config = EngineConfig {
         whitelist: ids,
         history_len: 60,
+        ..Default::default()
     };
     let mut s = strategy::build(strategy, params).unwrap();
     engine::run(&provider, s.as_mut(), params.clone(), &config)

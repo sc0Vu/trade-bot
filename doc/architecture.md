@@ -138,6 +138,18 @@ rounded to tick against the trader (a buy up, a sell down): it sends no
 price, and a historical close can be off today's tick. Order ids are deterministic (`o-1`, `o-2`, …), so two
 runs over the same data produce identical orders.
 
+**Delistings.** A venue that schedules a coin's delisting sends a
+`MarketEvent::Delisting` with the time. A coin that can no longer be traded
+must not be held into its delisting: what's left can only be withdrawn or
+written off. So from the announcement, risk refuses new buys of it, and
+from a set time before it (`delist_exit_hours`, default 24) the engine
+itself cancels the strategy's orders on the coin and, once none is
+working, sells the holding at market, retrying each event until flat.
+The engine does this, not each strategy, so no strategy can forget to.
+Strategies also see the schedule (`Context::delisting`) and can leave
+earlier on their own terms. A backtest replays the same event, so the
+exit is part of every backtest too.
+
 **Errors.** A risk refusal, or a venue refusing *one order* (paper refusals,
 an unknown order, Binance `-1013` filter failure, `-2010` order rejected,
 `-2011` cancel rejected), is recorded in the run report and the run

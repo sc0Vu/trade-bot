@@ -76,6 +76,7 @@ async fn run_case(c: &Case) {
     let config = EngineConfig {
         whitelist: ids.clone(),
         history_len: 20,
+        ..Default::default()
     };
     let params = Params::from_toml(c.params).unwrap();
     let per_bar = ids.len();
