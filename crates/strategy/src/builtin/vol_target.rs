@@ -27,10 +27,10 @@
 //! on a restart. Reads only closed candles through `Context` (invariants 2,
 //! 5).
 
-use super::portfolio::{self, Target};
+use super::portfolio::{self, Backoff, Target};
 use crate::indicator;
 use crate::{Context, Params, Strategy, StrategyError, StrategyRegistration, exact_decimal};
-use bot_core::{Candle, Decimal, InstrumentId, Interval, Notional, Signal};
+use bot_core::{Candle, Decimal, Fill, InstrumentId, Interval, Notional, Signal};
 use rust_decimal::MathematicalOps;
 use serde::Deserialize;
 
@@ -77,6 +77,7 @@ struct VolTargetParams {
 /// See the module docs.
 pub struct VolTarget {
     p: VolTargetParams,
+    backoff: Backoff,
 }
 
 impl VolTarget {
@@ -109,7 +110,10 @@ impl VolTarget {
         if p.slippage_bps < Decimal::ZERO || p.slippage_bps >= Decimal::from(10_000) {
             return bad("slippage_bps must be in [0, 10000)");
         }
-        Ok(Box::new(Self { p }))
+        Ok(Box::new(Self {
+            p,
+            backoff: Backoff::default(),
+        }))
     }
 
     /// Target weight on the current bar; `None` until `vol_period + 1`
@@ -148,6 +152,18 @@ impl Strategy for VolTarget {
         super::stateless_restore(NAME, &state)
     }
 
+    /// A fill means the venue is taking orders: stop backing off.
+    fn on_fill(&mut self, _ctx: &mut Context, _f: &Fill) {
+        self.backoff.filled();
+    }
+
+    /// Refused (e.g. `-2010`: `capital` more than the account holds): wait
+    /// longer before asking again (`portfolio::Backoff`).
+    fn on_rejected(&mut self, ctx: &mut Context, _s: &Signal, reason: &str) {
+        tracing::warn!(strategy = NAME, reason, "order refused; backing off");
+        self.backoff.refused(ctx.now());
+    }
+
     fn on_candle(&mut self, ctx: &mut Context, c: &Candle) -> Vec<Signal> {
         let coin = &self.p.coin;
         if c.instrument != *coin
@@ -159,6 +175,9 @@ impl Strategy for VolTarget {
         let Some(weight) = self.weight(ctx, c.interval) else {
             return Vec::new();
         };
+        if self.backoff.hold() {
+            return Vec::new();
+        }
         let target = [Target {
             coin: coin.clone(),
             weight,
@@ -210,6 +229,7 @@ mod tests {
     fn weight_after(extra: &str, prices: &[&str]) -> Option<Decimal> {
         let s = VolTarget {
             p: params_with(extra).parse(NAME).unwrap(),
+            backoff: Backoff::default(),
         };
         let mut ctx = ctx();
         for (i, p) in prices.iter().enumerate() {

@@ -23,15 +23,17 @@
 //! Expected edge is unverified.
 //!
 //! Stateless: positions (and so cash) and the last closes are all a
-//! decision needs, and both are rebuilt on a restart. All coins must share
+//! decision needs, and both are rebuilt on a restart. A refused order
+//! (`capital` more than the account holds) spaces out the retries
+//! (`portfolio::Backoff`) instead of re-sending it every bar. All coins must share
 //! one quote asset, the cash; otherwise it never trades (logged).
 //!
 //! Reads only closed candles through `Context` (invariants 2, 5), in
 //! `Decimal` (invariant 1).
 
-use super::portfolio::{self, Target};
+use super::portfolio::{self, Backoff, Target};
 use crate::{Context, Params, Strategy, StrategyError, StrategyRegistration, exact_decimal};
-use bot_core::{Candle, Decimal, InstrumentId, Notional, Signal};
+use bot_core::{Candle, Decimal, Fill, InstrumentId, Notional, Signal};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -71,6 +73,7 @@ pub struct Rebalance {
     /// The coins don't share one quote asset (or one is missing): never
     /// trade.
     stopped: bool,
+    backoff: Backoff,
 }
 
 impl Rebalance {
@@ -118,6 +121,7 @@ impl Rebalance {
             p,
             targets,
             stopped: false,
+            backoff: Backoff::default(),
         }))
     }
 
@@ -185,6 +189,18 @@ impl Strategy for Rebalance {
         super::stateless_restore(NAME, &state)
     }
 
+    /// A fill means the venue is taking orders: stop backing off.
+    fn on_fill(&mut self, _ctx: &mut Context, _f: &Fill) {
+        self.backoff.filled();
+    }
+
+    /// Refused (e.g. `-2010`: `capital` more than the account holds): wait
+    /// longer before asking again (`portfolio::Backoff`).
+    fn on_rejected(&mut self, ctx: &mut Context, _s: &Signal, reason: &str) {
+        tracing::warn!(strategy = NAME, reason, "order refused; backing off");
+        self.backoff.refused(ctx.now());
+    }
+
     fn on_candle(&mut self, ctx: &mut Context, c: &Candle) -> Vec<Signal> {
         let coins = || self.p.weights.keys();
         if self.stopped
@@ -193,6 +209,7 @@ impl Strategy for Rebalance {
             || coins().any(|id| {
                 ctx.open_orders(id).next().is_some() || ctx.cancelling_orders(id).next().is_some()
             })
+            || self.backoff.hold()
         {
             return Vec::new();
         }
@@ -339,6 +356,48 @@ mod tests {
                 buy(&ethusdt(), dec!(375)),
             ]
         );
+    }
+
+    /// The demo run's loop: capital beyond the account, every buy refused
+    /// (`-2010`). After the first refusal one evaluation is skipped, after
+    /// the second three; a fill ends the backoff.
+    #[test]
+    fn backs_off_after_refusals_until_a_fill() {
+        let (mut s, mut ctx) = started();
+        let eval = |s: &mut dyn Strategy, ctx: &mut Context, i: i64| {
+            feed(s, ctx, candle(i, "100"));
+            feed(s, ctx, eth_candle(i, "10"))
+        };
+        let refuse = |s: &mut dyn Strategy, ctx: &mut Context, out: &[Signal]| {
+            s.on_rejected(ctx, &out[0], "venue error -2010");
+        };
+        let out = eval(s.as_mut(), &mut ctx, 0);
+        assert_eq!(out.len(), 2, "buys both");
+        refuse(s.as_mut(), &mut ctx, &out);
+        refuse(s.as_mut(), &mut ctx, &out); // same evaluation: counts once
+        assert!(eval(s.as_mut(), &mut ctx, 1).is_empty(), "skip 1 of 1");
+        let out = eval(s.as_mut(), &mut ctx, 2);
+        assert_eq!(out.len(), 2, "retried");
+        refuse(s.as_mut(), &mut ctx, &out);
+        for i in 3..6 {
+            assert!(eval(s.as_mut(), &mut ctx, i).is_empty(), "skip, bar {i}");
+        }
+        let out = eval(s.as_mut(), &mut ctx, 6);
+        assert_eq!(out.len(), 2, "retried after 3");
+        refuse(s.as_mut(), &mut ctx, &out);
+        let fill = bot_core::Fill::new(bot_core::FillSpec {
+            order_id: OrderId::new("o-9").unwrap(),
+            instrument: btcusdt().id.clone(),
+            side: Side::Buy,
+            qty: Qty::new(dec!(1)),
+            price: "100".parse().unwrap(),
+            fee: bot_core::Fee::Base(Qty::new(dec!(0.001))),
+            liquidity: bot_core::Liquidity::Taker,
+            ts: Timestamp::from_millis(0),
+        })
+        .unwrap();
+        s.on_fill(&mut ctx, &fill);
+        assert_eq!(eval(s.as_mut(), &mut ctx, 7).len(), 2, "fill cleared it");
     }
 
     #[test]

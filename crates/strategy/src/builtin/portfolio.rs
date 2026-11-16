@@ -17,9 +17,57 @@
 //! side). Books that already held these coins before the strategy started
 //! (another strategy's trades on the same db) shift the cash by their net;
 //! state `capital` with that in mind.
+//!
+//! A `capital` larger than the account really holds can't be detected
+//! beforehand: the venue refuses the buy (`-2010`), and the next evaluation
+//! would ask again. [`Backoff`] spaces those retries out.
 
 use crate::Context;
-use bot_core::{Decimal, InstrumentId, Notional, OrderKind, Price, Qty, Side, Signal, Size};
+use bot_core::{
+    Decimal, InstrumentId, Notional, OrderKind, Price, Qty, Side, Signal, Size, Timestamp,
+};
+
+/// Spaces out evaluations after the venue refused an order, so a `capital`
+/// the account can't cover (or a venue refusing for any other reason)
+/// isn't re-sent on every bar.
+///
+/// After k refused evaluations in a row, the next 2^k − 1 evaluations are
+/// skipped (k capped at 6: at most 63); any fill resets it. Refusals from
+/// the same evaluation (several orders, one close time) count once. Not
+/// saved: a restart retries at once, which is when a user would have
+/// fixed the balance.
+#[derive(Debug, Default)]
+pub(crate) struct Backoff {
+    refusals: u32,
+    skip: u32,
+    last: Option<Timestamp>,
+}
+
+impl Backoff {
+    /// An order from the evaluation at `now` was refused.
+    pub fn refused(&mut self, now: Option<Timestamp>) {
+        if now.is_some() && now == self.last {
+            return;
+        }
+        self.last = now;
+        self.refusals = (self.refusals + 1).min(6);
+        self.skip = (1 << self.refusals) - 1;
+    }
+
+    /// Something filled: the venue is taking orders again.
+    pub fn filled(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Call once per evaluation: true means skip this one.
+    pub fn hold(&mut self) -> bool {
+        if self.skip == 0 {
+            return false;
+        }
+        self.skip -= 1;
+        true
+    }
+}
 
 /// A coin and the fraction of the portfolio's value it should be.
 #[derive(Clone, Debug, PartialEq)]
@@ -224,6 +272,41 @@ pub(crate) mod tests {
             size: Size::Quote(Notional::new(budget)),
             kind: OrderKind::Market,
         }
+    }
+
+    fn ts(ms: i64) -> Option<Timestamp> {
+        Some(Timestamp::from_millis(ms))
+    }
+
+    /// Refused at evaluation 1: skip 1. Refused again: skip 3, then 7. Two
+    /// refusals from one evaluation count once; a fill clears it all.
+    #[test]
+    fn backoff_doubles_the_wait_until_a_fill() {
+        let mut b = Backoff::default();
+        assert!(!b.hold(), "nothing refused yet");
+        b.refused(ts(1));
+        b.refused(ts(1));
+        assert_eq!(
+            (0..3).map(|_| b.hold()).collect::<Vec<_>>(),
+            [true, false, false]
+        );
+        b.refused(ts(3));
+        let waits: Vec<bool> = (0..4).map(|_| b.hold()).collect();
+        assert_eq!(waits, [true, true, true, false]);
+        b.refused(ts(7));
+        assert_eq!((0..8).filter(|_| b.hold()).count(), 7);
+        b.refused(ts(15));
+        b.filled();
+        assert!(!b.hold());
+    }
+
+    #[test]
+    fn backoff_waits_at_most_63() {
+        let mut b = Backoff::default();
+        for i in 0..20 {
+            b.refused(ts(i));
+        }
+        assert_eq!((0..100).filter(|_| b.hold()).count(), 63);
     }
 
     /// Bought 10 BTC for 1001 (fee included), sold 4 for 500 proceeds:

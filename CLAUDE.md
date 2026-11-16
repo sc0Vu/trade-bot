@@ -589,8 +589,10 @@ prior trades on same coins shift it). Once per close time all coins in,
 nothing working/cancelling: any |weight − target| > `band` → all coins back
 to target, market, sells first; buys ≤ cash + sells' est. proceeds
 (close·(1 − fee − slip) − tick/unit), scaled together; filter-failing trades
-dropped. Volatility harvesting: sells rises, buys falls; trails a one-way
-trend; costs per rebalance.
+dropped. Refusal (`-2010`: capital > account) → `portfolio::Backoff`: k
+refused evals in a row skip next 2^k − 1 (≤ 63), fill resets, not saved
+(restart retries). Volatility harvesting: sells rises, buys falls; trails a
+one-way trend; costs per rebalance.
 
 `vol_target` — one coin, `rebalance` machinery (`portfolio`, own cash from
 books) with a moving weight: min(`max_weight` ≤ 1, `target_vol` /
