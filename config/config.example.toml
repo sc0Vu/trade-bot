@@ -30,8 +30,10 @@ whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
 # venue = "max" only paper runs are allowed, on MAX's live prices with the
 # local paper broker below ([paper] required, no API key read), and the
 # whitelist must be max: instruments (max:BTCTWD, max:BTCUSDT).
-# "binance-usdm" (USDⓈ-M perpetuals) is backtest-only for now: a run with
-# it is refused (see README, "Perpetual futures").
+# "binance-usdm" (USDⓈ-M perpetuals): paper runs only (live futures prices
+# and funding, local fills and margin), whitelist binance-usdm: instruments,
+# [paper] and [perp] required; live orders are refused (see README,
+# "Perpetual futures").
 venue = "binance"
 # Binance only:
 # "testnet" (default): testnet.binance.vision, fake balances.
@@ -84,6 +86,15 @@ freefall_pct = "0.2"
 freefall_candles = 60
 order_type = "limit"
 limit_timeout = 3
+
+# Margin of a perpetual paper run (exchange.venue = "binance-usdm" only;
+# required there). Brackets come from the account: BINANCE_API_KEY /
+# BINANCE_API_SECRET must be set and belong to brackets_from's network.
+# [perp]
+# leverage = 2              # every symbol; refused above the bracket's max
+# margin = "isolated"       # or "cross"
+# brackets_from = "demo"    # "demo" (default), "testnet" or "live"
+# clearance = "0.0125"      # default: the symbols' published liquidationFee
 
 # The local paper broker, for venue = "max" (Binance paper runs use its
 # testnet or demo network instead). Same model as `backtest`: an order

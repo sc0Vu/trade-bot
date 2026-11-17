@@ -89,6 +89,18 @@ async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<
 }
 
 async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
+    if cfg.exchange.venue == Venue::BinanceUsdm {
+        anyhow::ensure!(
+            !a.live,
+            "live perpetual orders are not supported yet; binance-usdm runs with --paper only"
+        );
+        if a.cancel_orphans {
+            tracing::warn!(
+                "--cancel-orphans ignored: a perpetual paper run places no orders on Binance"
+            );
+        }
+        return run_usdm_paper(cfg).await;
+    }
     if cfg.exchange.venue == Venue::Max {
         gate::decide_max(cfg.mode, a.live)?;
         if a.cancel_orphans {
@@ -271,6 +283,106 @@ async fn run_max_paper(cfg: config::Config) -> anyhow::Result<()> {
         print_summary(&r);
     }
     Ok(())
+}
+
+/// A USDⓈ-M paper run: live futures prices and funding, the local perp
+/// broker with `[paper]` costs and `[perp]` margin; brackets read from
+/// the account (signed, keys from env). Like MAX paper: no db, no API, no
+/// state resume (the broker starts flat), nothing sent to Binance but
+/// data requests.
+async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
+    use exchange::binance::usdm_paper::{UsdmPaperConfig, UsdmPaperProvider};
+    let paper = cfg
+        .paper
+        .as_ref()
+        .context("exchange.venue = \"binance-usdm\" needs a [paper] section")?;
+    let perp = cfg
+        .perp
+        .as_ref()
+        .context("exchange.venue = \"binance-usdm\" needs a [perp] section")?;
+    let signed = usdm_signed(perp.brackets_from)
+        .context("a perpetual paper run reads the account's margin brackets (signed)")?;
+    let mut terms = std::collections::HashMap::new();
+    for id in &cfg.whitelist {
+        let brackets = exchange::binance::usdm::brackets(&signed, id.symbol())
+            .await
+            .with_context(|| format!("{id}: margin brackets"))?;
+        terms.insert(
+            id.clone(),
+            exchange::paper::PerpTerms {
+                leverage: perp.leverage,
+                mode: perp.margin,
+                brackets,
+            },
+        );
+    }
+    let provider = UsdmPaperProvider::new(
+        UsdmPaperConfig {
+            interval: cfg.exchange.interval,
+            warmup: cfg.engine.history_len,
+            max_outage: Duration::from_secs(cfg.exchange.max_outage_secs),
+            http_timeout: Duration::from_secs(cfg.exchange.http_timeout_secs),
+            fees: RateFee::new(paper.fee, paper.fee, FeeAsset::Quote)
+                .context("paper.fee must be in [0, 1)")?,
+            slippage: BpsSlippage::new(paper.slippage_bps)
+                .context("paper.slippage_bps must be >= 0")?,
+            initial_cash: paper.initial_cash,
+            terms,
+            clearance: perp.clearance,
+        },
+        cfg.whitelist.clone(),
+    );
+    if cfg.api.enabled {
+        tracing::warn!(
+            "api is not available on a perpetual paper run (no order database); not started"
+        );
+    }
+    let params = Params::new(cfg.strategy.params);
+    let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
+    let engine_cfg = EngineConfig {
+        whitelist: cfg.whitelist,
+        history_len: cfg.engine.history_len,
+        delist_exit: cfg.engine.delist_exit(),
+    };
+    telemetry::start(&cfg.metrics);
+    let mut observer = telemetry::RunObserver {
+        include_money: cfg.metrics.include_money,
+        live: None,
+        state: None,
+    };
+    tracing::info!(
+        provider = provider.id(),
+        strategy = %cfg.strategy.name,
+        leverage = perp.leverage,
+        "starting: Binance futures prices and funding, local paper fills and margin, nothing sent to Binance"
+    );
+    let outcome = tokio::select! {
+        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, None) => r.map(Some),
+        s = shutdown::signal() => {
+            eprintln!("{}: stopping", s?);
+            Ok(None)
+        }
+    };
+    if let Some(r) = outcome? {
+        print_summary(&r);
+    }
+    Ok(())
+}
+
+/// A signed client of `network`'s USDⓈ-M host, keys from env.
+fn usdm_signed(network: Network) -> anyhow::Result<exchange::binance::SignedClient> {
+    use exchange::binance::usdm;
+    let host = match network {
+        Network::Live => usdm::LIVE_URL,
+        Network::Demo => usdm::DEMO_URL,
+        Network::Testnet => usdm::TESTNET_URL,
+    };
+    Ok(exchange::binance::SignedClient::new(
+        host,
+        Box::new(exchange::binance::ReqwestTransport::default()),
+        Credentials::from_env()?,
+        Box::new(exchange::binance::SystemClock),
+    ))
 }
 
 /// The end-of-run summary `run` prints.
@@ -660,32 +772,25 @@ async fn fetch_perp_data(
     );
     let info = client.perp_instrument(id.symbol()).await?;
     let mut brackets = dir.read_perp(id).ok().and_then(|p| p.brackets);
-    let host = match brackets_from {
-        BracketsHost::Live => usdm::LIVE_URL,
-        BracketsHost::Demo => usdm::DEMO_URL,
-        BracketsHost::Testnet => usdm::TESTNET_URL,
+    let network = match brackets_from {
+        BracketsHost::Live => Network::Live,
+        BracketsHost::Demo => Network::Demo,
+        BracketsHost::Testnet => Network::Testnet,
     };
-    match Credentials::from_env() {
-        Ok(creds) => {
-            let signed = exchange::binance::SignedClient::new(
-                host,
-                Box::new(exchange::binance::ReqwestTransport::default()),
-                creds,
-                Box::new(exchange::binance::SystemClock),
-            );
-            match usdm::brackets(&signed, id.symbol()).await {
-                Ok(b) => {
-                    println!(
-                        "{id} margin brackets: {} tiers from {host}",
-                        b.iter().count()
-                    );
-                    brackets = Some(b);
-                }
-                Err(e) => eprintln!(
-                    "warning: {id}: margin brackets from {host}: {e}; kept the cached ones"
-                ),
+    let host = network;
+    match usdm_signed(network) {
+        Ok(signed) => match usdm::brackets(&signed, id.symbol()).await {
+            Ok(b) => {
+                println!(
+                    "{id} margin brackets: {} tiers from {host:?}",
+                    b.iter().count()
+                );
+                brackets = Some(b);
             }
-        }
+            Err(e) => {
+                eprintln!("warning: {id}: margin brackets from {host:?}: {e}; kept the cached ones")
+            }
+        },
         Err(_) => eprintln!(
             "warning: {id}: no BINANCE_API_KEY/SECRET: margin brackets not fetched (signed endpoint); kept the cached ones"
         ),

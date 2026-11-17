@@ -267,7 +267,7 @@ cargo run -p cli -- backtest --venue max --strategy sma_trend --params p.toml \
     --symbol BTCTWD --from 2024-01-01 --to 2026-10-01 --fee 0.0015 --slippage-bps 20
 ```
 
-### Perpetual futures (USDⓈ-M, backtest only)
+### Perpetual futures (USDⓈ-M: backtest and paper)
 
 `--venue binance-usdm` backtests Binance USDⓈ-M linear perpetuals
 (`binance-usdm:BTCUSDT`, separate from the spot pair). `fetch-data` also
@@ -293,6 +293,15 @@ margin. Two approximations: the bar's last-price range stands in for the
 venue's mark price (the cautious reading), and funding records from
 before about 2023 carry no mark, so the bar's price values those. A quote
 budget is the position's notional: at 1x, leave room for the fee.
+
+`run --paper` with `exchange.venue = "binance-usdm"` forward-tests the
+same model on live data: Binance's futures klines and funding
+settlements, the local perp broker filling at the next bar's open with
+the `[paper]` costs and the `[perp]` leverage and margin mode. Nothing is
+sent to Binance but data requests; the margin brackets are read from your
+account (`[perp] brackets_from` names the network your key belongs to). The
+wallet lives in memory, so every run starts flat. Live perpetual orders are
+refused. See `config/examples/sma_long_short.toml`.
 
 The report gives final equity, realized P&L, lowest cash, maximum drawdown,
 fill and closed-trade counts, win rate, Sharpe ratio and rejected signals,
@@ -499,9 +508,9 @@ deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and aler
 
 ## Known limitations
 
-- Live and paper trading are Binance spot (and MAX paper) only. USDⓈ-M
-  perpetuals can be backtested but not yet traded; US equities and
-  options are planned but not implemented.
+- Live trading is Binance spot only. USDⓈ-M perpetuals can be backtested
+  and paper-traded (local fills on live data) but not traded live; MAX is
+  paper only; US equities and options are planned but not implemented.
 - A market-data outage longer than `exchange.max_outage_secs` (default 10
   min) stops the run. Bars missed during a shorter one are backfilled as
   history; only the newest is traded on.

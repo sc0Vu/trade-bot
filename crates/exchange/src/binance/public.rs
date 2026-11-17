@@ -74,6 +74,14 @@ impl PublicClient {
         &self.limiter
     }
 
+    /// Replaces the request timeout.
+    pub fn set_timeout(&mut self, timeout: std::time::Duration) {
+        self.http = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+    }
+
     /// Paces requests through `limiter` instead of a private one (share it
     /// with every client of the same host).
     pub fn with_limiter(mut self, limiter: Arc<RateLimiter>) -> Self {

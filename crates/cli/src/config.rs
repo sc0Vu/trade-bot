@@ -54,6 +54,34 @@ pub struct Config {
     /// Required with `exchange.venue = "max"`; unused on Binance, whose
     /// paper runs trade on its testnet or demo network.
     pub paper: Option<PaperSection>,
+    /// Margin terms of a perpetual paper run (`exchange.venue =
+    /// "binance-usdm"`, required there).
+    pub perp: Option<PerpSection>,
+}
+
+/// `[perp]`: how a USDⓈ-M paper run margins its positions.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PerpSection {
+    /// Leverage for every whitelisted symbol (≥ 1; refused above what the
+    /// account's brackets allow).
+    pub leverage: u32,
+    /// `"isolated"` (default) or `"cross"`.
+    #[serde(default)]
+    pub margin: bot_core::margin::MarginMode,
+    /// Which network's futures host the account's margin brackets are read
+    /// from (a signed call; `BINANCE_API_KEY` / `BINANCE_API_SECRET` must
+    /// belong to it). Default `demo`.
+    #[serde(default = "demo")]
+    pub brackets_from: Network,
+    /// Liquidation clearance fee rate (`"0.0125"`); default the highest
+    /// published `liquidationFee` of the symbols.
+    #[serde(default, deserialize_with = "opt_exact_decimal")]
+    pub clearance: Option<Decimal>,
+}
+
+fn demo() -> Network {
+    Network::Demo
 }
 
 /// Which exchange the bot trades on.
@@ -66,9 +94,10 @@ pub enum Venue {
     /// MAX by MaiCoin (`max:BTCUSDT`, `max:BTCTWD`). No testnet: paper only
     /// (live MAX data, local fills) until live orders are built.
     Max,
-    /// Binance USDⓈ-M perpetual futures (`binance-usdm:BTCUSDT`). Backtest
-    /// and `fetch-data` only so far: `run` refuses it until live margin
-    /// handling exists.
+    /// Binance USDⓈ-M perpetual futures (`binance-usdm:BTCUSDT`): backtest,
+    /// `fetch-data`, and paper runs (live futures prices, local fills and
+    /// margin, `[paper]` + `[perp]`). Live orders are refused until margin
+    /// is handled against the venue.
     #[serde(rename = "binance-usdm")]
     #[value(name = "binance-usdm")]
     BinanceUsdm,
@@ -486,10 +515,41 @@ impl Config {
             bail!("whitelist has {other}, but exchange.venue is {venue}");
         }
         if self.exchange.venue == Venue::BinanceUsdm {
-            bail!(
-                "exchange.venue = \"binance-usdm\": perpetuals are backtest-only so far \
-                 (live and paper runs need margin handling against the venue, not built yet)"
-            );
+            if self.mode == Mode::Live {
+                bail!(
+                    "live perpetual orders are not supported yet; binance-usdm runs paper only \
+                     (live futures prices, local fills and margin)"
+                );
+            }
+            if self.paper.is_none() {
+                bail!(
+                    "exchange.venue = \"binance-usdm\" needs a [paper] section (initial_cash, fee, slippage_bps)"
+                );
+            }
+            let Some(perp) = &self.perp else {
+                bail!(
+                    "exchange.venue = \"binance-usdm\" needs a [perp] section (leverage, margin)"
+                );
+            };
+            if perp.leverage == 0 {
+                bail!("perp.leverage must be >= 1");
+            }
+            if perp
+                .clearance
+                .is_some_and(|c| c < Decimal::ZERO || c >= Decimal::ONE)
+            {
+                bail!("perp.clearance must be in [0, 1)");
+            }
+            if self.exchange.interval == Interval::S1 {
+                bail!("Binance futures serve no 1s klines; set exchange.interval to 1m or longer");
+            }
+            if self.exchange.rest_url.is_some() || self.exchange.ws_url.is_some() {
+                bail!(
+                    "exchange.rest_url and ws_url are spot overrides; remove them for binance-usdm"
+                );
+            }
+        } else if self.perp.is_some() {
+            bail!("[perp] is for exchange.venue = \"binance-usdm\"");
         }
         if self.exchange.venue == Venue::Max {
             if self.mode == Mode::Live {
@@ -588,23 +648,54 @@ mod tests {
         params = { coin = "max:BTCTWD", quote_amount = "1000", every = "day", fee = "0.0015", slippage_bps = "20" }
     "#;
 
-    /// Perpetuals are backtest-only: a run config naming the futures venue
-    /// is refused at load, before any connection.
+    const USDM_PAPER: &str = r#"
+        whitelist = ["binance-usdm:BTCUSDT"]
+        [exchange]
+        venue = "binance-usdm"
+        interval = "1m"
+        [paper]
+        initial_cash = "1000"
+        fee = "0.0005"
+        slippage_bps = "2"
+        [perp]
+        leverage = 3
+        margin = "cross"
+        [strategy]
+        name = "buy_and_hold"
+        params = { coin = "binance-usdm:BTCUSDT", quote_amount = "100", fee = "0.0005", slippage_bps = "2" }
+    "#;
+
+    /// Perpetuals run paper only: `[paper]` and `[perp]` required, live
+    /// refused at load, `[perp]` refused on another venue.
     #[test]
-    fn perpetual_venue_is_refused_for_runs() {
+    fn perpetual_runs_are_paper_only() {
         Jail::expect_with(|_| {
-            let err = parse(
-                r#"
-                whitelist = ["binance-usdm:BTCUSDT"]
-                [exchange]
-                venue = "binance-usdm"
-                [strategy]
-                name = "buy_and_hold"
-                params = { coin = "binance-usdm:BTCUSDT", quote_amount = "100", fee = "0.0005", slippage_bps = "2" }
-            "#,
-            )
-            .unwrap_err();
-            assert!(err.to_string().contains("backtest-only"), "{err}");
+            let c = parse(USDM_PAPER).unwrap();
+            let p = c.perp.unwrap();
+            assert_eq!(p.leverage, 3);
+            assert_eq!(p.margin, bot_core::margin::MarginMode::Cross);
+            assert_eq!((p.brackets_from, p.clearance), (Network::Demo, None));
+            let live = format!("mode = \"live\"\n{USDM_PAPER}");
+            assert!(
+                parse(&live)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not supported")
+            );
+            let no_perp = USDM_PAPER.replace(
+                "[perp]\n        leverage = 3\n        margin = \"cross\"",
+                "",
+            );
+            assert!(parse(&no_perp).unwrap_err().to_string().contains("[perp]"));
+            let zero = USDM_PAPER.replace("leverage = 3", "leverage = 0");
+            assert!(parse(&zero).is_err());
+            let spot_with_perp = format!("{MIN}\n[perp]\nleverage = 2");
+            assert!(
+                parse(&spot_with_perp)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("[perp] is for")
+            );
             Ok(())
         });
     }

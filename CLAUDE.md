@@ -160,12 +160,22 @@ Cache (`backtest::perp`): `funding/<venue>/<SYM>.jsonl`, `perp/<venue>/<SYM>.jso
 (`PerpData { liquidation_fee, brackets: Option }`); `fetch_funding` head/tail
 like klines; `funding_events`: missing mark → bar open containing it (or
 last close after), none before → skipped, count noted. CLI: `Venue::
-BinanceUsdm` (`binance-usdm`): `run` refuses at config load (backtest-only);
+BinanceUsdm` (`binance-usdm`): `run` paper only (live refused at load + flag);
 `fetch-data` + funding, fee, brackets (`--brackets-from demo|testnet|live`,
 key from env, failure keeps cached); `backtest --leverage N --margin
 isolated|cross [--clearance r]` (default = max cached liquidationFee), fees
 in quote, no brackets → refused, `--earn-ratio` refused. Checked
 2026-11-17: 1x BTC Feb–Aug 2026 = hand recompute exactly (802.23049863).
+Paper run (`binance::usdm_paper`): `UsdmPaperProvider` = `FundingWatch`(
+`ReconnectingFeed`(ws `wss://fstream.binance.com/market/stream` — legacy
+`/stream` upgrades but sends no klines, 2026-11-17 — + `/fapi/v1/klines`)) + `PerpPaperBroker`
+(today's filters, clearance = config else max liquidationFee). `FundingWatch`
+polls `fundingRate` after last seen (start = run start, nothing replayed)
+every `FUNDING_POLL` (5 min), delivers before the next event stamped with
+its ts; no mark → skipped + warn; failure = warning. Config `[perp]
+{ leverage, margin, brackets_from (default demo), clearance }` + `[paper]`
+required, no 1s, no URL overrides; brackets signed via env key at start;
+no db / API / resume (flat broker), like MAX paper.
 Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as

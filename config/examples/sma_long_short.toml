@@ -1,32 +1,46 @@
 # sma_long_short: one coin, long above its simple moving average, short
-# below it where the instrument can be shorted (USDⓈ-M perpetuals), flat
-# below it on spot (as here: perpetuals are backtest-only so far). Fixed
-# notional per entry, flips in one order. Textbook params, not tuned; edge
-# unverified. Backtest before trusting it; on a perpetual:
+# below it where the instrument can be shorted (USDⓈ-M perpetuals, as
+# here), flat below it on spot. Fixed notional per entry; a flip is one
+# order. Textbook params, not tuned; edge unverified. Backtest first:
 #
+#   cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT --from 2026-01-01
 #   cargo run -p cli -- backtest --venue binance-usdm --strategy sma_long_short \
-#       --params p.toml --symbol BTCUSDT --from 2026-01-01 --to 2026-08-01 \
+#       --params p.toml --symbol BTCUSDT --from 2026-02-01 --to 2026-08-01 \
 #       --fee 0.0005 --slippage-bps 2 --leverage 2
+#
+# Paper run: Binance futures prices and funding, local fills and margin;
+# nothing is sent to Binance. Reads your account's margin brackets, so
+# BINANCE_API_KEY / BINANCE_API_SECRET must be set (a demo key works).
 #
 #   cargo run -p cli -- run --paper --config config/examples/sma_long_short.toml
 
 mode = "paper"
-whitelist = ["binance:BTCUSDT"]
+whitelist = ["binance-usdm:BTCUSDT"]
 
 [exchange]
-network = "testnet"
+venue = "binance-usdm"
 interval = "4h"
+
+[paper]
+initial_cash = "1000"   # USDT wallet
+fee = "0.0005"          # taker/maker, paid in USDT
+slippage_bps = "2"
+
+[perp]
+leverage = 1            # notional / margin; a 1x short can still be liquidated (price doubling)
+margin = "isolated"
+brackets_from = "demo"  # the network your API key belongs to
 
 [strategy]
 name = "sma_long_short"
 
 [strategy.params]
-coin = "binance:BTCUSDT"
+coin = "binance-usdm:BTCUSDT"
 sma_period = 200        # closes in the average; <= engine.history_len
 band_pct = "0.01"       # 1% dead zone each side, against whipsaw
-notional = "100"        # USDT per position at entry (base units = notional / close)
-fee = "0.001"
-slippage_bps = "5"
+notional = "900"        # USDT per position at entry; leave room for fees at 1x
+fee = "0.0005"
+slippage_bps = "2"
 
 [engine]
 history_len = 500
