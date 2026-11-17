@@ -30,6 +30,8 @@ whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
 # venue = "max" only paper runs are allowed, on MAX's live prices with the
 # local paper broker below ([paper] required, no API key read), and the
 # whitelist must be max: instruments (max:BTCTWD, max:BTCUSDT).
+# "binance-usdm" (USDⓈ-M perpetuals) is backtest-only for now: a run with
+# it is refused (see README, "Perpetual futures").
 venue = "binance"
 # Binance only:
 # "testnet" (default): testnet.binance.vision, fake balances.

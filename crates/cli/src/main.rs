@@ -296,6 +296,7 @@ fn data_url(venue: Venue) -> &'static str {
     match venue {
         Venue::Binance => PUBLIC_DATA_URL,
         Venue::Max => exchange::max::REST_URL,
+        Venue::BinanceUsdm => exchange::binance::usdm::LIVE_URL,
     }
 }
 
@@ -364,6 +365,23 @@ struct BacktestArgs {
     history_len: usize,
     #[arg(long, default_value = "data")]
     data_dir: PathBuf,
+    /// `binance-usdm`: leverage every position is margined at (≥ 1, at
+    /// most what the cached brackets allow at the order's size).
+    #[arg(long)]
+    leverage: Option<u32>,
+    /// `binance-usdm`: margin mode.
+    #[arg(long, value_enum, default_value = "isolated")]
+    margin: MarginArg,
+    /// `binance-usdm`: liquidation clearance fee rate; default the highest
+    /// cached `liquidationFee` of the symbols.
+    #[arg(long, value_parser = parse_decimal)]
+    clearance: Option<Decimal>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum MarginArg {
+    Isolated,
+    Cross,
 }
 
 /// Exact decimal from text; never via a float (invariant 1).
@@ -383,12 +401,19 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
     let venue = a.venue.id();
     let ids: Vec<InstrumentId> = a
         .symbol
-        .into_iter()
-        .map(|s| InstrumentId::new(venue.clone(), s))
+        .iter()
+        .map(|s| InstrumentId::new(venue.clone(), s.clone()))
         .collect();
-    let fees = RateFee::new(a.fee, a.fee, FeeAsset::Received).context("fee must be in [0, 1)")?;
+    let perp = a.venue == Venue::BinanceUsdm;
+    // Futures charge every fee in the quote (margin) asset.
+    let fee_asset = if perp {
+        FeeAsset::Quote
+    } else {
+        FeeAsset::Received
+    };
+    let fees = RateFee::new(a.fee, a.fee, fee_asset).context("fee must be in [0, 1)")?;
     let slippage = BpsSlippage::new(a.slippage_bps).context("slippage must be >= 0")?;
-    let dir = DataDir::new(a.data_dir);
+    let dir = DataDir::new(a.data_dir.clone());
     let provider = BacktestProvider::from_cache(
         &dir,
         &ids,
@@ -418,7 +443,16 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         Duration::from_secs(a.max_gap_hours.saturating_mul(3600)),
         a.to,
     );
+    if perp {
+        provider = with_perp(provider, &dir, &ids, &a)?;
+    } else if a.leverage.is_some() || a.clearance.is_some() {
+        anyhow::bail!("--leverage and --clearance are for --venue binance-usdm");
+    }
     if let Some(ratio) = a.earn_ratio {
+        anyhow::ensure!(
+            !perp,
+            "--earn-ratio is spot only (Simple Earn holds spot cash)"
+        );
         let apr = a.earn_apr.unwrap_or(Decimal::ZERO);
         anyhow::ensure!(
             ratio >= Decimal::ZERO && ratio < Decimal::ONE,
@@ -462,6 +496,66 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A perpetual backtest's margin terms (cached brackets, `--leverage`,
+/// `--margin`) and funding replay (cached history; missing marks stood in
+/// by last price, noted).
+fn with_perp(
+    provider: BacktestProvider,
+    dir: &DataDir,
+    ids: &[InstrumentId],
+    a: &BacktestArgs,
+) -> anyhow::Result<BacktestProvider> {
+    use bot_core::margin::MarginMode;
+    let leverage = a
+        .leverage
+        .context("--venue binance-usdm needs --leverage")?;
+    anyhow::ensure!(leverage >= 1, "--leverage must be >= 1");
+    let mode = match a.margin {
+        MarginArg::Isolated => MarginMode::Isolated,
+        MarginArg::Cross => MarginMode::Cross,
+    };
+    let mut terms = std::collections::HashMap::new();
+    let mut clearance = Decimal::ZERO;
+    let mut events = Vec::new();
+    for id in ids {
+        let data = dir
+            .read_perp(id)
+            .with_context(|| format!("{id}: run fetch-data --venue binance-usdm"))?;
+        let brackets = data.brackets.with_context(|| {
+            format!("{id}: no margin brackets cached; fetch-data --venue binance-usdm with BINANCE_API_KEY/SECRET set")
+        })?;
+        clearance = clearance.max(data.liquidation_fee);
+        terms.insert(
+            id.clone(),
+            exchange::paper::PerpTerms {
+                leverage,
+                mode,
+                brackets,
+            },
+        );
+        let rates = dir.read_funding(id)?;
+        if rates.is_empty() {
+            eprintln!("warning: {id}: no funding history cached: funding not modelled");
+        }
+        let (ev, estimated) =
+            backtest::funding_events(id, &rates, provider.candles(), a.from, a.to);
+        if estimated > 0 {
+            eprintln!(
+                "note: {id}: {estimated} funding settlements without a venue mark price valued at last price"
+            );
+        }
+        events.extend(ev);
+    }
+    let clearance = a.clearance.unwrap_or(clearance);
+    anyhow::ensure!(
+        clearance >= Decimal::ZERO && clearance < Decimal::ONE,
+        "--clearance must be in [0, 1)"
+    );
+    Ok(provider
+        .with_perp(backtest::PerpSetup { terms, clearance })
+        .with_events(events))
+}
+
 #[derive(Args)]
 struct FetchArgs {
     /// Spot symbols, comma-separated (`BTCUSDT,ETHUSDT`).
@@ -486,6 +580,19 @@ struct FetchArgs {
     /// REST host for public market data; default follows `--venue`.
     #[arg(long)]
     base_url: Option<String>,
+    /// `binance-usdm`: whose host the account's margin brackets come from
+    /// (signed; keys from `BINANCE_API_KEY` / `BINANCE_API_SECRET`, which
+    /// belong to one network).
+    #[arg(long, value_enum, default_value = "demo")]
+    brackets_from: BracketsHost,
+}
+
+/// Which Binance futures host `fetch-data` reads margin brackets from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum BracketsHost {
+    Live,
+    Demo,
+    Testnet,
 }
 
 fn parse_interval(s: &str) -> anyhow::Result<Interval> {
@@ -504,10 +611,11 @@ fn now() -> Timestamp {
 async fn fetch_data(a: FetchArgs) -> anyhow::Result<()> {
     let base = a.base_url.unwrap_or_else(|| data_url(a.venue).to_owned());
     let client: Box<dyn HistorySource> = match a.venue {
-        Venue::Binance => Box::new(PublicClient::new(base)),
-        Venue::Max => Box::new(MaxPublicClient::new(base)),
+        Venue::Binance => Box::new(PublicClient::new(base.clone())),
+        Venue::Max => Box::new(MaxPublicClient::new(base.clone())),
+        Venue::BinanceUsdm => Box::new(PublicClient::usdm(base.clone())),
     };
-    let dir = DataDir::new(a.data_dir);
+    let dir = DataDir::new(a.data_dir.clone());
     let to = a.to.unwrap_or_else(now);
     let venue = a.venue.id();
     for symbol in a.symbol {
@@ -521,7 +629,74 @@ async fn fetch_data(a: FetchArgs) -> anyhow::Result<()> {
             s.downloaded,
             s.cached
         );
+        if a.venue == Venue::BinanceUsdm {
+            fetch_perp_data(&base, &dir, &id, a.from, to, a.brackets_from).await?;
+        }
     }
+    Ok(())
+}
+
+/// Funding history, clearance fee and (with a key) margin brackets of a
+/// perpetual. Brackets are the account's (`/fapi/v1/leverageBracket`,
+/// signed) from `brackets_from`'s host; without `BINANCE_API_KEY` /
+/// `BINANCE_API_SECRET`, or if that call fails, the cached ones are kept
+/// (a warning) and a backtest without any refuses to run.
+async fn fetch_perp_data(
+    base: &str,
+    dir: &DataDir,
+    id: &InstrumentId,
+    from: Timestamp,
+    to: Timestamp,
+    brackets_from: BracketsHost,
+) -> anyhow::Result<()> {
+    use exchange::binance::usdm;
+    let client = PublicClient::usdm(base.to_owned());
+    let f = backtest::fetch_funding(&client, dir, id, from, to)
+        .await
+        .with_context(|| format!("fetching {id} funding"))?;
+    println!(
+        "{id} funding: {} downloaded, {} cached",
+        f.downloaded, f.cached
+    );
+    let info = client.perp_instrument(id.symbol()).await?;
+    let mut brackets = dir.read_perp(id).ok().and_then(|p| p.brackets);
+    let host = match brackets_from {
+        BracketsHost::Live => usdm::LIVE_URL,
+        BracketsHost::Demo => usdm::DEMO_URL,
+        BracketsHost::Testnet => usdm::TESTNET_URL,
+    };
+    match Credentials::from_env() {
+        Ok(creds) => {
+            let signed = exchange::binance::SignedClient::new(
+                host,
+                Box::new(exchange::binance::ReqwestTransport::default()),
+                creds,
+                Box::new(exchange::binance::SystemClock),
+            );
+            match usdm::brackets(&signed, id.symbol()).await {
+                Ok(b) => {
+                    println!(
+                        "{id} margin brackets: {} tiers from {host}",
+                        b.iter().count()
+                    );
+                    brackets = Some(b);
+                }
+                Err(e) => eprintln!(
+                    "warning: {id}: margin brackets from {host}: {e}; kept the cached ones"
+                ),
+            }
+        }
+        Err(_) => eprintln!(
+            "warning: {id}: no BINANCE_API_KEY/SECRET: margin brackets not fetched (signed endpoint); kept the cached ones"
+        ),
+    }
+    dir.write_perp(
+        id,
+        &backtest::PerpData {
+            liquidation_fee: info.liquidation_fee,
+            brackets,
+        },
+    )?;
     Ok(())
 }
 
@@ -591,5 +766,121 @@ mod tests {
             panic!("not fetch-data");
         };
         assert_eq!((a.venue, a.base_url), (Venue::Max, None));
+    }
+
+    #[test]
+    fn perpetual_venue_parses_with_margin_flags() {
+        assert_eq!(Venue::BinanceUsdm.id().as_str(), "binance-usdm");
+        assert_eq!(data_url(Venue::BinanceUsdm), "https://fapi.binance.com");
+        let cli = Cli::try_parse_from([
+            "cli",
+            "fetch-data",
+            "--venue",
+            "binance-usdm",
+            "--symbol",
+            "BTCUSDT",
+            "--from",
+            "2024-01-01",
+            "--brackets-from",
+            "testnet",
+        ])
+        .unwrap();
+        let Command::FetchData(a) = cli.command else {
+            panic!("not fetch-data");
+        };
+        assert_eq!(
+            (a.venue, a.brackets_from),
+            (Venue::BinanceUsdm, BracketsHost::Testnet)
+        );
+        let cli = Cli::try_parse_from([
+            "cli",
+            "backtest",
+            "--venue",
+            "binance-usdm",
+            "--strategy",
+            "buy_and_hold",
+            "--symbol",
+            "BTCUSDT",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-02-01",
+            "--slippage-bps",
+            "2",
+            "--leverage",
+            "3",
+            "--margin",
+            "cross",
+            "--clearance",
+            "0.0125",
+        ])
+        .unwrap();
+        let Command::Backtest(b) = cli.command else {
+            panic!("not backtest");
+        };
+        assert_eq!((b.leverage, b.margin), (Some(3), MarginArg::Cross));
+        assert_eq!(b.clearance, Some(Decimal::new(125, 4)));
+    }
+
+    /// A perpetual backtest without its margin data is refused with a hint,
+    /// never run on made-up brackets.
+    #[test]
+    fn perpetual_backtest_needs_cached_brackets() {
+        let dir = std::env::temp_dir().join(format!("tb-perp-cli-{}", std::process::id()));
+        let data = DataDir::new(&dir);
+        let id: InstrumentId = "binance-usdm:BTCUSDT".parse().unwrap();
+        let cli = Cli::try_parse_from([
+            "cli",
+            "backtest",
+            "--venue",
+            "binance-usdm",
+            "--strategy",
+            "buy_and_hold",
+            "--symbol",
+            "BTCUSDT",
+            "--from",
+            "2024-01-01",
+            "--to",
+            "2024-02-01",
+            "--slippage-bps",
+            "2",
+            "--leverage",
+            "3",
+        ])
+        .unwrap();
+        let Command::Backtest(a) = cli.command else {
+            panic!("not backtest");
+        };
+        let provider = || {
+            BacktestProvider::new(
+                vec![],
+                vec![],
+                PaperConfig {
+                    fees: RateFee::new(Decimal::ZERO, Decimal::ZERO, FeeAsset::Quote).unwrap(),
+                    slippage: BpsSlippage::zero(),
+                    initial_cash: Notional::new(Decimal::ONE),
+                },
+            )
+        };
+        let err = with_perp(provider(), &data, std::slice::from_ref(&id), &a)
+            .err()
+            .unwrap();
+        assert!(
+            format!("{err:#}").contains("fetch-data --venue binance-usdm"),
+            "{err:#}"
+        );
+        data.write_perp(
+            &id,
+            &backtest::PerpData {
+                liquidation_fee: Decimal::new(125, 4),
+                brackets: None,
+            },
+        )
+        .unwrap();
+        let err = with_perp(provider(), &data, std::slice::from_ref(&id), &a)
+            .err()
+            .unwrap();
+        assert!(format!("{err:#}").contains("no margin brackets"), "{err:#}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

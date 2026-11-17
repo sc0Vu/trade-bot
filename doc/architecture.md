@@ -103,7 +103,10 @@ rejected by position accounting rather than ignored.
 and the average derived, so no rounding accumulates. v1 positions are
 non-negative spot inventory, but the sign is a runtime policy
 (`Instrument::allows_short`, checked by `Position::check_against`), not a
-type rule. Short and perpetual positions in v2 can reuse the type.
+type rule. A perpetual (`AssetClass::Perpetual`) reuses the type signed:
+its basis is the signed entry notional (so the average is the entry price
+the venue's liquidation maths uses), a fill against it closes first and
+flips with the rest, and fees and funding go to realized P&L.
 
 **MarketEvent.** `Candle`, `Quote`, `SessionOpen`, `SessionClose`,
 `CorporateAction`, marked `#[non_exhaustive]`. v1 emits only candles; the
@@ -619,8 +622,15 @@ and perpetual futures.
 - **Equities** add a provider (e.g. Alpaca), `AssetClass::UsEquity`, T+1
   settlement in `Instrument`, and the session and corporate-action events
   that already exist as `MarketEvent` variants.
-- **Perpetual futures** break the "owned inventory" assumption: signed
-  positions, funding payments, mark-to-market P&L and broker-initiated
-  liquidation. That is a `Position` model change and gets its own effort.
-  Half-built margin accounting would be worse than none, so v1 deliberately
-  has none.
+- **Perpetual futures** (USDⓈ-M, in progress) break the "owned inventory"
+  assumption: signed positions, funding payments, mark-to-market P&L and
+  broker-initiated liquidation. Built bottom-up, each layer tested before
+  the next: signed positions and funding in `core`; `core::margin`
+  (brackets, maintenance and initial margin, liquidation price, pinned to
+  Binance's worked example); `PerpPaperBroker` (isolated and cross margin,
+  leverage refusals, liquidation at the bar's extreme with the clearance
+  fee capped at the margin left); backtest replay of funding and a report
+  that counts P&L, not notional; venue `binance-usdm` data (filters,
+  funding history, the account's brackets). Next: strategy support for
+  shorts, then live trading, which stays refused until margin and
+  liquidation are handled against the venue.

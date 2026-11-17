@@ -38,7 +38,7 @@ pub enum DataError {
     Exchange(#[from] ExchangeError),
 }
 
-fn io(path: &Path) -> impl FnOnce(std::io::Error) -> DataError + '_ {
+pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> DataError + '_ {
     move |source| DataError::Io {
         path: path.to_owned(),
         source,
@@ -48,7 +48,7 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> DataError + '_ {
 /// Root of the cache (normally `data/`).
 #[derive(Clone, Debug)]
 pub struct DataDir {
-    root: PathBuf,
+    pub(crate) root: PathBuf,
 }
 
 impl DataDir {
@@ -181,7 +181,7 @@ impl DataDir {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DataError> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DataError> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(io(dir))?;
     }

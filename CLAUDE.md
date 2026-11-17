@@ -155,6 +155,16 @@ PERCENT_PRICE is vs mark) + `liquidationFee`; `funding_rates` (mark
 `None` when venue left it empty: pre-2023 history); `brackets` (signed
 `/fapi/v1/leverageBracket`, numbers read from text via
 `SignedClient::signed_text`; demo key works on demo + testnet hosts).
+Cache (`backtest::perp`): `funding/<venue>/<SYM>.jsonl`, `perp/<venue>/<SYM>.json`
+(`PerpData { liquidation_fee, brackets: Option }`); `fetch_funding` head/tail
+like klines; `funding_events`: missing mark → bar open containing it (or
+last close after), none before → skipped, count noted. CLI: `Venue::
+BinanceUsdm` (`binance-usdm`): `run` refuses at config load (backtest-only);
+`fetch-data` + funding, fee, brackets (`--brackets-from demo|testnet|live`,
+key from env, failure keeps cached); `backtest --leverage N --margin
+isolated|cross [--clearance r]` (default = max cached liquidationFee), fees
+in quote, no brackets → refused, `--earn-ratio` refused. Checked
+2026-11-17: 1x BTC Feb–Aug 2026 = hand recompute exactly (802.23049863).
 Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as

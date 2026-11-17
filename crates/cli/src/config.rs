@@ -66,6 +66,12 @@ pub enum Venue {
     /// MAX by MaiCoin (`max:BTCUSDT`, `max:BTCTWD`). No testnet: paper only
     /// (live MAX data, local fills) until live orders are built.
     Max,
+    /// Binance USDⓈ-M perpetual futures (`binance-usdm:BTCUSDT`). Backtest
+    /// and `fetch-data` only so far: `run` refuses it until live margin
+    /// handling exists.
+    #[serde(rename = "binance-usdm")]
+    #[value(name = "binance-usdm")]
+    BinanceUsdm,
 }
 
 impl Venue {
@@ -74,6 +80,7 @@ impl Venue {
         let name = match self {
             Self::Binance => "binance",
             Self::Max => exchange::max::VENUE,
+            Self::BinanceUsdm => exchange::binance::usdm::VENUE,
         };
         VenueId::new(name).unwrap_or_else(|_| unreachable!("valid venue id"))
     }
@@ -478,6 +485,12 @@ impl Config {
         if let Some(other) = self.whitelist.iter().find(|i| *i.venue() != venue) {
             bail!("whitelist has {other}, but exchange.venue is {venue}");
         }
+        if self.exchange.venue == Venue::BinanceUsdm {
+            bail!(
+                "exchange.venue = \"binance-usdm\": perpetuals are backtest-only so far \
+                 (live and paper runs need margin handling against the venue, not built yet)"
+            );
+        }
         if self.exchange.venue == Venue::Max {
             if self.mode == Mode::Live {
                 bail!("live orders on MAX are not supported yet; use mode = \"paper\"");
@@ -574,6 +587,27 @@ mod tests {
         name = "dca"
         params = { coin = "max:BTCTWD", quote_amount = "1000", every = "day", fee = "0.0015", slippage_bps = "20" }
     "#;
+
+    /// Perpetuals are backtest-only: a run config naming the futures venue
+    /// is refused at load, before any connection.
+    #[test]
+    fn perpetual_venue_is_refused_for_runs() {
+        Jail::expect_with(|_| {
+            let err = parse(
+                r#"
+                whitelist = ["binance-usdm:BTCUSDT"]
+                [exchange]
+                venue = "binance-usdm"
+                [strategy]
+                name = "buy_and_hold"
+                params = { coin = "binance-usdm:BTCUSDT", quote_amount = "100", fee = "0.0005", slippage_bps = "2" }
+            "#,
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("backtest-only"), "{err}");
+            Ok(())
+        });
+    }
 
     #[test]
     fn max_paper_loads() {

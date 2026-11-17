@@ -266,6 +266,33 @@ cargo run -p cli -- backtest --venue max --strategy sma_trend --params p.toml \
     --symbol BTCTWD --from 2024-01-01 --to 2026-10-01 --fee 0.0015 --slippage-bps 20
 ```
 
+### Perpetual futures (USDⓈ-M, backtest only)
+
+`--venue binance-usdm` backtests Binance USDⓈ-M linear perpetuals
+(`binance-usdm:BTCUSDT`, separate from the spot pair). `fetch-data` also
+caches the funding history, the symbol's liquidation clearance fee and,
+when `BINANCE_API_KEY` / `BINANCE_API_SECRET` are set, your account's
+margin brackets (a signed call; `--brackets-from demo|testnet|live`
+names the host your key belongs to, default demo). The backtest refuses
+to run without brackets rather than guess them.
+
+```sh
+cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT --from 2026-01-01
+cargo run -p cli -- backtest --venue binance-usdm --strategy buy_and_hold --params p.toml \
+    --symbol BTCUSDT --from 2026-02-01 --to 2026-08-01 --fee 0.0005 --slippage-bps 2 \
+    --leverage 3 --margin isolated
+```
+
+Positions are signed, fees are paid in USDT, and margin is moved, not
+spent: `--leverage` sets how much of the wallet a position ties up
+(refused above what the brackets allow at that size), funding is paid or
+received every settlement, and a position whose liquidation price the
+bar's low (long) or high (short) reaches is closed there, losing its
+margin. Two approximations: the bar's last-price range stands in for the
+venue's mark price (the cautious reading), and funding records from
+before about 2023 carry no mark, so the bar's price values those. A quote
+budget is the position's notional: at 1x, leave room for the fee.
+
 The report gives final equity, realized P&L, lowest cash, maximum drawdown,
 fill and closed-trade counts, win rate, Sharpe ratio and rejected signals,
 all as exact decimals. The fill model is stated, not hidden; see
@@ -471,8 +498,9 @@ deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and aler
 
 ## Known limitations
 
-- Binance spot only. US equities, options and perpetual futures are planned
-  but not implemented.
+- Live and paper trading are Binance spot (and MAX paper) only. USDⓈ-M
+  perpetuals can be backtested but not yet traded; US equities and
+  options are planned but not implemented.
 - A market-data outage longer than `exchange.max_outage_secs` (default 10
   min) stops the run. Bars missed during a shorter one are backfilled as
   history; only the newest is traded on.
