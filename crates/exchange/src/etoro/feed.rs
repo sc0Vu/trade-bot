@@ -356,6 +356,9 @@ impl Provider for EtoroProvider {
         let api: &dyn EtoroApi = &self.client;
         let recovered = reconcile(api, &instruments, &*self.books, Duration::from_secs(1)).await?;
         tracing::info!(fills_recovered = recovered.len(), "reconciled with eToro");
+        // The private feed: exact close fees and take-profit outcomes.
+        let stream =
+            super::stream::EtoroStream::start(self.client.keys().clone(), self.client.account());
         Ok(Box::new(
             EtoroBroker::open(
                 Box::new(self.client.clone()),
@@ -364,7 +367,8 @@ impl Provider for EtoroProvider {
                 self.books.clone(),
             )
             .await?
-            .with_recovered(recovered),
+            .with_recovered(recovered)
+            .with_stream(stream),
         ))
     }
 

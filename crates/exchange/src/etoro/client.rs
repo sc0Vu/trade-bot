@@ -142,6 +142,11 @@ impl EtoroClient {
         self.account
     }
 
+    /// The keys, for the private WebSocket feed.
+    pub(crate) fn keys(&self) -> &EtoroKeys {
+        &self.keys
+    }
+
     /// GET; the body text of a 2xx reply, else an error with the status
     /// and body.
     pub async fn get(
@@ -176,6 +181,17 @@ impl EtoroClient {
         .await
     }
 
+    /// PATCH of a JSON body (a position's take-profit).
+    pub async fn patch(
+        &self,
+        pool: Pool,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<Reply, ExchangeError> {
+        self.send(pool, reqwest::Method::PATCH, path, &[], Some(body), None)
+            .await
+    }
+
     pub async fn delete(&self, pool: Pool, path: &str) -> Result<Reply, ExchangeError> {
         self.send(pool, reqwest::Method::DELETE, path, &[], None, None)
             .await
@@ -200,23 +216,24 @@ impl EtoroClient {
             .await
             .map_err(|e| ExchangeError::RateLimited(e.to_string()))?;
         let id = request_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
-        let mut req = self
-            .http
-            .request(method, format!("{}{path}", self.base))
-            .query(query)
-            .header("x-api-key", &self.keys.api_key)
-            .header("x-user-key", &self.keys.user_key)
-            .header("x-request-id", id)
-            .header("accept", "application/json");
-        if let Some(b) = body {
-            req = req
-                .header("content-type", "application/json")
-                .body(b.to_string());
-        }
-        let res = req
-            .send()
-            .await
-            .map_err(|e| ExchangeError::Http(e.without_url().to_string()))?;
+        let res = retry_transport(TRANSPORT_TRIES, Duration::from_millis(500), || {
+            let mut req = self
+                .http
+                .request(method.clone(), format!("{}{path}", self.base))
+                .query(query)
+                .header("x-api-key", &self.keys.api_key)
+                .header("x-user-key", &self.keys.user_key)
+                .header("x-request-id", &id)
+                .header("accept", "application/json");
+            if let Some(b) = body {
+                req = req
+                    .header("content-type", "application/json")
+                    .body(b.to_string());
+            }
+            req.send()
+        })
+        .await
+        .map_err(|e| ExchangeError::Http(e.without_url().to_string()))?;
         let status = res.status().as_u16();
         if status == 429 {
             let wait = res
@@ -236,6 +253,40 @@ impl EtoroClient {
     }
 }
 
+/// Attempts per request when the connection fails before eToro answers.
+const TRANSPORT_TRIES: u32 = 3;
+
+/// Runs `attempt` up to `tries` times while it fails, waiting `first`,
+/// then twice as long, between tries. For transport failures only (the
+/// caller retries nothing eToro answered): seen about once an hour on the
+/// demo account (2026-11-18). Safe for orders too: every try carries the
+/// same `x-request-id`, which eToro deduplicates by.
+pub(crate) async fn retry_transport<T, E, F, Fut>(
+    tries: u32,
+    first: Duration,
+    mut attempt: F,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut wait = first;
+    let mut n = 1;
+    loop {
+        match attempt().await {
+            Ok(v) => return Ok(v),
+            Err(e) if n < tries => {
+                tracing::warn!(error = %e, attempt = n, "eToro request failed before an answer; retrying");
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+                n += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// The body of a 2xx reply; any other status is an error carrying it.
 pub(crate) fn ok(path: &str, r: Reply) -> Result<String, ExchangeError> {
     if (200..300).contains(&r.status) {
@@ -245,5 +296,38 @@ pub(crate) fn ok(path: &str, r: Reply) -> Result<String, ExchangeError> {
             "{path}: HTTP {}: {}",
             r.status, r.body
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Two failures then success: answered on the third try. Three
+    /// failures: the third error comes back.
+    #[tokio::test]
+    async fn transport_failures_are_retried_three_times() {
+        let calls = AtomicU32::new(0);
+        let r: Result<u32, String> = retry_transport(3, Duration::ZERO, || {
+            let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                if n < 3 {
+                    Err(format!("drop {n}"))
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await;
+        assert_eq!(r, Ok(3));
+        let calls = AtomicU32::new(0);
+        let r: Result<u32, String> = retry_transport(3, Duration::ZERO, || {
+            let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            async move { Err(format!("drop {n}")) }
+        })
+        .await;
+        assert_eq!(r, Err("drop 3".to_owned()));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 }

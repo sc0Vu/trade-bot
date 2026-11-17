@@ -531,7 +531,8 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    instruments?symbols=`; search is prefix) + eligibility (`/api/v2/
    trading/info[/demo]/eligibility`): only the real asset (settlement
    real, long, 1x) → `AssetClass::Spot`, quote USD; no tick/unit step
-   published → tick 1e-8, lot 1e-8 fractional (1 whole), min notional =
+   published → tick 1e-8, lot 1e-6 fractional (observed: every position eToro
+   opened had 6 decimals; 1 whole), min notional =
    `minPositionExposure`. History `/api/v1/data/instruments/{id}/candles`
    (date range, exact strings, bid side, loaded daily); live-current
    `/api/v1/market-data/.../history/candles/desc/{iv}/{n}` (numbers read
@@ -544,8 +545,18 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    (warm-up `recent(history_len)` as Backfill; then `LAG` 5 s after each
    boundary, newest 5 closed bars, new ones as Candle; closed market = no
    bar, not a stall; late bar older than delivered = dropped; failing >
-   max_outage = error). `EtoroBroker` (via `EtoroApi`, testable): market
-   only; buy = open position (real, 1x) by amount (quote budget; eToro's
+   max_outage = error). `EtoroBroker` (via `EtoroApi`, testable): accepts
+   what `TouchFillModel::accepts` does (backtest = live); buy = open
+   position (real, 1x), market, limit ≥ last close → market (an `mit`
+   above the market waits for a rise, like a buy-stop: demo 2026-11-18),
+   limit below last close → `mit` with `triggerRate`; a triggered `mit`
+   runs as a NEW order: its own lookup stays 12 forever, it leaves the pnl
+   `orders` list, and the execution order's lookup answers with the mit's id
+   as `orderId` (demo 2026-11-18) → `triggered_execution` looks up each
+   unseen position's `orderID` on the instrument (settle and reconcile;
+   5 settles without a match → ended unfilled)
+   (waits as status 12; cancel = `DELETE /api/v2/trading/execution[/demo]/
+   orders/{id}` → 7), by amount (quote budget, market only; eToro's
    fee on top: budget overshoot ≤ fee) or units, poll `orders:lookup` by
    orderId (lookup by request id = 404 on demo) → fill per
    `positionExecutions` (units, avgPrice, fees); sell = close the account's
@@ -553,11 +564,46 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `UnitsToDeduct`; eToro refuses < ~$10 deducted, error 776, async),
    poll `close-orders/{id}` → fill per closed position at `rate`, fee =
    units·rate − proceeds (cent-rounded), split by gross share; terminal
-   unfilled = order dropped (warn). Journal: each venue order a row (`<tag>-
-   o-N`, closes `.c<k>`), fills by `open-<order>-<pos>` / `close-<order>-
-   <pos>`. Reconcile (start + exit): rows without id closed (can't look up),
-   others polled to the end and recorded; books > account real units →
-   refuse start. Cancel refused (market orders). Demo 2026-11-18: hand
+   unfilled = order dropped (warn). Limit sell above last close = take-
+   profit (`PATCH /api/v2/trading[/demo]/positions/{id}` `takeProfitRate`,
+   202 async) on the oldest free positions whose units sum exactly to the
+   qty (else refused); at/below last close = market close. TP legs: one
+   pnl read per settle; confirmed by stream `takeProfitUpdated` or the
+   position's rate; refused (stream error, e.g. 1053 below a long's market)
+   → dropped; position gone → fill from stream close (exact fee) else trade
+   history (`/api/v1/trading/info/trade[/demo]/history`, fee unknown → 0,
+   warn). Positions under our TP are excluded from market sells. Cancel:
+   mit → DELETE; TP → PATCH `clearTakeProfit` (cancelling until the rate is
+   gone; a fill that won the race is reported); market → refused. Market
+   close fee = stream `closingData.fees` when it saw that close order, else
+   derived. Stream (`etoro::stream`, started with the broker):
+   `wss://ws.etoro.com/ws`, Authenticate {userKey, apiKey} (+ User-Agent),
+   Subscribe `private:demo` | `private`; pushes `OrderEvent` (undocumented
+   name) with `positionsExecutions[].closingData` {orderId, units,
+   avgPrice, fees} and position `takeProfitUpdated` {takeProfitRate |
+   errorCode}; heartbeat ~30 s; 90 s silence / drop → reconnect 1→60 s.
+   Market data topics: `instrument:<id>` = live bid/ask (~1/s, strings,
+   partial updates; snapshot has `IsMarketOpen`); `candle:<id>` refused as
+   invalid (2026-11-18), so bars stay on REST (quotes would differ from
+   the bid-side history candles). REST transport failures retried ×3
+   (0.5 s, 1 s) with the same `x-request-id` (eToro's idempotency key);
+   HTTP answers never retried. Journal: each venue order a row (`<tag>-
+   o-N`, closes `.c<k>`, take-profits `.t<k>` with id = position), fills by
+   `open-<order>-<pos>` / `close-<order>-<pos>`. Reconcile (start + exit):
+   rows without id closed (can't look up); opens waiting (11, 12) cancelled
+   then polled to the end; TP rows cleared if the position is open, else
+   recorded from history; books > account real units → refuse start.
+   Market sell plan (`close_plan`, checked before any leg is sent): units
+   rounded down to the step; a partial close leaving < $1 (eToro: "remaining
+   live position amount … < 1") closes the whole position; one deducting <
+   `min_notional` (eToro error 776, MinPositionAmount) refused locally (a
+   rejection the strategy handles, not an async refusal it retries).
+   Precision audit 2026-11-18: Binance spot/futures LOT_SIZE + PRICE_FILTER
+   published (MARKET_LOT_SIZE not checked locally: oversize = -1013
+   rejection); MAX per-market precision published; eToro none (unit 1e-6
+   observed, price 1e-8 assumed).
+   `limitIOC` not used: on demo a buy limited 3% below the ask filled at the
+   ask (2026-11-18). Stock orders cost $1 each on demo. Demo 2026-11-18: hand
    round trip + sma_trend 1m run (buy, sell, stop) → books = account to the
    cent (realized −0.41540728 vs credit −0.42).
    USD-priced only: `instrument` refuses conversionRateAsk/Bid ≠ 1
@@ -989,7 +1035,9 @@ Lᵢ₊₁. Build refuses a grid whose narrowest step doesn't clear two `fee`s
 (neutral opening). Order ↔ gap via `on_order` ids (paper order can fill
 before visible); fills sum, gap settles when its order neither open nor
 cancelling (split fills); refusal (`on_rejected`) → gap back, no new orders
-until next fill (no `-2010` loop). Lot remainders → `dust`. Venue price band (`price_band`, avg from
+until next fill (no `-2010` loop). Lot remainders → `dust`. Restart /
+ fresh-start credit capped at the GROSS lot (not net of fee: on a quote-fee
+ venue like eToro, a net cap left an unsellable crumb in dust). Venue price band (`price_band`, avg from
 history): buy above top → placed at top, sell below bottom → at bottom
 (marketable either way); buy below bottom / sell above top → gap waits
 unplaced. Optional

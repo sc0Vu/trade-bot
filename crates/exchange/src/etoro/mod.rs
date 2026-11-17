@@ -15,7 +15,8 @@
 //!   matched exactly; its search endpoint matches by prefix). Traded here
 //!   as the real asset (`settlementType real`, long only, leverage 1) =
 //!   [`AssetClass::Spot`](bot_core::AssetClass::Spot): owned inventory.
-//!   eToro publishes no tick or unit step: tick 1e-8, lot 1e-8 for
+//!   eToro publishes no tick or unit step: tick 1e-8, lot 1e-6 (every
+//!   position eToro opened carried 6 decimals) for
 //!   fractional units (1 for whole), minimum notional =
 //!   `minPositionExposure` (eligibility).
 //! - **Prices**: most REST money fields are JSON numbers, read from the

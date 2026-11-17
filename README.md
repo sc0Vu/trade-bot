@@ -429,10 +429,36 @@ the same three locks as Binance. eToro is a broker, not an exchange: a
 buy opens a position (by amount or units), a sell closes positions, and
 every order is accepted first and executed later, so the bot polls each
 to its outcome; a late refusal (eToro's ~$10 minimum, a closed market)
-drops the order unfilled. Market orders only. eToro charges its fee on
-top of a buy's amount. Bars are polled a few seconds after each interval
-boundary; a closed market simply produces none. Give the bot its symbols
-to itself: a sell closes the account's oldest positions on that symbol.
+drops the order unfilled. eToro charges its fee on top of a buy's amount:
+about 1% each way on crypto, and $1 per stock order (seen on the demo
+account: $2 round trip on a $20 trade). Bars are polled a few seconds
+after each interval boundary; a closed market simply produces none. Give
+the bot its symbols to itself: a sell closes the account's oldest
+positions on that symbol. eToro's own rules for a partial close apply: it
+must take at least eToro's minimum (about $10; smaller is refused before
+sending) and leave at least $1 (a sell that would leave less closes the
+whole position). eToro publishes no unit step; the bot uses the 6 decimals
+every position eToro opened carried.
+
+Orders eToro can take, and how the bot maps them:
+
+| Strategy order | On eToro | Note |
+|---|---|---|
+| Market buy / sell | Open a position / close positions | |
+| Limit buy below the market | Market-if-touched (`mit`) at the limit | Executes at market once touched: can fill worse than the limit |
+| Limit buy at or above the market | Market buy | eToro's `mit` above the market would wait for a rise, like a stop |
+| Resting limit sell above the market | Take-profit on positions whose units add up exactly to the order | Partial quantities can't rest |
+| Limit sell at or below the market | Market close | |
+| Immediate-or-cancel limit, stops | Refused | eToro's `limitIOC` ignored its limit on the demo account |
+
+Backtests with `--venue etoro` fill limits the same way (on a touch, with
+slippage, never capped at the limit) and refuse the same orders.
+
+Fees and take-profit closes come from eToro's private WebSocket feed: it
+is the only place eToro reports a close's fee. If the feed is down, the
+bot still settles fills from REST and logs the close fee as unknown. A
+request whose connection fails before eToro answers is retried twice
+with the same request id, which eToro deduplicates.
 
 Stocks keep market hours. The bot asks eToro every minute whether each
 instrument can be traded now and treats a closed market like a halt: no
@@ -565,8 +591,11 @@ deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and aler
 ## Known limitations
 
 - Live trading: Binance spot, and Binance USDⓈ-M perpetuals (one-way mode,
-  market and limit orders; not yet run with real money). MAX is paper only;
-  US equities and options are planned but not implemented.
+  market and limit orders; not yet run with real money). eToro: the real
+  asset, long only, USD-priced instruments, market orders plus
+  market-if-touched buys and take-profit sells (demo-tested; not yet run
+  with real money). MAX is paper only; options are planned but not
+  implemented.
 - A market-data outage longer than `exchange.max_outage_secs` (default 10
   min) stops the run. Bars missed during a shorter one are backfilled as
   history; only the newest is traded on.

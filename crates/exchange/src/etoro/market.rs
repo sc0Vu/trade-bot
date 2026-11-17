@@ -31,8 +31,12 @@ use std::str::FromStr;
 
 /// Rows per page of the date-range candles (eToro's maximum).
 const PAGE: usize = 2000;
-/// Unit and price step assumed where eToro publishes none.
+/// Price step assumed where eToro publishes none.
 const FINE_STEP: &str = "0.00000001";
+/// Unit step of a fractional instrument: eToro publishes none; every
+/// position it opened on the demo account (BTC, ETH, AAPL; 2026-11-18)
+/// carried 6 decimals.
+const UNIT_STEP: &str = "0.000001";
 
 /// An eToro instrument as the bot trades it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -292,7 +296,7 @@ pub(crate) fn parse_instrument(
         .to_ascii_lowercase()
         .starts_with("fraction")
     {
-        fine
+        Decimal::from_str(UNIT_STEP).map_err(|_| decode("step"))?
     } else {
         Decimal::ONE
     };
@@ -577,7 +581,7 @@ mod tests {
     }
 
     /// AAPL's demo eligibility as returned 2026-11-18 (trimmed): real long
-    /// at 1x, fractional units, $10 minimum → lot 1e-8, min notional 10.
+    /// at 1x, fractional units, $10 minimum → lot 1e-6 (observed), min notional 10.
     /// BTC.Fut-like: CFD only → refused.
     #[test]
     fn eligibility_makes_a_real_asset_instrument() {
@@ -589,7 +593,7 @@ mod tests {
         assert_eq!(i.quote.as_str(), "USD");
         assert_eq!(
             (i.lot_size.get(), i.min_notional.get()),
-            (dec!(0.00000001), dec!(10))
+            (dec!(0.000001), dec!(10))
         );
         assert_eq!(e.etoro_id, 1001);
         assert!(!e.requires_w8ben);
