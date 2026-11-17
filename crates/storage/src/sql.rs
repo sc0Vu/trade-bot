@@ -1,5 +1,5 @@
 use crate::decimal::DbDecimal;
-use crate::entity::{holding, meta, order, strategy_state, trade};
+use crate::entity::{funding, holding, meta, order, strategy_state, trade};
 use crate::{
     HoldingRepository, JournalOrder, Ledger, OrderJournal, OrderStatus, SavedState, StorageError,
     StoredTrade, StrategyStateRepository, TradeId, TradeRepository,
@@ -327,6 +327,48 @@ impl Ledger for SqlStore {
     ) -> Result<Option<(TradeId, Position)>, StorageError> {
         self.record(fill, instrument, Some((venue_trade_id, client_order_id)))
             .await
+    }
+
+    async fn record_funding(
+        &self,
+        instrument: &InstrumentId,
+        venue_id: &str,
+        amount: Notional,
+        ts: Timestamp,
+    ) -> Result<Option<Position>, StorageError> {
+        let txn = self.db.begin().await.map_err(StorageError::backend)?;
+        let seen = funding::Entity::find()
+            .filter(funding::Column::Instrument.eq(instrument.to_string()))
+            .filter(funding::Column::VenueId.eq(venue_id))
+            .one(&txn)
+            .await
+            .map_err(StorageError::backend)?;
+        if seen.is_some() {
+            return Ok(None);
+        }
+        let current = holding::Entity::find_by_id(instrument.to_string())
+            .lock_exclusive()
+            .one(&txn)
+            .await
+            .map_err(StorageError::backend)?;
+        let mut position = match current {
+            Some(row) => from_holding_row(row)?,
+            None => Position::flat(instrument.clone()),
+        };
+        position.credit(amount);
+        funding::Entity::insert(funding::ActiveModel {
+            instrument: Set(instrument.to_string()),
+            venue_id: Set(venue_id.to_owned()),
+            amount: Set(DbDecimal(amount.get())),
+            ts: Set(ts.as_millis()),
+            ..Default::default()
+        })
+        .exec(&txn)
+        .await
+        .map_err(StorageError::backend)?;
+        upsert_holding_on(&txn, &position).await?;
+        txn.commit().await.map_err(StorageError::backend)?;
+        Ok(Some(position))
     }
 }
 
@@ -1351,5 +1393,64 @@ mod tests {
         let err = s.record_fill(&eth, &btcusdt()).await.unwrap_err();
         assert!(matches!(err, StorageError::Rejected(_)));
         assert_eq!(s.list_holdings().await.unwrap(), vec![]);
+    }
+
+    /// A perpetual short in the books (−2, basis −60,000, realized −24);
+    /// funding +6.1 under tranId "88" → realized −17.9, qty and basis
+    /// untouched; the same tranId again writes nothing. A holding-less
+    /// instrument starts flat: −0.5 → realized −0.5.
+    #[tokio::test]
+    async fn funding_is_folded_once_into_realized_pnl() {
+        use rust_decimal_macros::dec;
+        let s = store().await;
+        let id: InstrumentId = "binance-usdm:BTCUSDT".parse().unwrap();
+        let short = Position::from_parts(
+            id.clone(),
+            Qty::new(dec!(-2)),
+            Notional::new(dec!(-60000)),
+            Notional::new(dec!(-24)),
+        )
+        .unwrap();
+        upsert_holding_on(&s.db, &short).await.unwrap();
+        let p = s
+            .record_funding(
+                &id,
+                "88",
+                Notional::new(dec!(6.1)),
+                Timestamp::from_millis(5),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (p.qty().get(), p.cost_basis().get(), p.realized_pnl().get()),
+            (dec!(-2), dec!(-60000), dec!(-17.9))
+        );
+        assert!(
+            s.record_funding(
+                &id,
+                "88",
+                Notional::new(dec!(6.1)),
+                Timestamp::from_millis(5)
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        let stored = s.get_holding(&id).await.unwrap().unwrap();
+        assert_eq!(stored.realized_pnl(), Notional::new(dec!(-17.9)));
+        let eth: InstrumentId = "binance-usdm:ETHUSDT".parse().unwrap();
+        let p = s
+            .record_funding(
+                &eth,
+                "88",
+                Notional::new(dec!(-0.5)),
+                Timestamp::from_millis(5),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(p.is_flat());
+        assert_eq!(p.realized_pnl(), Notional::new(dec!(-0.5)));
     }
 }

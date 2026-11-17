@@ -15,6 +15,7 @@ mod m20261022_000002_create_orders_and_venue_trade_ids;
 mod m20261022_000003_add_trade_fee_value;
 mod m20261023_000004_create_strategy_state;
 mod m20261026_000005_add_trade_client_order_id;
+mod m20261118_000006_create_funding;
 
 /// Ordered list of every migration. Append only; never edit or reorder one
 /// that has shipped.
@@ -29,6 +30,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261022_000003_add_trade_fee_value::Migration),
             Box::new(m20261023_000004_create_strategy_state::Migration),
             Box::new(m20261026_000005_add_trade_client_order_id::Migration),
+            Box::new(m20261118_000006_create_funding::Migration),
         ]
     }
 }
@@ -51,6 +53,13 @@ mod tests {
         assert!(schema.has_column("trades", "venue_trade_id").await.unwrap());
         assert!(schema.has_column("trades", "fee_value").await.unwrap());
         assert!(schema.has_table("strategy_state").await.unwrap());
+        assert!(schema.has_table("funding").await.unwrap());
+        assert!(
+            schema
+                .has_index("funding", "idx_funding_venue_id")
+                .await
+                .unwrap()
+        );
         assert!(
             schema
                 .has_column("trades", "client_order_id")
@@ -66,6 +75,8 @@ mod tests {
             assert!(schema.has_index(table, index).await.unwrap(), "{index}");
         }
 
+        Migrator::down(&db, Some(1)).await.unwrap();
+        assert!(!schema.has_table("funding").await.unwrap());
         Migrator::down(&db, Some(1)).await.unwrap();
         assert!(
             !schema

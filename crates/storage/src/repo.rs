@@ -1,6 +1,6 @@
 use crate::StorageError;
 use async_trait::async_trait;
-use bot_core::{Fill, Instrument, InstrumentId, Position, Side, Timestamp};
+use bot_core::{Fill, Instrument, InstrumentId, Notional, Position, Side, Timestamp};
 use std::fmt;
 
 /// Database id of a stored trade. Assigned on insert, increasing in insert
@@ -106,6 +106,19 @@ pub trait Ledger: Send + Sync {
         venue_trade_id: &str,
         client_order_id: &str,
     ) -> Result<Option<(TradeId, Position)>, StorageError>;
+
+    /// Records a funding payment the venue booked under `venue_id`
+    /// (positive: received) and adds it to the holding's realized P&L
+    /// (`Position::credit`), in one transaction, idempotently: already
+    /// recorded for this instrument → nothing written, `None`. Returns
+    /// the new position.
+    async fn record_funding(
+        &self,
+        instrument: &InstrumentId,
+        venue_id: &str,
+        amount: Notional,
+        ts: Timestamp,
+    ) -> Result<Option<Position>, StorageError>;
 }
 
 /// A strategy's saved state, as stored.

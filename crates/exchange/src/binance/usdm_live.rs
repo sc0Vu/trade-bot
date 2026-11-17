@@ -33,10 +33,12 @@
 //!   so the books follow the venue. One-way mode has one position per
 //!   symbol, so the bot needs its symbols to itself. A difference left
 //!   with no order of ours working stops the run.
-//! - **Funding** is applied to the in-memory position at each
-//!   `MarketEvent::Funding` (realized P&L, as the paper broker does); the
-//!   books record fills only, so after a restart realized P&L omits past
-//!   funding (Binance's income history has it).
+//! - **Funding**: at each `MarketEvent::Funding` the venue's own records
+//!   (`/fapi/v1/income`, `FUNDING_FEE`; `tranId` unique within that type
+//!   only) since the last read are booked once each into the books
+//!   (`Ledger::record_funding`: realized P&L, survives a restart). The
+//!   first read reaches 7 days back for a symbol the books held (funding
+//!   paid while the bot was down), else starts at the run's start.
 //! - **Exit**: working orders are cancelled and their last fills recorded
 //!   ([`reconcile`] with [`Phase::Exit`]); the position stays open on
 //!   Binance, where it can still be liquidated while the bot is down.
@@ -306,6 +308,8 @@ pub struct UsdmBroker {
     last_close: HashMap<InstrumentId, Price>,
     /// Trades older than this were checked at startup.
     since: Timestamp,
+    /// Where the next funding read starts, per instrument.
+    funding_from: HashMap<InstrumentId, Timestamp>,
 }
 
 impl UsdmBroker {
@@ -319,12 +323,20 @@ impl UsdmBroker {
         since: Timestamp,
     ) -> Result<Self, ExchangeError> {
         let mut positions = HashMap::new();
+        let mut funding_from = HashMap::new();
         for i in &instruments {
-            if let Some(p) = books.get_holding(&i.id).await? {
+            // Held before: funding paid while the bot was down is ours,
+            // as far back as the venue serves (7 days). Never held: only
+            // from now (earlier funding was someone else's position).
+            let from = if let Some(p) = books.get_holding(&i.id).await? {
                 p.check_against(i)
                     .map_err(|e| ExchangeError::Decode(format!("stored holding: {e}")))?;
                 positions.insert(i.id.clone(), p);
-            }
+                Timestamp::from_millis(since.as_millis() - STARTUP_LOOKBACK_MS)
+            } else {
+                since
+            };
+            funding_from.insert(i.id.clone(), from);
         }
         Ok(Self {
             client,
@@ -336,7 +348,63 @@ impl UsdmBroker {
             recovered: Vec::new(),
             last_close: HashMap::new(),
             since,
+            funding_from,
         })
+    }
+
+    /// Books the venue's funding payments on `id` since the last read
+    /// (`/fapi/v1/income`, `FUNDING_FEE`, weight 30), each once by its
+    /// `tranId`, into the position's realized P&L.
+    async fn sync_funding(&mut self, id: &InstrumentId) -> Result<(), ExchangeError> {
+        let inst = self.inst(id)?.clone();
+        let from = self.funding_from.get(id).copied().unwrap_or(self.since);
+        let rows = self
+            .client
+            .signed(
+                Method::Get,
+                "/fapi/v1/income",
+                &[
+                    ("symbol", id.symbol().to_string()),
+                    ("incomeType", "FUNDING_FEE".to_owned()),
+                    ("startTime", from.as_millis().to_string()),
+                    ("limit", "1000".to_owned()),
+                ],
+            )
+            .await?;
+        let mut newest = from;
+        for r in rows
+            .as_array()
+            .ok_or_else(|| ExchangeError::Decode("income".into()))?
+        {
+            if r["asset"].as_str() != Some(inst.quote.as_str()) {
+                return Err(ExchangeError::Decode(format!(
+                    "{id}: funding paid in {}, not the quote",
+                    r["asset"]
+                )));
+            }
+            let amount = r["income"]
+                .as_str()
+                .and_then(|s| Decimal::from_str(s).ok())
+                .ok_or_else(|| ExchangeError::Decode("income amount".into()))?;
+            let tran = r["tranId"]
+                .as_i64()
+                .ok_or_else(|| ExchangeError::Decode("income tranId".into()))?;
+            let ts = Timestamp::from_millis(
+                r["time"]
+                    .as_i64()
+                    .ok_or_else(|| ExchangeError::Decode("income time".into()))?,
+            );
+            newest = newest.max(ts);
+            if let Some(p) = self
+                .books
+                .record_funding(id, &tran.to_string(), Notional::new(amount), ts)
+                .await?
+            {
+                self.positions.insert(id.clone(), p);
+            }
+        }
+        self.funding_from.insert(id.clone(), newest);
+        Ok(())
     }
 
     /// Fills the startup reconcile recovered or adopted.
@@ -692,14 +760,9 @@ impl Broker for UsdmBroker {
             }
         }
         match event {
-            MarketEvent::Funding {
-                instrument,
-                rate,
-                mark,
-                ..
-            } => {
-                if let Some(p) = self.positions.get_mut(instrument) {
-                    p.apply_funding(*rate, *mark);
+            MarketEvent::Funding { instrument, .. } => {
+                if self.instruments.contains_key(instrument) {
+                    self.sync_funding(instrument).await?;
                 }
             }
             MarketEvent::Candle(c) => {
@@ -1320,9 +1383,12 @@ mod tests {
     }
 
     /// Market sell 2 from flat (fee 24 USDT): short 2 @ 30,000, entry
-    /// notional −60,000, realized −24. Funding 0.01% at mark 30,500: the
-    /// short receives 6.1 → −17.9. A candle with Binance agreeing (−2)
-    /// asks nothing more. The short is in the books after a restart.
+    /// notional −60,000, realized −24. At the funding event Binance's
+    /// income history lists +6.1 (tranId 501, from the run's start: the
+    /// symbol was never held) → −17.9. A candle with Binance agreeing (−2)
+    /// asks nothing more. A restart keeps both the short and the funding;
+    /// re-reading the same income (7-day look-back, now that it is held)
+    /// books nothing twice.
     #[tokio::test]
     async fn a_short_round_trip_lands_in_the_books() {
         let (t, db) = (FakeTransport::default(), TempDb::new().await);
@@ -1358,8 +1424,15 @@ mod tests {
             mark: Price::new(dec!(30500)),
             ts: Timestamp::from_millis(6000),
         };
+        t.reply(
+            200,
+            r#"[{"symbol":"BTCUSDT","incomeType":"FUNDING_FEE","income":"6.10000000","asset":"USDT","time":6000,"info":"FUNDING_FEE","tranId":501,"tradeId":""}]"#,
+        );
         let fills = b.settle(&funding).await.unwrap();
         assert_eq!(fills.len(), 1);
+        let income = t.sent().last().unwrap().clone();
+        assert_eq!(income.path, "/fapi/v1/income");
+        assert_eq!(param(&income.query, "startTime"), Some("1000"));
         let p = b.position(&btc().id);
         assert_eq!(
             (p.qty().get(), p.cost_basis().get(), p.realized_pnl().get()),
@@ -1368,13 +1441,22 @@ mod tests {
         t.reply(200, r#"[{"symbol":"BTCUSDT","positionAmt":"-2.000"}]"#);
         assert!(b.settle(&candle("30100")).await.unwrap().is_empty());
         assert_eq!(t.sent().last().unwrap().path, "/fapi/v3/positionRisk");
-        // Funding isn't in the books (fills only): −24 after a restart.
-        let again = broker(&t, &db).await;
+        let mut again = broker(&t, &db).await;
         let p = again.position(&btc().id);
         assert_eq!(
             (p.qty().get(), p.realized_pnl().get()),
-            (dec!(-2), dec!(-24))
+            (dec!(-2), dec!(-17.9))
         );
+        t.reply(
+            200,
+            r#"[{"symbol":"BTCUSDT","incomeType":"FUNDING_FEE","income":"6.10000000","asset":"USDT","time":6000,"tranId":501}]"#,
+        );
+        again.settle(&funding).await.unwrap();
+        assert_eq!(
+            param(&t.sent().last().unwrap().query, "startTime"),
+            Some(&*(1_000 - 7 * 86_400_000_i64).to_string())
+        );
+        assert_eq!(again.position(&btc().id).realized_pnl().get(), dec!(-17.9));
     }
 
     /// Short 2 @ 30,000 in the books; Binance now says flat and lists a

@@ -181,6 +181,13 @@ impl Position {
         Ok(())
     }
 
+    /// Books an amount the venue settled outside any fill (a funding
+    /// payment as it booked it: positive received, negative paid) into
+    /// realized P&L. Position and basis are untouched.
+    pub fn credit(&mut self, amount: Notional) {
+        self.realized_pnl += amount;
+    }
+
     /// Settles one funding payment on a perpetual position: the venue
     /// charges `qty × mark × rate` (a positive rate: longs pay shorts),
     /// added to realized P&L. Returns the amount received (negative: paid).

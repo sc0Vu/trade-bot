@@ -189,8 +189,11 @@ match), `reconcile` (journal rows: find, cancel, wait, record, close;
 algo until `actualOrderId`, then as that order; reconcile + orphan scan check
 algo orders first / `openAlgoOrders`; checked on demo 2026-11-18),
 `Size::Quote` → base at last close (paper converts at fill: small diff);
-settle polls every working order (`order` + `userTrades?orderId`), funding
-→ in-memory position only (books = fills); each Candle `align`:
+settle polls every working order (`order` + `userTrades?orderId`); Funding
+event → `/fapi/v1/income` FUNDING_FEE since last read (first: 7 days back if
+held, else run start) → `Ledger::record_funding` (table `funding`, migration
+6, unique (instrument, tranId), folded into holding realized via
+`Position::credit`); each Candle `align`:
 `/fapi/v3/positionRisk` vs books, differ → `userTrades` since run start, trades
 not from a working order of ours adopted (`venue-<orderId>`, warn:
 liquidation/ADL/manual — bot needs its symbols to itself), still differ with
@@ -513,6 +516,9 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    SeaORM on SQLite creates `DECIMAL` as `real(p,s)`, reads via `f64`
    (invariant 1). TEXT exact on both backends; cost: no SQL `SUM`/numeric
    `ORDER BY` on money — aggregate in Rust.
+   Perpetual funding: `Ledger::record_funding(instrument, venue_id, amount,
+   ts)` — `funding` table (migration 6), idempotent per (instrument,
+   venue id), folds into the holding's realized P&L in the same txn.
    Call sites see only `TradeRepository` (append-only fill log) and
    `HoldingRepository` (current `Position` per instrument, cache of log),
    both in core types; `SqlStore` implements. Entities crate-private.
