@@ -311,8 +311,20 @@ struct Run<'a> {
     report: RunReport,
     /// Orders the delisting exit already asked to cancel.
     exit_cancelled: HashSet<OrderId>,
-    /// The delisting exit's own sells: waited for, never cancelled.
+    /// The delisting exit's own closing orders: waited for, never cancelled.
     exit_sells: HashSet<OrderId>,
+}
+
+/// Whether a `side` order on `id` could open or add to a position rather
+/// than only reduce one: a buy unless short; a sell when flat or short on
+/// an instrument that can be shorted (a spot sell never opens anything).
+/// A buy bigger than the short it covers is let through (a flip).
+fn opens(ctx: &Context, id: &InstrumentId, side: Side) -> bool {
+    let held = ctx.position(id).qty();
+    match side {
+        Side::Buy => !held.is_negative(),
+        Side::Sell => !held.is_positive() && ctx.instrument(id).is_some_and(|i| i.allows_short()),
+    }
 }
 
 impl Run<'_> {
@@ -328,8 +340,9 @@ impl Run<'_> {
     /// The engine's own exit from instruments being delisted: while `now`
     /// is within `config.delist_exit` before an instrument's delisting, cancel
     /// every order on it still working (once each), and when none is
-    /// working or being cancelled, sell the lot-rounded holding at market
-    /// if the venue would take it (dust stays). Runs after the strategy's
+    /// working or being cancelled, close the lot-rounded position at market
+    /// (sell a long, buy back a short) if the venue would take it (dust
+    /// stays). Runs after the strategy's
     /// signals on every event, so it retries until flat; the strategy
     /// hears the fills like any other, but these orders aren't its signals
     /// (no `on_order` / `on_rejected`). A refusal is recorded in the
@@ -387,13 +400,19 @@ impl Run<'_> {
             let (Some(inst), Some(last)) = (ctx.instrument(id), ctx.last_candle(id)) else {
                 continue;
             };
-            let units = inst.round_qty(self.broker.position(id).qty());
-            if inst.check_market(units, last.close, Side::Sell).is_err() {
+            let held = self.broker.position(id).qty();
+            let side = if held.is_negative() {
+                Side::Buy
+            } else {
+                Side::Sell
+            };
+            let units = inst.round_qty(held.abs());
+            if inst.check_market(units, last.close, side).is_err() {
                 continue; // flat, or dust the venue won't take
             }
             let signal = Signal::Submit {
                 instrument: id.clone(),
-                side: Side::Sell,
+                side,
                 size: Size::Base(units),
                 kind: OrderKind::Market,
             };
@@ -405,7 +424,7 @@ impl Run<'_> {
             let outcome = match risk::to_order(
                 oid,
                 Some(inst),
-                Side::Sell,
+                side,
                 Size::Base(units),
                 OrderKind::Market,
                 market,
@@ -415,7 +434,7 @@ impl Run<'_> {
                     let oid = order.id.clone();
                     match self.broker.submit(order).await {
                         Ok(_) => {
-                            tracing::warn!(order = %self.broker.client_order_id(&oid), instrument = %id, "delisting: selling the holding");
+                            tracing::warn!(order = %self.broker.client_order_id(&oid), instrument = %id, side = ?side, "delisting: closing the position");
                             self.exit_sells.insert(oid);
                             Ok(())
                         }
@@ -469,10 +488,10 @@ impl Run<'_> {
                 }
                 Signal::Submit {
                     instrument, side, ..
-                } if *side == Side::Buy && ctx.delisting(instrument).is_some() => {
+                } if ctx.delisting(instrument).is_some() && opens(ctx, instrument, *side) => {
                     metrics::counter!(m::REJECTED, "source" => "risk", "code" => "delisting")
                         .increment(1);
-                    Err("instrument is scheduled for delisting: no new buys".to_owned())
+                    Err("instrument is scheduled for delisting: only orders that reduce the position".to_owned())
                 }
                 Signal::Submit {
                     instrument,

@@ -193,10 +193,11 @@ enum MarketEvent { Candle(Candle), Quote(Quote),
 // ratio_hop holding it waits, grid idles. Live-only (backtest gaps → cut).
 // Delisting: venue scheduled `instrument` to stop trading at `at` (None =
 // schedule withdrawn); ctx.delisting(id) / ctx.delisted(id) (now ≥ at). From
-// announcement risk refuses buys; from at − EngineConfig.delist_exit
+// announcement risk refuses orders that could open/add (buy unless short;
+// sell when flat/short on a shortable class: spot = no buys); from at − EngineConfig.delist_exit
 // (`[engine] delist_exit_hours`, default 24) engine::exit_delisting each event
 // cancels working orders on it (once each), then once none working/cancelling
-// market-sells the lot-rounded holding (dust stays); engine-own orders: no
+// closes the lot-rounded position at market (sell long, buy short; dust stays); engine-own orders: no
 // on_order/on_rejected, refusals → RunReport. Same in backtest (parity).
 // CorpAction is empty enum in v1 → variant unconstructible until equities.
 // MarketEvent::ts(): candle → close_time (bar known), never open_time.
@@ -258,7 +259,7 @@ at t+1. Prevents deciding on close and trading at it.
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
 broker, `created_at` = event ts → `on_order` / `on_rejected`; (6) delisting exit.
 `EngineConfig { .. }` literals end `..Default::default()` (new fields break no caller).
-Risk v1: whitelist, no buys of a delisting instrument, sizing (quote → base
+Risk v1: whitelist, only reducing orders on a delisting instrument, sizing (quote → base
 at order price, except market buy keeps quote budget; market reference =
 last close rounded to tick against trader, buy up / sell down: market order
 sends no price, history under today's filters can be off tick), lot/tick

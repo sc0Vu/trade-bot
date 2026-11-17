@@ -186,4 +186,114 @@ mod tests {
         assert_eq!(r.funding, Notional::new(dec!(-1.1)));
         assert_eq!(r.final_equity, Notional::new(dec!(1197.9)));
     }
+
+    /// Sells 1 (base) at t0's close and again at t2's close.
+    struct Shorter;
+
+    impl Strategy for Shorter {
+        fn name(&self) -> &str {
+            "shorter"
+        }
+        fn on_candle(
+            &mut self,
+            _ctx: &mut strategy::Context,
+            c: &bot_core::Candle,
+        ) -> Vec<bot_core::Signal> {
+            let i = c.open_time.as_millis() / crate::test_support::HOUR;
+            if i != 0 && i != 2 {
+                return vec![];
+            }
+            vec![bot_core::Signal::Submit {
+                instrument: c.instrument.clone(),
+                side: bot_core::Side::Sell,
+                size: bot_core::Size::Base(bot_core::Qty::new(dec!(1))),
+                kind: bot_core::OrderKind::Market,
+            }]
+        }
+    }
+
+    /// A perpetual short under a delisting (announced at t1's close, at
+    /// 5h, exit lead 2h): the t0 sell opens short 1 (fills t1's open);
+    /// the t2 sell would add to it → refused; from 3h the engine buys the
+    /// short back (t3's close → fills at t4's open, 100): flat, wallet
+    /// whole (no fees, flat prices).
+    #[tokio::test]
+    async fn a_delisting_closes_a_perpetual_short_and_refuses_adding_to_it() {
+        use bot_core::margin::{Bracket, Brackets, MarginMode};
+        use bot_core::{AssetClass, Instrument, InstrumentSpec, MarketEvent, Side, Timestamp};
+        use exchange::paper::PerpTerms;
+        use std::collections::HashMap;
+        let hour = crate::test_support::HOUR;
+        let perp = Instrument::new(InstrumentSpec {
+            class: AssetClass::Perpetual,
+            ..(*btcusdt()).clone()
+        })
+        .unwrap();
+        let id = perp.id.clone();
+        let brackets = Brackets::new(vec![Bracket {
+            floor: Notional::ZERO,
+            cap: Notional::new(dec!(1000000)),
+            max_leverage: 20,
+            rate: dec!(0.004),
+            cum: dec!(0),
+        }])
+        .unwrap();
+        let provider = BacktestProvider::new(
+            vec![perp],
+            (0..6)
+                .map(|i| candle(&id, i, ["100", "100", "100", "100"]))
+                .collect(),
+            PaperConfig {
+                fees: RateFee::new(dec!(0), dec!(0), FeeAsset::Quote).unwrap(),
+                slippage: BpsSlippage::zero(),
+                initial_cash: Notional::new(dec!(1000)),
+            },
+        )
+        .with_perp(crate::PerpSetup {
+            terms: HashMap::from([(
+                id.clone(),
+                PerpTerms {
+                    leverage: 5,
+                    mode: MarginMode::Isolated,
+                    brackets,
+                },
+            )]),
+            clearance: dec!(0.0125),
+        })
+        .with_events(vec![MarketEvent::Delisting {
+            instrument: id.clone(),
+            at: Some(Timestamp::from_millis(5 * hour)),
+            ts: Timestamp::from_millis(2 * hour - 1),
+        }]);
+        let config = EngineConfig {
+            whitelist: vec![id],
+            history_len: 10,
+            delist_exit: std::time::Duration::from_secs(2 * 3600),
+        };
+        let run = engine::run(&provider, &mut Shorter, Params::default(), &config)
+            .await
+            .unwrap();
+        let fills: Vec<(Side, i64)> = run
+            .fills
+            .iter()
+            .map(|f| (f.side, f.ts.as_millis() / hour))
+            .collect();
+        assert_eq!(fills, vec![(Side::Sell, 1), (Side::Buy, 4)]);
+        assert_eq!(run.rejections.len(), 1);
+        assert!(
+            run.rejections[0].reason.contains("reduce"),
+            "{}",
+            run.rejections[0].reason
+        );
+        let r = Report::compute_full(
+            &run,
+            provider.candles(),
+            provider.events(),
+            provider.instruments(),
+            provider.initial_cash(),
+            Interval::H1,
+            None,
+        );
+        assert_eq!(r.final_equity, Notional::new(dec!(1000)));
+    }
 }
