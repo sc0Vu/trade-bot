@@ -135,8 +135,9 @@ slippage / fees (quote) as PaperBroker; fills move margin not cash
 (isolated: opened·px/leverage wallet → position, closed share back,
 realized + fees → wallet, funding → position margin; cross: shared
 wallet, available = wallet + cross UPNL − cross IM − reservations).
-Refuses leverage above the bracket at the resulting size and margin + fee
-> available (submit at last close; fill at real price → dropped unfilled).
+Refuses leverage above the bracket at the resulting size and an order
+whose exact wallet cost (`flow`: new margin − returned margin − realized −
+fee; cross: ΔIM − realized) > available (submit at last close; fill at real price → dropped unfilled).
 After each candle: low (long) / high (short) ≤/≥ liquidation price →
 closed at LP (tick against trader) + clearance fee capped at margin left
 there (isolated: its margin, cross: wallet), id `liq-N`; never loses past it.

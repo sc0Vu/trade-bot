@@ -249,53 +249,103 @@ impl PerpPaperBroker {
         liquidation: bool,
     ) -> Result<(), ExchangeError> {
         let id = fill.instrument.clone();
-        let before = self.pos(&id);
+        let (after, iso, wallet_delta) = self.flow(fill, inst, liquidation)?;
+        self.wallet += wallet_delta;
+        if self.mode(&id) == MarginMode::Isolated {
+            self.isolated.insert(id.clone(), iso);
+        }
+        self.positions.insert(id, after);
+        Ok(())
+    }
+
+    /// What `fill` would do: the position after it, the isolated margin
+    /// after it, and the change to the wallet. Isolated: the closed share
+    /// of the margin (all of it on a flip or close) plus realized P&L and
+    /// fee come back, margin for what opened (units × fill price /
+    /// leverage) goes out; `liquidation`: what comes back is never below
+    /// zero. Cross: realized P&L and fee.
+    fn flow(
+        &self,
+        fill: &Fill,
+        inst: &Instrument,
+        liquidation: bool,
+    ) -> Result<(Position, Notional, Notional), ExchangeError> {
+        let id = &fill.instrument;
+        let before = self.pos(id);
         let mut after = before.clone();
         after
             .apply(fill, inst)
             .map_err(|_| ExchangeError::Rejected("fill does not fit the position"))?;
         let realized = after.realized_pnl() - before.realized_pnl();
-        if self.mode(&id) == MarginMode::Isolated {
-            let (old, new) = (before.qty().get().abs(), after.qty().get().abs());
-            let flipped = !before.is_flat()
-                && !after.is_flat()
-                && before.qty().is_negative() != after.qty().is_negative();
-            let iso = self.isolated_margin(&id);
-            // Release the closed share (all of it on a flip or a close).
-            let closed = if flipped {
-                old
-            } else {
-                (old - new).max(Decimal::ZERO)
-            };
-            let release = if old.is_zero() {
-                Notional::ZERO
-            } else {
-                iso * (closed / old)
-            };
-            let mut iso = iso - release;
-            let mut back = release + realized;
-            if liquidation && back.is_negative() {
-                back = Notional::ZERO;
-            }
-            // Margin for what opened.
-            let opened = if flipped {
-                new
-            } else {
-                (new - old).max(Decimal::ZERO)
-            };
-            let lev = Decimal::from(self.terms[&id].leverage);
-            let alloc = Notional::new(opened * fill.price.get() / lev);
-            iso += alloc;
-            self.wallet += back - alloc;
-            if after.is_flat() {
-                iso = Notional::ZERO;
-            }
-            self.isolated.insert(id.clone(), iso);
-        } else {
-            self.wallet += realized;
+        if self.mode(id) != MarginMode::Isolated {
+            return Ok((after, Notional::ZERO, realized));
         }
-        self.positions.insert(id, after);
-        Ok(())
+        let (old, new) = (before.qty().get().abs(), after.qty().get().abs());
+        let flipped = !before.is_flat()
+            && !after.is_flat()
+            && before.qty().is_negative() != after.qty().is_negative();
+        let iso = self.isolated_margin(id);
+        let closed = if flipped {
+            old
+        } else {
+            (old - new).max(Decimal::ZERO)
+        };
+        let release = if old.is_zero() {
+            Notional::ZERO
+        } else {
+            iso * (closed / old)
+        };
+        let mut back = release + realized;
+        if liquidation && back.is_negative() {
+            back = Notional::ZERO;
+        }
+        let opened = if flipped {
+            new
+        } else {
+            (new - old).max(Decimal::ZERO)
+        };
+        let lev = Decimal::from(self.terms[id].leverage);
+        let alloc = Notional::new(opened * fill.price.get() / lev);
+        let iso = if after.is_flat() {
+            Notional::ZERO
+        } else {
+            iso - release + alloc
+        };
+        Ok((after, iso, back - alloc))
+    }
+
+    /// Free quote an order of `qty` at `price` (fee `fee`) would take if
+    /// it filled: isolated, exactly what [`flow`](Self::flow) would take
+    /// from the wallet (a flip gets the old margin and its P&L back first);
+    /// cross, the change in initial margin less realized P&L and fee. Zero
+    /// or less: it frees margin.
+    fn need(
+        &self,
+        inst: &Instrument,
+        side: Side,
+        qty: Qty,
+        price: Price,
+        fee: Notional,
+    ) -> Result<Notional, ExchangeError> {
+        let probe = Fill::new(FillSpec {
+            order_id: OrderId::new("margin-check")
+                .map_err(|_| ExchangeError::Rejected("margin check"))?,
+            instrument: inst.id.clone(),
+            side,
+            qty,
+            price,
+            fee: Fee::Quote(fee),
+            liquidity: Liquidity::Taker,
+            ts: bot_core::Timestamp::from_millis(0),
+        })
+        .map_err(|_| ExchangeError::Rejected("invalid order size or price"))?;
+        let (after, _, wallet_delta) = self.flow(&probe, inst, false)?;
+        if self.mode(&inst.id) == MarginMode::Isolated {
+            return Ok(-wallet_delta);
+        }
+        let lev = self.terms[&inst.id].leverage;
+        let im = |p: &Position| margin::initial_margin(p.cost_basis(), lev);
+        Ok(im(&after) - im(&self.pos(&inst.id)) - wallet_delta)
     }
 
     /// Liquidates a position breached at `c`; the liquidation fill.
@@ -389,9 +439,10 @@ impl Broker for PerpPaperBroker {
             ));
         }
         let grow = self.growth(&order.instrument, order.side, qty);
-        let margin_needed = Notional::new(grow * price.get() / Decimal::from(t.leverage));
         let fee = self.quote_fee(&inst, order.side, Qty::new(qty), price, Liquidity::Taker);
-        let reserved = margin_needed + fee;
+        let reserved = self
+            .need(&inst, order.side, Qty::new(qty), price, fee)?
+            .max(Notional::ZERO);
         if grow > Decimal::ZERO && reserved > self.available(&order.instrument) {
             return Err(ExchangeError::Rejected("insufficient margin"));
         }
@@ -466,8 +517,7 @@ impl Broker for PerpPaperBroker {
                             // free now (its own reservation released): short
                             // → dropped unfilled, as the venue would refuse.
                             let grow = self.growth(&p.order.instrument, p.order.side, qty.get());
-                            let lev = Decimal::from(self.terms[&p.order.instrument].leverage);
-                            let need = Notional::new(grow * price.get() / lev) + fee;
+                            let need = self.need(&inst, p.order.side, qty, price, fee)?;
                             if grow > Decimal::ZERO && need > self.available(&p.order.instrument) {
                                 tracing::warn!(order = %p.order.id, "paper perpetual fill dropped: insufficient margin");
                                 continue;
@@ -709,6 +759,29 @@ mod tests {
         assert_eq!(f[0].fee, Fee::Quote(Notional::new(dec!(100.4))));
         assert_eq!(b.wallet(), Notional::ZERO);
         assert!(b.position(&perp().id).is_flat());
+    }
+
+    /// Isolated 2x, wallet 1,000: long 10 @ 100 (fee 0.5) → margin 500,
+    /// wallet 499.5. At 60 (liquidation 50.2, safe), flipping by selling
+    /// 30 to short 20 would take 600 margin, get back 500 − 400 loss −
+    /// 0.9 fee = 99.1: needs 500.9 > 499.5 → refused (counting only the
+    /// growth, 10 × 60 / 2 + fee = 300.9, would have let it through and
+    /// left the wallet at −1.4). Selling 29 (short 19) needs 570 − 99.13 =
+    /// 470.87 → accepted; filled at 60: wallet 28.63, margin 570.
+    #[tokio::test]
+    async fn a_losing_flip_needs_margin_net_of_what_the_close_returns() {
+        let mut b = broker(dec!(1000), 2, MarginMode::Isolated);
+        bar(&mut b, 0, ["100", "100", "100", "100"]).await;
+        b.submit(market(1, Side::Buy, dec!(10), 0)).await.unwrap();
+        bar(&mut b, 1, ["100", "100", "60", "60"]).await;
+        assert_eq!(b.wallet(), Notional::new(dec!(499.5)));
+        assert!(b.position(&perp().id).qty().is_positive());
+        assert!(b.submit(market(2, Side::Sell, dec!(30), 1)).await.is_err());
+        b.submit(market(3, Side::Sell, dec!(29), 1)).await.unwrap();
+        bar(&mut b, 2, ["60", "60", "60", "60"]).await;
+        assert_eq!(b.position(&perp().id).qty(), Qty::new(dec!(-19)));
+        assert_eq!(b.wallet(), Notional::new(dec!(28.63)));
+        assert_eq!(b.isolated_margin(&perp().id), Notional::new(dec!(570)));
     }
 
     /// 3,015 (3,000 margin + 15 fee) needed on 1,000 → refused. At 25x, 1
