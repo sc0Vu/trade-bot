@@ -32,7 +32,12 @@ use storage::SqlStore;
 use strategy::Params;
 
 #[derive(Parser)]
-#[command(version, about = "Event-driven trading bot")]
+#[command(
+    name = "trade-bot",
+    bin_name = "trade-bot",
+    version,
+    about = "Event-driven trading bot"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
