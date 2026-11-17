@@ -28,6 +28,7 @@ backtest = { path = "crates/backtest" }
 storage = { path = "crates/storage" }
 api = { path = "crates/api" }
 migration = { path = "migration" }
+uuid = { version = "1.28.0", features = ["v4"] }
 
 anyhow = "1.0.104"
 axum = "0.8.9"

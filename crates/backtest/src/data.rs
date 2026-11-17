@@ -236,6 +236,30 @@ impl HistorySource for PublicClient {
 }
 
 #[async_trait]
+impl HistorySource for exchange::etoro::EtoroClient {
+    async fn instrument(&self, symbol: &Symbol) -> Result<Instrument, ExchangeError> {
+        Ok(exchange::etoro::EtoroClient::instrument(self, symbol)
+            .await?
+            .instrument)
+    }
+    async fn klines(
+        &self,
+        symbol: &Symbol,
+        interval: Interval,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> Result<Vec<Candle>, ExchangeError> {
+        let (id, _, _) = self.lookup(symbol).await?;
+        let ours = InstrumentId::new(
+            bot_core::VenueId::new(exchange::etoro::VENUE)
+                .map_err(|e| ExchangeError::Decode(e.to_string()))?,
+            symbol.clone(),
+        );
+        self.history(id, &ours, interval, start, end).await
+    }
+}
+
+#[async_trait]
 impl HistorySource for MaxPublicClient {
     async fn instrument(&self, symbol: &Symbol) -> Result<Instrument, ExchangeError> {
         MaxPublicClient::instrument(self, symbol).await

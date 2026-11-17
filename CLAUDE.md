@@ -519,6 +519,25 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `--live` refused (`gate::decide_max`); `exchange.network` ignored.
    `cli::run_max_paper`: no creds, no db, no API (warned), no state resume
    (would contradict a flat broker), no close-out (nothing on MAX).
+1c. **eToro** — `exchange::etoro` (docs api-portal.etoro.com, read
+   2026-11-18; OpenAPI v1.417.0). A broker: positions, not an order book.
+   Keys `ETORO_PUBLIC_KEY` (x-api-key) + `ETORO_PRIVATE_KEY` (x-user-key),
+   fresh `x-request-id` UUID (= order idempotency key), non-default
+   User-Agent (Cloudflare 1010 otherwise); one user key = one account
+   (demo key → `403 InsufficientPermissions` on real paths); demo paths
+   splice `/demo/` (`Account::path`). Limits per user key /60 s: market data
+   120, execution 20, info 60 (80% budgeted, 429 → `Retry-After`).
+   Instruments `etoro:<symbol>` by exact `symbol` (`/api/v2/market-data/
+   instruments?symbols=`; search is prefix) + eligibility (`/api/v2/
+   trading/info[/demo]/eligibility`): only the real asset (settlement
+   real, long, 1x) → `AssetClass::Spot`, quote USD; no tick/unit step
+   published → tick 1e-8, lot 1e-8 fractional (1 whole), min notional =
+   `minPositionExposure`. History `/api/v1/data/instruments/{id}/candles`
+   (date range, exact strings, bid side, loaded daily); live-current
+   `/api/v1/market-data/.../history/candles/desc/{iv}/{n}` (numbers read
+   raw, forming bar dropped). Volume often null → 0, quote volume 0 (no
+   avwap). CLI `fetch-data`/`backtest --venue etoro` (fees in quote; gap
+   cut default 120 h: markets close). `run` refused until its broker.
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety

@@ -10,6 +10,7 @@
 
 pub mod binance;
 mod error;
+pub mod etoro;
 pub mod max;
 pub mod metrics;
 pub mod paper;

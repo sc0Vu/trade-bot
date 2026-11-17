@@ -530,6 +530,7 @@ fn data_url(venue: Venue) -> &'static str {
         Venue::Binance => PUBLIC_DATA_URL,
         Venue::Max => exchange::max::REST_URL,
         Venue::BinanceUsdm => exchange::binance::usdm::LIVE_URL,
+        Venue::Etoro => exchange::etoro::REST_URL,
     }
 }
 
@@ -576,8 +577,10 @@ struct BacktestArgs {
     /// A series that stops for longer than this many hours, or ends this
     /// long before `--to`, is cut there and delisted with no notice (a halt
     /// nobody announced; also keeps a reused symbol's later bars out).
-    #[arg(long, default_value_t = 48)]
-    max_gap_hours: u64,
+    /// Default 48; 120 on eToro (stock markets close over weekends and
+    /// holidays).
+    #[arg(long)]
+    max_gap_hours: Option<u64>,
     /// Share of cash kept in Simple Earn (`[earn] ratio` live): out of what
     /// buys may spend. In [0, 1).
     #[arg(long, value_parser = parse_decimal)]
@@ -639,7 +642,8 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         .collect();
     let perp = a.venue == Venue::BinanceUsdm;
     // Futures charge every fee in the quote (margin) asset.
-    let fee_asset = if perp {
+    // Futures and eToro charge in the quote (USD).
+    let fee_asset = if perp || a.venue == Venue::Etoro {
         FeeAsset::Quote
     } else {
         FeeAsset::Received
@@ -673,7 +677,11 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         Vec::new()
     };
     let mut provider = provider.with_delistings(&announced).cut_at_gaps(
-        Duration::from_secs(a.max_gap_hours.saturating_mul(3600)),
+        Duration::from_secs(
+            a.max_gap_hours
+                .unwrap_or(if a.venue == Venue::Etoro { 120 } else { 48 })
+                .saturating_mul(3600),
+        ),
         a.to,
     );
     if perp {
@@ -854,6 +862,13 @@ async fn fetch_data(a: FetchArgs) -> anyhow::Result<()> {
         Venue::Binance => Box::new(PublicClient::new(base.clone())),
         Venue::Max => Box::new(MaxPublicClient::new(base.clone())),
         Venue::BinanceUsdm => Box::new(PublicClient::usdm(base.clone())),
+        // eToro serves data only to a keyed account; a demo key will do.
+        Venue::Etoro => Box::new(exchange::etoro::EtoroClient::new(
+            base.clone(),
+            exchange::etoro::EtoroKeys::from_env()?,
+            exchange::etoro::Account::Demo,
+            Duration::from_secs(30),
+        )),
     };
     let dir = DataDir::new(a.data_dir.clone());
     let to = a.to.unwrap_or_else(now);

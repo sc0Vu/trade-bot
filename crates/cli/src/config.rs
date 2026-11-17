@@ -118,6 +118,11 @@ pub enum Venue {
     #[serde(rename = "binance-usdm")]
     #[value(name = "binance-usdm")]
     BinanceUsdm,
+    /// eToro (`etoro:AAPL`, `etoro:BTC`): the real asset, long only.
+    /// `fetch-data` and backtest; keys `ETORO_PUBLIC_KEY` /
+    /// `ETORO_PRIVATE_KEY` even for data. `run` refuses it until its broker
+    /// exists.
+    Etoro,
 }
 
 impl Venue {
@@ -127,6 +132,7 @@ impl Venue {
             Self::Binance => "binance",
             Self::Max => exchange::max::VENUE,
             Self::BinanceUsdm => exchange::binance::usdm::VENUE,
+            Self::Etoro => exchange::etoro::VENUE,
         };
         VenueId::new(name).unwrap_or_else(|_| unreachable!("valid venue id"))
     }
@@ -530,6 +536,11 @@ impl Config {
         let venue = self.exchange.venue.id();
         if let Some(other) = self.whitelist.iter().find(|i| *i.venue() != venue) {
             bail!("whitelist has {other}, but exchange.venue is {venue}");
+        }
+        if self.exchange.venue == Venue::Etoro {
+            bail!(
+                "exchange.venue = \"etoro\": fetch-data and backtest only so far; runs come with its broker"
+            );
         }
         if self.exchange.venue == Venue::BinanceUsdm {
             let Some(perp) = &self.perp else {
