@@ -632,8 +632,11 @@ CI (`.github/workflows/ci.yml`) runs `make check`, validates the
 image and starts it once, on every push and pull request. Pushing a tag `vX.Y.Z` that matches the workspace version runs
 `release.yml`: it builds every platform (Linux with OpenSSL linked
 statically through the `vendored-tls` feature), smoke-tests each binary,
-and publishes the archives with `SHA256SUMS` as a GitHub release. *Run
-workflow* on the Release action builds the archives without publishing.
+and publishes the archives with `SHA256SUMS` as a GitHub release:
+`trade_bot_<os>_<arch>.<version>.tar.gz` (`linux_amd64`, `linux_arm64`,
+`darwin_arm64`, `darwin_amd64`; Windows as `trade_bot_windows_amd64.<version>.zip`).
+*Run workflow* on the Release action builds the archives without
+publishing.
 `pages.yml` publishes `site/` (a single static page) to
 <https://sc0vu.github.io/trade-bot/> on every push to `main` that touches it.
 

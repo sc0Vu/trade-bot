@@ -1,5 +1,11 @@
 # Builds the `trade-bot` binary for each platform and, on a version tag,
-# publishes them as a GitHub release.
+# publishes them as a GitHub release, one archive per platform:
+#
+#   trade_bot_linux_amd64.0.1.0.tar.gz    trade_bot_darwin_arm64.0.1.0.tar.gz
+#   trade_bot_linux_arm64.0.1.0.tar.gz    trade_bot_darwin_amd64.0.1.0.tar.gz
+#   trade_bot_windows_amd64.0.1.0.zip     SHA256SUMS
+#
+# (`<os>_<arch>`, then the workspace version without the `v`.)
 #
 #   git tag v0.1.0 && git push origin v0.1.0   # build + release
 #   Actions > Release > Run workflow           # build only (artifacts)
@@ -28,13 +34,13 @@ jobs:
           # Linux builds run on 22.04 for an older glibc (2.35): the binary
           # runs on that and anything newer. OpenSSL is linked statically
           # (vendored-tls), so the host's libssl version doesn't matter.
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, platform: linux_amd64 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, platform: linux_arm64 }
           # Both macOS builds on Apple silicon; Intel is a cross-compile
           # (macOS TLS is the system's, nothing native to cross).
-          - { target: aarch64-apple-darwin, os: macos-15 }
-          - { target: x86_64-apple-darwin, os: macos-15 }
-          - { target: x86_64-pc-windows-msvc, os: windows-2022 }
+          - { target: aarch64-apple-darwin, os: macos-15, platform: darwin_arm64 }
+          - { target: x86_64-apple-darwin, os: macos-15, platform: darwin_amd64 }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022, platform: windows_amd64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -65,7 +71,8 @@ jobs:
         id: package
         shell: bash
         run: |
-          name="trade-bot-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          name="trade_bot_${{ matrix.platform }}.${version}"
           mkdir -p "dist/$name/config"
           exe=""
           [[ "${{ matrix.target }}" == *windows* ]] && exe=".exe"

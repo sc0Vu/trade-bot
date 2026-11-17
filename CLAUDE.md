@@ -1086,7 +1086,9 @@ data/          downloaded klines, per-network run dbs (gitignored)
                (tag `v<workspace version>` → `trade-bot` for linux x86_64/arm64 gnu,
                macOS arm64/x86_64, windows x86_64; `cli --features vendored-tls,rhai`
                (static OpenSSL + script strategies; archive ships `strategies/`);
-               archives + SHA256SUMS on a GitHub release), pages.yml
+               archives `trade_bot_<os>_<arch>.<version>.tar.gz` (windows `.zip`;
+               os linux|darwin|windows, arch amd64|arm64) + SHA256SUMS on a GitHub
+               release), pages.yml
                (site/ → GitHub Pages sc0vu.github.io/trade-bot on push to main)
 site/          static project page (one index.html, no build); strategy table and
                safety claims mirror README: keep in sync
