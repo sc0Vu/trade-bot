@@ -4,76 +4,203 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>trade-bot</title>
-<meta name="description" content="An event-driven trading bot in Rust. Backtests and live runs execute the same strategy code through the same engine loop.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23166534'/><path d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<meta name="description" content="An event-driven trading bot in Rust. Backtests and live runs execute the same strategy code through the same engine loop. Binance spot and perpetuals, eToro, MAX.">
+<meta name="theme-color" content="#0a0e14">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230a0e14'/><path d='M6 22l6-7 5 4 9-11' stroke='%2334d399' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <style>
 :root {
-  --bg: #fbfaf7; --surface: #ffffff; --text: #1c1c1a; --muted: #5d5d58;
-  --line: #e4e2dc; --accent: #166534; --accent-soft: #e7f2ea; --warn: #8a5a00;
-  --warn-soft: #fbf1dc; --code-bg: #f3f1ec;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  --bg: #0a0e14; --bg2: #0e131b; --surface: #121924; --surface2: #172030; --text: #e6edf3; --muted: #8b98a8;
+  --faint: #5b6879; --line: #1f2a3a; --line2: #2a384c;
+  --up: #34d399; --down: #f87171; --accent: #34d399; --accent2: #60a5fa; --warn: #fbbf24;
+  --glow: rgba(52, 211, 153, .16);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+  color-scheme: dark;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #121411; --surface: #191c18; --text: #e9e8e3; --muted: #a3a39c;
-    --line: #2c302a; --accent: #6fcf8e; --accent-soft: #1c2c20; --warn: #e5b45a;
-    --warn-soft: #2b2416; --code-bg: #1f231e;
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f7f8fa; --bg2: #eef1f5; --surface: #ffffff; --surface2: #f3f5f8; --text: #0f1720; --muted: #4f5d6e;
+    --faint: #8492a3; --line: #e1e6ed; --line2: #ccd4de;
+    --up: #059669; --down: #dc2626; --accent: #059669; --accent2: #2563eb; --warn: #b45309;
+    --glow: rgba(5, 150, 105, .10);
+    color-scheme: light;
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 var(--sans); }
-a { color: var(--accent); }
-code { font-family: var(--mono); font-size: .9em; background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
-pre { font-family: var(--mono); font-size: 14px; line-height: 1.55; background: var(--code-bg); border: 1px solid var(--line);
-      border-radius: 8px; padding: 16px; overflow-x: auto; margin: 0; }
-pre code { background: none; padding: 0; font-size: inherit; }
-.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
-header.top { border-bottom: 1px solid var(--line); }
-header.top .wrap { display: flex; align-items: center; justify-content: space-between; height: 56px; gap: 16px; }
-.brand { font-family: var(--mono); font-weight: 600; color: var(--text); text-decoration: none; }
-nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-size: 15px; }
-nav a:hover { color: var(--text); }
-.hero { padding: 72px 0 48px; }
-.hero h1 { font-size: clamp(32px, 6vw, 52px); line-height: 1.1; letter-spacing: -.02em; margin: 0 0 20px; max-width: 18ch; }
-.hero p.lede { font-size: 19px; color: var(--muted); max-width: 62ch; margin: 0 0 28px; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 var(--sans); overflow-x: hidden; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: var(--mono); font-size: .88em; background: var(--surface2); border: 1px solid var(--line);
+       padding: .08em .38em; border-radius: 5px; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+/* top bar */
+header.top { position: sticky; top: 0; z-index: 10; backdrop-filter: saturate(1.4) blur(10px);
+             -webkit-backdrop-filter: saturate(1.4) blur(10px);
+             background: color-mix(in srgb, var(--bg) 78%, transparent); border-bottom: 1px solid var(--line); }
+header.top .wrap { display: flex; align-items: center; justify-content: space-between; height: 58px; gap: 16px; }
+.brand { font-family: var(--mono); font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 10px; }
+.brand:hover { text-decoration: none; }
+.brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--up); box-shadow: 0 0 12px var(--up); }
+nav a { color: var(--muted); margin-left: 22px; font-size: 14px; }
+nav a:hover { color: var(--text); text-decoration: none; }
+nav a.gh { color: var(--text); border: 1px solid var(--line2); padding: 6px 12px; border-radius: 8px; }
+
+/* hero */
+.hero { position: relative; padding-top: 76px; padding-bottom: 40px; }
+.hero::before { content: ""; position: absolute; inset: -120px 0 auto 0; height: 620px; pointer-events: none;
+  background: radial-gradient(60% 55% at 70% 30%, var(--glow), transparent 70%),
+              linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 100% 44px,
+              linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0 / 44px 100%;
+  -webkit-mask-image: radial-gradient(70% 70% at 60% 30%, #000 30%, transparent 75%);
+          mask-image: radial-gradient(70% 70% at 60% 30%, #000 30%, transparent 75%); opacity: .55; }
+.hero-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 40px; align-items: center; }
+.hero-grid > *, .two > *, .stats > * { min-width: 0; }
+.eyebrow { font-family: var(--mono); font-size: 13px; color: var(--accent); letter-spacing: .06em; text-transform: uppercase; }
+.hero h1 { font-size: clamp(36px, 6.2vw, 64px); line-height: 1.02; letter-spacing: -.035em; margin: 14px 0 20px; }
+.hero h1 em { font-style: normal; background: linear-gradient(90deg, var(--up), var(--accent2));
+              -webkit-background-clip: text; background-clip: text; color: transparent; }
+.lede { font-size: 18px; color: var(--muted); max-width: 54ch; margin: 0 0 28px; }
 .cta { display: flex; flex-wrap: wrap; gap: 12px; }
-.btn { display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px;
-       border: 1px solid var(--line); color: var(--text); background: var(--surface); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
-.status { margin-top: 36px; background: var(--warn-soft); border-left: 3px solid var(--warn); padding: 14px 18px;
-          border-radius: 0 8px 8px 0; font-size: 15px; max-width: 72ch; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 10px; font-weight: 600;
+       font-size: 15px; border: 1px solid var(--line2); color: var(--text); background: var(--surface); }
+.btn:hover { text-decoration: none; border-color: var(--faint); }
+.btn.primary { background: var(--up); border-color: var(--up); color: #04120c; box-shadow: 0 8px 28px -10px var(--up); }
+.btn.primary:hover { filter: brightness(1.06); }
+
+/* chart card */
+.chart { margin: 0; background: linear-gradient(180deg, var(--surface), var(--bg2)); border: 1px solid var(--line2); border-radius: 16px;
+         padding: 14px 14px 10px; box-shadow: 0 30px 80px -40px rgba(0,0,0,.7); }
+.chart-head { display: flex; justify-content: space-between; align-items: center; font: 12px var(--mono); color: var(--muted);
+              padding: 2px 4px 10px; gap: 8px; flex-wrap: wrap; }
+.chart-head .tags { display: flex; gap: 6px; }
+.tag { border: 1px solid var(--line2); border-radius: 999px; padding: 2px 9px; font: 11px var(--mono); color: var(--muted); }
+.tag.on { color: var(--up); border-color: color-mix(in srgb, var(--up) 45%, var(--line2)); }
+.chart svg { display: block; width: 100%; height: auto; }
+.chart .grid-line { stroke: var(--line); stroke-width: 1; }
+.chart .wick { stroke-width: 1.2; }
+.chart .up { fill: var(--up); stroke: var(--up); }
+.chart .down { fill: var(--down); stroke: var(--down); }
+.chart .sma { fill: none; stroke: var(--accent2); stroke-width: 1.6; stroke-linejoin: round; opacity: .9; }
+.chart .fill-mark { fill: var(--warn); }
+.chart .cursor { stroke: var(--faint); stroke-dasharray: 3 4; }
+.chart-foot { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--faint); padding: 8px 4px 0; gap: 8px; flex-wrap: wrap; }
+
+/* stats */
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 14px;
+         background: var(--surface); margin-top: 44px; overflow: hidden; }
+.stat { padding: 18px 20px; border-left: 1px solid var(--line); }
+.stat:first-child { border-left: 0; }
+.stat b { display: block; font: 700 28px/1.1 var(--mono); letter-spacing: -.02em; }
+.stat span { color: var(--muted); font-size: 13.5px; }
+
+.status { margin-top: 22px; border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); border-radius: 12px;
+          background: color-mix(in srgb, var(--warn) 7%, var(--surface)); padding: 14px 18px; font-size: 14.5px; color: var(--muted); }
 .status strong { color: var(--warn); }
-section { padding: 48px 0; border-top: 1px solid var(--line); }
-section h2 { font-size: 26px; letter-spacing: -.01em; margin: 0 0 8px; }
-section > .wrap > p.sub { color: var(--muted); margin: 0 0 28px; max-width: 68ch; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
-.card h3 { margin: 0 0 6px; font-size: 17px; }
-.card p { margin: 0; color: var(--muted); font-size: 15px; }
-.flow { overflow-x: auto; }
-.flow svg { display: block; min-width: 720px; width: 100%; height: auto; }
-.flow .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+
+/* sections */
+section { padding: 72px 0; border-top: 1px solid var(--line); }
+section h2 { font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -.02em; margin: 6px 0 10px; }
+p.sub { color: var(--muted); margin: 0 0 30px; max-width: 70ch; }
+.kicker { font: 12.5px var(--mono); color: var(--accent); text-transform: uppercase; letter-spacing: .08em; }
+
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 900px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .cards { grid-template-columns: 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px;
+        transition: border-color .2s, transform .2s; }
+.card:hover { border-color: var(--line2); transform: translateY(-2px); }
+.card h3 { margin: 0 0 8px; font-size: 16.5px; display: flex; align-items: center; gap: 10px; }
+.card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+.ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none;
+       background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font: 700 14px var(--mono); }
+
+/* venues */
+.venues { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.venue { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.venue h3 { margin: 0; font-size: 17px; }
+.venue .what { color: var(--muted); font-size: 14px; margin: 0; }
+.caps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 6px; }
+.cap { font: 11.5px var(--mono); border-radius: 6px; padding: 3px 8px; border: 1px solid var(--line2); color: var(--muted); }
+.cap.ok { color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, var(--line2)); }
+.cap.part { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line2)); }
+.cap.no { color: var(--faint); text-decoration: line-through; }
+
+/* flow */
+.flow { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+.flow svg { display: block; min-width: 760px; width: 100%; height: auto; }
+.flow .box { fill: var(--bg2); stroke: var(--line2); stroke-width: 1.4; }
 .flow .box.hl { stroke: var(--accent); }
 .flow text { fill: var(--text); font: 600 14px var(--sans); }
-.flow text.small { fill: var(--muted); font: 12px var(--sans); }
-.flow .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; }
-.flow .head { fill: var(--muted); }
-table { width: 100%; border-collapse: collapse; font-size: 15px; }
-th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
-td:first-child { white-space: nowrap; font-family: var(--mono); font-size: 14px; }
-.table-wrap { overflow-x: auto; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-.two h3 { font-size: 16px; margin: 0 0 10px; }
-ul.plain { margin: 0; padding-left: 20px; color: var(--muted); }
-ul.plain li { margin: 6px 0; }
-footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
-@media (max-width: 720px) {
-  nav { display: none; }
+.flow text.small { fill: var(--muted); font: 12px var(--mono); }
+.flow .arrow { stroke: var(--faint); stroke-width: 1.5; fill: none; }
+.flow .arrow.live { stroke: var(--accent); stroke-dasharray: 5 6; animation: dash 1.2s linear infinite; }
+.flow .head { fill: var(--faint); }
+@keyframes dash { to { stroke-dashoffset: -22; } }
+@media (prefers-reduced-motion: reduce) { .flow .arrow.live { animation: none; } }
+
+.steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.steps li { counter-increment: s; position: relative; padding: 12px 14px 12px 48px; background: var(--surface);
+            border: 1px solid var(--line); border-radius: 12px; color: var(--muted); font-size: 14.5px; }
+.steps li::before { content: counter(s); position: absolute; left: 14px; top: 11px; width: 22px; height: 22px;
+                    border-radius: 6px; display: grid; place-items: center; font: 700 12px var(--mono);
+                    color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 24px; }
+.two h3 { font-size: 15px; margin: 0 0 12px; color: var(--text); }
+
+/* strategies */
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+.chip { font: 12.5px var(--mono); border: 1px solid var(--line2); background: var(--surface); color: var(--muted);
+        border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.chip[aria-pressed="true"] { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.search { margin-left: auto; min-width: 200px; flex: 0 1 260px; font: 14px var(--sans); color: var(--text);
+          background: var(--surface); border: 1px solid var(--line2); border-radius: 10px; padding: 8px 12px; }
+.search:focus, .chip:focus-visible, .btn:focus-visible, .tab:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--surface2); }
+th { color: var(--faint); font: 600 11.5px var(--mono); text-transform: uppercase; letter-spacing: .07em; background: var(--bg2); }
+td:first-child { white-space: nowrap; font-family: var(--mono); font-size: 13.5px; color: var(--text); }
+td .k { display: inline-block; margin-left: 8px; font: 10.5px var(--mono); color: var(--faint); border: 1px solid var(--line2);
+        border-radius: 5px; padding: 0 5px; vertical-align: 1px; }
+td.fails { color: var(--muted); }
+.empty { padding: 18px; color: var(--muted); display: none; }
+
+/* quick start */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.tab { font: 13px var(--mono); padding: 7px 14px; border-radius: 9px; border: 1px solid var(--line2); background: var(--surface);
+       color: var(--muted); cursor: pointer; }
+.tab[aria-selected="true"] { color: var(--text); border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.term { position: relative; background: #070a0f; border: 1px solid var(--line2); border-radius: 14px; overflow: hidden; }
+.term-bar { display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-bottom: 1px solid #1a2230; }
+.term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #2a3444; }
+.term-bar span { margin-left: 8px; font: 12px var(--mono); color: #6b7a8c; }
+.term pre { margin: 0; padding: 18px 20px; overflow-x: auto; font: 13.5px/1.7 var(--mono); color: #d6e1ec; }
+.term pre .c { color: #6b7a8c; }
+.term pre .p { color: #34d399; user-select: none; }
+.copy { position: absolute; top: 6px; right: 8px; font: 12px var(--mono); color: #9fb0c3; background: #121924;
+        border: 1px solid #2a384c; border-radius: 7px; padding: 4px 10px; cursor: pointer; }
+.panel[hidden] { display: none; }
+
+footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+@media (max-width: 860px) {
+  .hero-grid { grid-template-columns: minmax(0, 1fr); }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stat:nth-child(3) { border-left: 0; }
+  .stat:nth-child(n+3) { border-top: 1px solid var(--line); }
   .two { grid-template-columns: 1fr; }
-  .hero { padding: 48px 0 32px; }
+}
+@media (max-width: 720px) {
+  nav a:not(.gh) { display: none; }
+  .hero { padding-top: 44px; padding-bottom: 28px; }
+  section { padding: 52px 0; }
+  .search { margin-left: 0; flex: 1 1 100%; }
 }
 </style>
 </head>
@@ -81,111 +208,177 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="#">trade-bot</a>
-    <nav>
+    <a class="brand" href="#"><span class="dot" aria-hidden="true"></span>trade-bot</a>
+    <nav aria-label="Sections">
+      <a href="#venues">Venues</a>
       <a href="#safety">Safety</a>
       <a href="#how">How it works</a>
       <a href="#strategies">Strategies</a>
       <a href="#start">Quick start</a>
-      <a href="https://github.com/sc0Vu/trade-bot">GitHub</a>
+      <a class="gh" href="https://github.com/sc0Vu/trade-bot">GitHub ↗</a>
     </nav>
   </div>
 </header>
 
 <main>
 <div class="wrap hero">
-  <h1>A trading bot whose backtest is the live run.</h1>
-  <p class="lede">An event-driven trading bot in Rust. A backtest and a live run execute the same strategy code
-    through the same engine loop; only the data feed and broker are swapped. Binance spot today, USDⓈ-M
-    perpetuals in backtest, built so equities and options can follow without a rewrite.</p>
-  <div class="cta">
-    <a class="btn primary" href="https://github.com/sc0Vu/trade-bot">View on GitHub</a>
-    <a class="btn" href="https://github.com/sc0Vu/trade-bot/releases">Download a release</a>
-    <a class="btn" href="https://github.com/sc0Vu/trade-bot/blob/main/doc/architecture.md">Architecture notes</a>
+  <div class="hero-grid">
+    <div>
+      <div class="eyebrow">Rust · event-driven · open source</div>
+      <h1>The backtest <em>is</em> the live run.</h1>
+      <p class="lede">A trading bot where a backtest and a live run execute the same strategy code through the same
+        engine loop. Only the data feed and the broker are swapped. Binance spot and USDⓈ-M perpetuals, eToro stocks
+        and crypto, and MAX, with exact decimal money and no lookahead.</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/sc0Vu/trade-bot">View on GitHub</a>
+        <a class="btn" href="https://github.com/sc0Vu/trade-bot/releases">Download a release</a>
+        <a class="btn" href="https://github.com/sc0Vu/trade-bot/blob/main/doc/architecture.md">Architecture</a>
+      </div>
+    </div>
+    <figure class="chart" aria-label="Animation: candles replay one at a time; a moving average follows; orders decided on one bar fill at the next bar's open.">
+      <div class="chart-head">
+        <span>BTC · 1h · sma_trend</span>
+        <span class="tags"><span class="tag on">backtest</span><span class="tag on">live</span></span>
+      </div>
+      <svg id="replay" viewBox="0 0 520 300" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="chart-foot"><span>same events · same code · same fills</span><span id="replay-note">● decided at close, filled at next open</span></div>
+    </figure>
   </div>
-  <p class="status"><strong>Status: v1.</strong> Backtesting and paper trading (Binance testnet or Demo Trading,
-    and paper on MAX's live bars) are the supported paths. Real-money trading is behind three separate locks and
-    has not been exercised against mainnet. No strategy here has a demonstrated edge: backtest results come from a
-    stated fill model and are not a promise.</p>
+
+  <div class="stats" role="list">
+    <div class="stat" role="listitem"><b>25</b><span>built-in strategies, plus Rhai scripts</span></div>
+    <div class="stat" role="listitem"><b>4</b><span>venues: Binance spot, USDⓈ-M, eToro, MAX</span></div>
+    <div class="stat" role="listitem"><b>0</b><span>floats in money: every price is a Decimal</span></div>
+    <div class="stat" role="listitem"><b>3</b><span>separate locks before a real order</span></div>
+  </div>
+  <p class="status"><strong>Status: v1.</strong> Backtesting and paper trading are the supported paths: Binance testnet
+    or Demo Trading, eToro's demo account, paper on Binance futures or MAX live bars. Real-money trading is behind three
+    separate locks and has not been exercised against mainnet. No strategy here has a demonstrated edge: backtest
+    results come from a stated fill model and are not a promise.</p>
 </div>
+
+<section id="venues">
+  <div class="wrap">
+    <div class="kicker">Where it trades</div>
+    <h2>One engine, four venues</h2>
+    <p class="sub">A venue is a provider: a market-data feed plus a broker. Adding one never touches the engine or a
+      strategy, which is why every strategy runs on every venue that offers its asset class.</p>
+    <div class="venues">
+      <div class="venue">
+        <h3>Binance spot</h3>
+        <p class="what">Testnet, Demo Trading and live. Books journaled before submit, reconciled on every start and
+          exit. Delistings and halts handled; optional Simple Earn sweep of idle cash.</p>
+        <div class="caps"><span class="cap ok">backtest</span><span class="cap ok">paper</span><span class="cap ok">testnet · demo</span><span class="cap part">live: not run on mainnet</span></div>
+      </div>
+      <div class="venue">
+        <h3>Binance USDⓈ-M</h3>
+        <p class="what">Linear perpetuals: signed positions, isolated or cross margin, funding, liquidation checked on
+          the mark price, leverage within the account's brackets. Stops through the algo service.</p>
+        <div class="caps"><span class="cap ok">backtest</span><span class="cap ok">paper</span><span class="cap ok">testnet · demo</span><span class="cap part">live: not run on mainnet</span></div>
+      </div>
+      <div class="venue">
+        <h3>eToro</h3>
+        <p class="what">Stocks and crypto as the real asset, demo or real account. Market orders,
+          market-if-touched buys, take-profit sells; market hours respected; exact fees from the private
+          WebSocket feed.</p>
+        <div class="caps"><span class="cap ok">backtest</span><span class="cap ok">demo account</span><span class="cap no">CFD shorts</span><span class="cap part">live: not run on real money</span></div>
+      </div>
+      <div class="venue">
+        <h3>MAX (MaiCoin)</h3>
+        <p class="what">No testnet exists, so the bot never sends MAX an order: backtests on MAX history and paper
+          trading on MAX's live bars with the local fill model.</p>
+        <div class="caps"><span class="cap ok">backtest</span><span class="cap ok">paper</span><span class="cap no">orders</span></div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <section id="safety">
   <div class="wrap">
-    <h2>Safety model</h2>
-    <p class="sub">These are invariants in the code, each pinned by tests, not conventions.</p>
-    <div class="grid">
-      <div class="card"><h3>Money is exact</h3>
+    <div class="kicker">Non-negotiable</div>
+    <h2>Invariants, not conventions</h2>
+    <p class="sub">Each of these is enforced in the code and pinned by tests. A change that breaks one is wrong by
+      definition.</p>
+    <div class="cards">
+      <div class="card"><h3><span class="ico">$</span>Money is exact</h3>
         <p>Prices, quantities, balances and fees are <code>Decimal</code> in unit types (<code>Price</code>,
-          <code>Qty</code>, <code>Notional</code>), never floats. Config and data files take money as strings; a
-          bare number is an error.</p></div>
-      <div class="card"><h3>No lookahead</h3>
-        <p>A strategy sees data only up to the current closed candle, and its orders fill no earlier than the next
-          one. A test rewrites every candle after <i>t</i> and requires nothing up to <i>t</i> to change.</p></div>
-      <div class="card"><h3>Secrets from the environment</h3>
-        <p>API keys come only from <code>BINANCE_API_KEY</code> / <code>BINANCE_API_SECRET</code>. No config field
-          can hold them: <code>api_key</code> in a file is an unknown-field error.</p></div>
-      <div class="card"><h3>Three locks for real money</h3>
-        <p>The default is paper on testnet. Live needs <code>mode = "live"</code>,
-          <code>exchange.network = "live"</code> and <code>--i-understand</code> typed on the command line.</p></div>
+          <code>Qty</code>, <code>Notional</code>). Config, data files and venue replies are read as text; a bare
+          float never becomes money.</p></div>
+      <div class="card"><h3><span class="ico">t</span>No lookahead</h3>
+        <p>A strategy sees data only up to the current closed candle and its orders fill no earlier than the next.
+          A test rewrites every candle after <i>t</i> and requires nothing up to <i>t</i> to change.</p></div>
+      <div class="card"><h3><span class="ico">=</span>Backtest equals live</h3>
+        <p>One <code>Strategy</code> trait, one engine loop. A backtest swaps only the provider, and each venue's
+          fill model refuses the same orders the venue would.</p></div>
+      <div class="card"><h3><span class="ico">🔑</span>Secrets from the environment</h3>
+        <p>Keys come only from environment variables (<code>BINANCE_API_KEY</code>, <code>ETORO_PRIVATE_KEY</code>, …).
+          No config field can hold one: <code>api_key</code> in a file is an unknown-field error.</p></div>
+      <div class="card"><h3><span class="ico">3</span>Three locks for real money</h3>
+        <p>The default is paper. A real order needs <code>mode = "live"</code>, <code>exchange.network =
+          "live"</code> and <code>--i-understand</code> typed on the command line.</p></div>
+      <div class="card"><h3><span class="ico">⟲</span>Books survive restarts</h3>
+        <p>Every order is journaled before it is sent and every fill recorded once by the venue's id. Start and exit
+          reconcile with the venue, which is always the source of truth.</p></div>
     </div>
   </div>
 </section>
 
 <section id="how">
   <div class="wrap">
+    <div class="kicker">Architecture</div>
     <h2>How it works</h2>
     <p class="sub">One-way data flow. The strategy is a pure decision; the provider is the only thing that differs
       between a backtest and a live run.</p>
     <div class="flow" role="img" aria-label="Provider supplies market events to the engine loop; the strategy emits signals; risk turns them into orders for the broker; fills flow back into the strategy's context and storage.">
       <svg viewBox="0 0 900 230" xmlns="http://www.w3.org/2000/svg">
         <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="head" d="M0 0L10 5L0 10z"/></marker></defs>
-        <rect class="box hl" x="10" y="20" width="160" height="70" rx="8"/>
+        <rect class="box hl" x="10" y="20" width="160" height="70" rx="10"/>
         <text x="90" y="50" text-anchor="middle">Provider</text>
-        <text class="small" x="90" y="70" text-anchor="middle">Backtest · Binance · MAX</text>
-        <rect class="box" x="230" y="20" width="140" height="70" rx="8"/>
+        <text class="small" x="90" y="70" text-anchor="middle">backtest · venue</text>
+        <rect class="box" x="230" y="20" width="140" height="70" rx="10"/>
         <text x="300" y="50" text-anchor="middle">Engine loop</text>
         <text class="small" x="300" y="70" text-anchor="middle">settle, then decide</text>
-        <rect class="box" x="430" y="20" width="130" height="70" rx="8"/>
+        <rect class="box" x="430" y="20" width="130" height="70" rx="10"/>
         <text x="495" y="50" text-anchor="middle">Strategy</text>
         <text class="small" x="495" y="70" text-anchor="middle">on_event → Signal</text>
-        <rect class="box" x="620" y="20" width="110" height="70" rx="8"/>
+        <rect class="box" x="620" y="20" width="110" height="70" rx="10"/>
         <text x="675" y="50" text-anchor="middle">Risk</text>
         <text class="small" x="675" y="70" text-anchor="middle">filters, sizing</text>
-        <rect class="box hl" x="780" y="20" width="110" height="70" rx="8"/>
+        <rect class="box hl" x="780" y="20" width="110" height="70" rx="10"/>
         <text x="835" y="50" text-anchor="middle">Broker</text>
         <text class="small" x="835" y="70" text-anchor="middle">paper or venue</text>
-        <rect class="box" x="400" y="150" width="190" height="60" rx="8"/>
+        <rect class="box" x="400" y="150" width="190" height="60" rx="10"/>
         <text x="495" y="176" text-anchor="middle">Context</text>
         <text class="small" x="495" y="195" text-anchor="middle">position, history, params</text>
-        <rect class="box" x="700" y="150" width="190" height="60" rx="8"/>
+        <rect class="box" x="700" y="150" width="190" height="60" rx="10"/>
         <text x="795" y="176" text-anchor="middle">Storage</text>
         <text class="small" x="795" y="195" text-anchor="middle">trades, holdings, journal</text>
-        <path class="arrow" d="M170 55H226" marker-end="url(#a)"/>
-        <path class="arrow" d="M370 55H426" marker-end="url(#a)"/>
-        <path class="arrow" d="M560 55H616" marker-end="url(#a)"/>
-        <path class="arrow" d="M730 55H776" marker-end="url(#a)"/>
+        <path class="arrow live" d="M170 55H226" marker-end="url(#a)"/>
+        <path class="arrow live" d="M370 55H426" marker-end="url(#a)"/>
+        <path class="arrow live" d="M560 55H616" marker-end="url(#a)"/>
+        <path class="arrow live" d="M730 55H776" marker-end="url(#a)"/>
         <path class="arrow" d="M820 90V120H520V146" marker-end="url(#a)"/>
         <path class="arrow" d="M850 90V146" marker-end="url(#a)"/>
         <text class="small" x="680" y="114">fills</text>
         <path class="arrow" d="M495 150V94" marker-end="url(#a)"/>
       </svg>
     </div>
-    <div class="two" style="margin-top:28px">
+    <div class="two">
       <div>
         <h3>Each event, in order</h3>
-        <ul class="plain">
+        <ol class="steps">
           <li>The broker settles pending orders against the <em>new</em> event, so a decision at <i>t</i> fills at <i>t+1</i>.</li>
           <li>Fills update the strategy's position before the bar joins its history.</li>
           <li>The strategy decides; risk rounds to lot and tick (never more aggressively) and checks venue filters.</li>
-        </ul>
+        </ol>
       </div>
       <div>
-        <h3>Stated fill model</h3>
-        <ul class="plain">
+        <h3>A stated fill model</h3>
+        <ol class="steps">
           <li>Market orders fill at the next candle's open, taker, with slippage you must specify.</li>
-          <li>Resting limits fill only when price trades <em>through</em> them; a touch is not a fill.</li>
+          <li>Resting limits fill only when price trades <em>through</em> them (on eToro, a touch: its limits execute at market).</li>
           <li>Stop and target in one candle: the model assumes the worse.</li>
-        </ul>
+        </ol>
       </div>
     </div>
   </div>
@@ -193,69 +386,99 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
 
 <section id="strategies">
   <div class="wrap">
+    <div class="kicker">Batteries included</div>
     <h2>Built-in strategies</h2>
-    <p class="sub">Each implements one trait and registers itself, so it runs in backtests and live unchanged.
-      Each one says what it bets on and how it fails. Compare any of them against <code>buy_and_hold</code> on the
-      same coin after costs.</p>
+    <p class="sub">Each implements one trait and registers itself, so it runs in backtests and live unchanged. Each
+      one says what it bets on and how it fails. Compare any of them against <code>buy_and_hold</code> on the same
+      asset after costs. Or write your own as a sandboxed Rhai script.</p>
+    <div class="toolbar" role="group" aria-label="Filter strategies">
+      <button class="chip" aria-pressed="true" data-k="all">all</button>
+      <button class="chip" aria-pressed="false" data-k="bench">benchmark</button>
+      <button class="chip" aria-pressed="false" data-k="trend">trend</button>
+      <button class="chip" aria-pressed="false" data-k="revert">mean reversion</button>
+      <button class="chip" aria-pressed="false" data-k="multi">multi-asset</button>
+      <button class="chip" aria-pressed="false" data-k="risk">risk sizing</button>
+      <input class="search" id="q" type="search" placeholder="Search strategies…" aria-label="Search strategies">
+    </div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Name</th><th>Bets on</th><th>Fails when</th></tr></thead>
-        <tbody>
-          <tr><td>buy_and_hold</td><td>Nothing: the benchmark. Buys once, holds forever.</td><td>The coin falls.</td></tr>
-          <tr><td>dca</td><td>Spreading entry over time (hour, day, week, month).</td><td>Removes timing risk, not direction risk; buys all the way down.</td></tr>
-          <tr><td>sma_long_short</td><td>Trends both ways: long above the SMA, short below on a perpetual (cash on spot).</td><td>Whipsaws and funding on both sides.</td></tr>
-          <tr><td>sma_trend</td><td>Trends: long above the SMA, cash below.</td><td>Ranges cause whipsaws.</td></tr>
-          <tr><td>ichimoku</td><td>Trends confirmed twice: price clear of the cloud and Tenkan over Kijun.</td><td>Late entries and exits; a wide cloud gives back much of a move.</td></tr>
-          <tr><td>supertrend</td><td>Trends, with an ATR trailing stop that only ratchets toward price.</td><td>Turns: gives back up to mult ATRs each time; chop that crosses the band.</td></tr>
-          <tr><td>trailing_stop</td><td>Capping the fall from the best close: sells a set % off the peak, buys back a set % off the trough.</td><td>Chop: sells near lows, rebuys higher; crashes gap past the stop.</td></tr>
-          <tr><td>dual_ma_cross</td><td>Trends: long while the fast average is above the slow one.</td><td>Ranges and lag.</td></tr>
-          <tr><td>macd_cross</td><td>Trends: long while MACD is above its signal line.</td><td>Ranges (turns early, whipsaws) and lag at turns.</td></tr>
-          <tr><td>donchian_breakout</td><td>Breakouts beyond the prior channel continuing.</td><td>False breakouts in ranges.</td></tr>
-          <tr><td>atr_breakout</td><td>Moves larger than recent volatility (ATR) becoming trends; ATR trailing stop.</td><td>Volatility spikes in ranges: each false breakout gives back the ATR band plus costs.</td></tr>
-          <tr><td>vol_target</td><td>Volatility clustering: holds less while swings are wide, more when calm.</td><td>Turning points: buys back late after a crash; trades as volatility moves.</td></tr>
-          <tr><td>tsmom</td><td>Each coin's own trend persisting (positive return over the lookback), sized to a volatility target.</td><td>Chop (round trips on false signals) and turning points (lags by up to the lookback).</td></tr>
-          <tr><td>volatility_breakout</td><td>A move past k × the last bar's range continuing within the bar (buy stop, one-bar hold).</td><td>Choppy markets: every false trigger pays a full round trip of fees and slippage.</td></tr>
-          <tr><td>avwap</td><td>Price holding above its anchored VWAP.</td><td>Chop around the anchor.</td></tr>
-          <tr><td>bollinger_reversion</td><td>Ranges: buys below the lower band, sells back above the mean.</td><td>Downtrends: the mean falls with the price (no stop).</td></tr>
-          <tr><td>rsi_reversion</td><td>Ranges: buys oversold, sells overbought.</td><td>Sustained downtrends (no stop, by design; optional trend filter only gates buys).</td></tr>
-          <tr><td>stochastic</td><td>Turns from the extremes of the recent range (%K crossing %D when oversold / overbought).</td><td>Trends: the oscillator pins at an extreme; buys early, sells late (no stop).</td></tr>
-          <tr><td>momentum_rotation</td><td>Recent winners among several coins keep winning.</td><td>Sharp reversals, choppy leadership.</td></tr>
-          <tr><td>top_k_momentum</td><td>Recent winners keep winning: holds the best k of several coins at 1/k each.</td><td>Sharp reversals and churning leadership (each change is a round trip).</td></tr>
-          <tr><td>pair_reversion</td><td>Two coins' price ratio returning to its mean: holds the one that is cheap relative to the other.</td><td>The ratio trends: keeps switching into the coin that keeps getting cheaper.</td></tr>
-          <tr><td>rebalance</td><td>Swings that come back: trades fixed weights back after drift, selling rises and buying falls.</td><td>One-way trends: keeps selling the winner.</td></tr>
-          <tr><td>risk_parity</td><td>Spreading risk: weights coins by 1/volatility so no single coin dominates the swings.</td><td>One-way rallies in the volatile coin (holds little of it); ignores correlation.</td></tr>
-          <tr><td>ratio_hop</td><td>Rotating coins only when units ratchet up after fees, with a freefall guard.</td><td>Maximizes units, not value.</td></tr>
-          <tr><td>grid</td><td>Oscillation inside a price range.</td><td>Trends either way: holds every level falling, sells out rising.</td></tr>
+        <tbody id="strats">
+          <tr data-k="bench"><td>buy_and_hold</td><td>Nothing: the benchmark. Buys once, holds forever.</td><td class="fails">The coin falls.</td></tr>
+          <tr data-k="bench"><td>dca</td><td>Spreading entry over time (hour, day, week, month).</td><td class="fails">Removes timing risk, not direction risk; buys all the way down.</td></tr>
+          <tr data-k="trend"><td>sma_long_short<span class="k">shorts</span></td><td>Trends both ways: long above the SMA, short below on a perpetual (cash on spot).</td><td class="fails">Whipsaws and funding on both sides.</td></tr>
+          <tr data-k="trend"><td>sma_trend</td><td>Trends: long above the SMA, cash below.</td><td class="fails">Ranges cause whipsaws.</td></tr>
+          <tr data-k="trend"><td>ichimoku</td><td>Trends confirmed twice: price clear of the cloud and Tenkan over Kijun.</td><td class="fails">Late entries and exits; a wide cloud gives back much of a move.</td></tr>
+          <tr data-k="trend"><td>supertrend</td><td>Trends, with an ATR trailing stop that only ratchets toward price.</td><td class="fails">Turns: gives back up to mult ATRs each time; chop that crosses the band.</td></tr>
+          <tr data-k="trend"><td>trailing_stop</td><td>Capping the fall from the best close: sells a set % off the peak, buys back a set % off the trough.</td><td class="fails">Chop: sells near lows, rebuys higher; crashes gap past the stop.</td></tr>
+          <tr data-k="trend"><td>dual_ma_cross</td><td>Trends: long while the fast average is above the slow one.</td><td class="fails">Ranges and lag.</td></tr>
+          <tr data-k="trend"><td>macd_cross</td><td>Trends: long while MACD is above its signal line.</td><td class="fails">Ranges (turns early, whipsaws) and lag at turns.</td></tr>
+          <tr data-k="trend"><td>donchian_breakout</td><td>Breakouts beyond the prior channel continuing.</td><td class="fails">False breakouts in ranges.</td></tr>
+          <tr data-k="trend"><td>atr_breakout</td><td>Moves larger than recent volatility (ATR) becoming trends; ATR trailing stop.</td><td class="fails">Volatility spikes in ranges: each false breakout gives back the ATR band plus costs.</td></tr>
+          <tr data-k="risk"><td>vol_target</td><td>Volatility clustering: holds less while swings are wide, more when calm.</td><td class="fails">Turning points: buys back late after a crash; trades as volatility moves.</td></tr>
+          <tr data-k="multi trend risk"><td>tsmom</td><td>Each coin's own trend persisting (positive return over the lookback), sized to a volatility target.</td><td class="fails">Chop (round trips on false signals) and turning points (lags by up to the lookback).</td></tr>
+          <tr data-k="trend"><td>volatility_breakout</td><td>A move past k × the last bar's range continuing within the bar (buy stop, one-bar hold).</td><td class="fails">Choppy markets: every false trigger pays a full round trip of fees and slippage.</td></tr>
+          <tr data-k="trend"><td>avwap</td><td>Price holding above its anchored VWAP.</td><td class="fails">Chop around the anchor.</td></tr>
+          <tr data-k="revert"><td>bollinger_reversion</td><td>Ranges: buys below the lower band, sells back above the mean.</td><td class="fails">Downtrends: the mean falls with the price (no stop).</td></tr>
+          <tr data-k="revert"><td>rsi_reversion</td><td>Ranges: buys oversold, sells overbought.</td><td class="fails">Sustained downtrends (no stop, by design; optional trend filter only gates buys).</td></tr>
+          <tr data-k="revert"><td>stochastic</td><td>Turns from the extremes of the recent range (%K crossing %D when oversold / overbought).</td><td class="fails">Trends: the oscillator pins at an extreme; buys early, sells late (no stop).</td></tr>
+          <tr data-k="multi trend"><td>momentum_rotation</td><td>Recent winners among several coins keep winning.</td><td class="fails">Sharp reversals, choppy leadership.</td></tr>
+          <tr data-k="multi trend"><td>top_k_momentum</td><td>Recent winners keep winning: holds the best k of several coins at 1/k each.</td><td class="fails">Sharp reversals and churning leadership (each change is a round trip).</td></tr>
+          <tr data-k="multi revert"><td>pair_reversion</td><td>Two coins' price ratio returning to its mean: holds the one that is cheap relative to the other.</td><td class="fails">The ratio trends: keeps switching into the coin that keeps getting cheaper.</td></tr>
+          <tr data-k="multi risk"><td>rebalance</td><td>Swings that come back: trades fixed weights back after drift, selling rises and buying falls.</td><td class="fails">One-way trends: keeps selling the winner.</td></tr>
+          <tr data-k="multi risk"><td>risk_parity</td><td>Spreading risk: weights coins by 1/volatility so no single coin dominates the swings.</td><td class="fails">One-way rallies in the volatile coin (holds little of it); ignores correlation.</td></tr>
+          <tr data-k="multi"><td>ratio_hop</td><td>Rotating coins only when units ratchet up after fees, with a freefall guard.</td><td class="fails">Maximizes units, not value.</td></tr>
+          <tr data-k="revert"><td>grid</td><td>Oscillation inside a price range.</td><td class="fails">Trends either way: holds every level falling, sells out rising.</td></tr>
         </tbody>
       </table>
+      <div class="empty" id="empty">No strategy matches.</div>
     </div>
   </div>
 </section>
 
 <section id="start">
   <div class="wrap">
+    <div class="kicker">Five minutes</div>
     <h2>Quick start</h2>
     <p class="sub">Prebuilt binaries for Linux, macOS and Windows are on the
       <a href="https://github.com/sc0Vu/trade-bot/releases">releases page</a>. Building from source needs only
-      <code>rustup</code>; the toolchain is pinned.</p>
-<pre><code># Cache public history (no API key needed) and backtest on it
-make fetch-data SYMBOL=BTCUSDT FROM=2024-01-01
-make backtest STRATEGY=buy_and_hold SYMBOL=BTCUSDT \
-     FROM=2024-01-01 TO=2024-06-01 SLIPPAGE_BPS=5 PARAMS=my-params.toml
-
-# Paper trade against Binance testnet
-export BINANCE_API_KEY=… BINANCE_API_SECRET=…
-make run-paper</code></pre>
-    <div class="grid" style="margin-top:24px">
-      <div class="card"><h3>Venues</h3>
-        <p>Binance spot: testnet, Demo Trading and live. MAX (MaiCoin): backtests and paper trading on live bars,
-          never orders.</p></div>
-      <div class="card"><h3>Books that survive restarts</h3>
-        <p>Orders are journaled before submit and fills recorded by venue trade id. On start and on every exit the
-          bot reconciles with the exchange.</p></div>
-      <div class="card"><h3>Observable, read-only</h3>
-        <p>Prometheus metrics, JSON logs, a Grafana stack in <code>deploy/</code>, and an HTTP API that can never
-          place or cancel an order.</p></div>
+      <code>rustup</code>; the toolchain is pinned. Keys always come from the environment.</p>
+    <div class="tabs" role="tablist" aria-label="Quick start">
+      <button class="tab" role="tab" aria-selected="true" aria-controls="p-bt" id="t-bt">backtest</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-bn" id="t-bn">binance paper</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-pp" id="t-pp">perpetuals</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-et" id="t-et">etoro demo</button>
+    </div>
+    <div class="term">
+      <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~/trade-bot</span></div>
+      <button class="copy" type="button">copy</button>
+<div class="panel" role="tabpanel" id="p-bt" aria-labelledby="t-bt"><pre><span class="c"># cache public history (no key needed), then backtest on it</span>
+<span class="p">$ </span>make fetch-data SYMBOL=BTCUSDT FROM=2024-01-01
+<span class="p">$ </span>make backtest STRATEGY=buy_and_hold SYMBOL=BTCUSDT \
+    FROM=2024-01-01 TO=2024-06-01 SLIPPAGE_BPS=5 PARAMS=my-params.toml</pre></div>
+<div class="panel" role="tabpanel" id="p-bn" aria-labelledby="t-bn" hidden><pre><span class="c"># paper trade on Binance's testnet (the default network)</span>
+<span class="p">$ </span>export BINANCE_API_KEY=… BINANCE_API_SECRET=…
+<span class="p">$ </span>make run-paper</pre></div>
+<div class="panel" role="tabpanel" id="p-pp" aria-labelledby="t-pp" hidden><pre><span class="c"># USDⓈ-M: klines, funding, mark price and your margin brackets</span>
+<span class="p">$ </span>cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT --from 2026-01-01
+<span class="p">$ </span>cargo run -p cli -- backtest --venue binance-usdm --strategy sma_long_short \
+    --params p.toml --symbol BTCUSDT --from 2026-02-01 --to 2026-08-01 \
+    --fee 0.0005 --slippage-bps 2 --leverage 2 --margin isolated</pre></div>
+<div class="panel" role="tabpanel" id="p-et" aria-labelledby="t-et" hidden><pre><span class="c"># eToro: data and orders need your keys (a demo user key works)</span>
+<span class="p">$ </span>export ETORO_PUBLIC_KEY=… ETORO_PRIVATE_KEY=…
+<span class="p">$ </span>cargo run -p cli -- fetch-data --venue etoro --symbol AAPL,BTC --from 2026-01-01
+<span class="c"># exchange.venue = "etoro", network = "demo": orders on your demo account</span>
+<span class="p">$ </span>cargo run -p cli -- run --paper --config etoro.toml</pre></div>
+    </div>
+    <div class="cards" style="margin-top:22px">
+      <div class="card"><h3><span class="ico">⌁</span>Observable, read-only</h3>
+        <p>Prometheus metrics, JSON logs, a Grafana stack in <code>deploy/</code>, and an HTTP API that can never place
+          or cancel an order.</p></div>
+      <div class="card"><h3><span class="ico">λ</span>Strategies as scripts</h3>
+        <p>Rhai scripts with exact decimals, no file or network access, and an operation budget per call. Drop one in
+          and run it without recompiling.</p></div>
+      <div class="card"><h3><span class="ico">▣</span>Ship it anywhere</h3>
+        <p>Release binaries for five platforms, a Dockerfile, and a Render blueprint that keeps the books on a disk.</p></div>
     </div>
   </div>
 </section>
@@ -263,9 +486,102 @@ make run-paper</code></pre>
 
 <footer>
   <div class="wrap">
-    MIT licensed · <a href="https://github.com/sc0Vu/trade-bot">github.com/sc0Vu/trade-bot</a> ·
-    Not financial advice. Backtest P&amp;L is a model's output, never a promise.
+    <span>MIT licensed · <a href="https://github.com/sc0Vu/trade-bot">github.com/sc0Vu/trade-bot</a></span>
+    <span>Not financial advice. Backtest P&amp;L is a model's output, never a promise.</span>
   </div>
 </footer>
+
+<script>
+(() => {
+  // Candle replay: a deterministic random walk drawn bar by bar, its SMA, and
+  // a fill marker one bar after each cross (decided at close, filled at the
+  // next open). Illustration only: not market data.
+  const svg = document.getElementById('replay');
+  if (!svg) return;
+  const NS = 'http://www.w3.org/2000/svg', W = 520, H = 300, N = 44, PAD = 14;
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const bars = []; let p = 100;
+  for (let i = 0; i < N; i++) {
+    const drift = Math.sin(i / 7) * 0.9;
+    const o = p, c = o + drift + (rnd() - 0.5) * 3.2;
+    const h = Math.max(o, c) + rnd() * 1.6, l = Math.min(o, c) - rnd() * 1.6;
+    bars.push({ o, h, l, c }); p = c;
+  }
+  const lo = Math.min(...bars.map(b => b.l)) - 1, hi = Math.max(...bars.map(b => b.h)) + 1;
+  const y = v => PAD + (hi - v) / (hi - lo) * (H - 2 * PAD);
+  const bw = (W - 2 * PAD) / N, x = i => PAD + i * bw + bw / 2;
+  const el = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+  for (let g = 1; g < 5; g++) svg.appendChild(el('line', { class: 'grid-line', x1: 0, x2: W, y1: g * H / 5, y2: g * H / 5 }));
+  const layer = el('g', {}); svg.appendChild(layer);
+  const sma = el('polyline', { class: 'sma', points: '' }); svg.appendChild(sma);
+  const cursor = el('line', { class: 'cursor', y1: 0, y2: H }); svg.appendChild(cursor);
+  const P = 8, pts = []; let long = false, pending = null;
+  const draw = i => {
+    const b = bars[i], up = b.c >= b.o, cls = up ? 'up' : 'down';
+    layer.appendChild(el('line', { class: 'wick ' + cls, x1: x(i), x2: x(i), y1: y(b.h), y2: y(b.l) }));
+    const top = y(Math.max(b.o, b.c)), hgt = Math.max(1.5, Math.abs(y(b.o) - y(b.c)));
+    layer.appendChild(el('rect', { class: cls, x: x(i) - bw * 0.32, y: top, width: bw * 0.64, height: hgt, rx: 1 }));
+    if (pending !== null) { // filled at this bar's open
+      layer.appendChild(el('circle', { class: 'fill-mark', cx: x(i), cy: y(b.o), r: 3.6 }));
+      pending = null;
+    }
+    if (i >= P - 1) {
+      const m = bars.slice(i - P + 1, i + 1).reduce((s, q) => s + q.c, 0) / P;
+      pts.push(x(i) + ',' + y(m)); sma.setAttribute('points', pts.join(' '));
+      const want = b.c > m;
+      if (want !== long) { long = want; pending = i; }
+    }
+    cursor.setAttribute('x1', x(i) + bw / 2); cursor.setAttribute('x2', x(i) + bw / 2);
+  };
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (still) { for (let i = 0; i < N; i++) draw(i); cursor.remove(); return; }
+  let i = 0;
+  const tick = () => {
+    if (i < N) { draw(i++); setTimeout(tick, 140); }
+    else setTimeout(() => { layer.replaceChildren(); pts.length = 0; sma.setAttribute('points', ''); long = false; pending = null; i = 0; tick(); }, 2600);
+  };
+  tick();
+})();
+
+(() => {
+  // Strategy filter: chips by kind, plus text search.
+  const rows = [...document.querySelectorAll('#strats tr')];
+  const chips = [...document.querySelectorAll('.chip')];
+  const q = document.getElementById('q'), empty = document.getElementById('empty');
+  let kind = 'all';
+  const apply = () => {
+    const t = q.value.trim().toLowerCase(); let shown = 0;
+    rows.forEach(r => {
+      const ok = (kind === 'all' || r.dataset.k.split(' ').includes(kind)) && (!t || r.textContent.toLowerCase().includes(t));
+      r.hidden = !ok; if (ok) shown++;
+    });
+    empty.style.display = shown ? 'none' : 'block';
+  };
+  chips.forEach(c => c.addEventListener('click', () => {
+    chips.forEach(o => o.setAttribute('aria-pressed', String(o === c))); kind = c.dataset.k; apply();
+  }));
+  q.addEventListener('input', apply);
+})();
+
+(() => {
+  // Quick-start tabs and copy (commands only: prompts and comments dropped).
+  const tabs = [...document.querySelectorAll('.tab')];
+  tabs.forEach(t => t.addEventListener('click', () => {
+    tabs.forEach(o => {
+      const on = o === t; o.setAttribute('aria-selected', String(on));
+      document.getElementById(o.getAttribute('aria-controls')).hidden = !on;
+    });
+  }));
+  const copy = document.querySelector('.copy');
+  copy.addEventListener('click', async () => {
+    const panel = document.querySelector('.panel:not([hidden]) pre');
+    const text = panel.innerText.split('\n').filter(l => !l.startsWith('#')).map(l => l.replace(/^\$ /, '')).join('\n').trim();
+    try { await navigator.clipboard.writeText(text); copy.textContent = 'copied'; }
+    catch { copy.textContent = 'select & copy'; }
+    setTimeout(() => (copy.textContent = 'copy'), 1600);
+  });
+})();
+</script>
 </body>
 </html>
