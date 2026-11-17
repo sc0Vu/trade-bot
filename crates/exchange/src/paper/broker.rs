@@ -400,8 +400,14 @@ impl PaperBroker {
             return Outcome::Dropped;
         };
         // A limit never fills worse than its limit: slippage on a taker
-        // limit fill (marketable at the open) stops at the limit price.
-        let price = cap_at_limit(order, self.slippage.apply(instrument, order.side, exec));
+        // limit fill (marketable at the open) stops at the limit price —
+        // unless the model's limit is market-if-touched (eToro).
+        let slipped = self.slippage.apply(instrument, order.side, exec);
+        let price = if self.fill_model.caps_at_limit() {
+            cap_at_limit(order, slipped)
+        } else {
+            slipped
+        };
         let qty = match order.size {
             Size::Base(q) => q,
             Size::Quote(budget) => match self.budget_qty(instrument, budget, price, exec.liquidity)
@@ -521,6 +527,9 @@ impl Broker for PaperBroker {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
         crate::check_reduce_only(self.position(&order.instrument).qty().get(), &order)?;
+        self.fill_model
+            .accepts(&order)
+            .map_err(ExchangeError::Rejected)?;
         if let Some(g) = &self.gate {
             g.check_submit(&order.instrument)
                 .map_err(ExchangeError::Rejected)?;

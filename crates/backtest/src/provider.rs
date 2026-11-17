@@ -5,6 +5,7 @@ use bot_core::{
 };
 use exchange::paper::{
     BpsSlippage, NextOpenFillModel, PaperBroker, PerpPaperBroker, PerpTerms, RateFee,
+    TouchFillModel,
 };
 use exchange::{Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
 use std::collections::HashMap;
@@ -39,6 +40,8 @@ pub struct BacktestProvider {
     events: Vec<MarketEvent>,
     paper: PaperConfig,
     earn: Option<EarnModel>,
+    /// eToro's order model ([`TouchFillModel`]) instead of the default.
+    touch_fills: bool,
     perp: Option<PerpSetup>,
 }
 
@@ -61,6 +64,7 @@ impl BacktestProvider {
             events: Vec::new(),
             paper,
             earn: None,
+            touch_fills: false,
             perp: None,
         }
     }
@@ -84,6 +88,14 @@ impl BacktestProvider {
     /// Keeps `earn.ratio` of the cash out of what buys may spend, as a live
     /// run sweeping it into Simple Earn does, and values its interest at
     /// the assumed `earn.apr` in the report (see [`EarnModel`]).
+    /// Fills spot orders with eToro's model ([`TouchFillModel`]: a limit is
+    /// market-if-touched, IOC limits and stops refused), as an eToro run
+    /// trades.
+    pub fn with_touch_fills(mut self) -> Self {
+        self.touch_fills = true;
+        self
+    }
+
     pub fn with_earn(mut self, earn: EarnModel) -> Self {
         self.earn = Some(earn);
         self
@@ -245,9 +257,14 @@ impl Provider for BacktestProvider {
                 perp.clearance,
             )?));
         }
+        let model: Box<dyn exchange::paper::FillModel> = if self.touch_fills {
+            Box::new(TouchFillModel)
+        } else {
+            Box::new(NextOpenFillModel)
+        };
         let broker = PaperBroker::new(
             self.instruments.clone(),
-            Box::new(NextOpenFillModel),
+            model,
             Box::new(self.paper.slippage),
             Box::new(self.paper.fees),
         );

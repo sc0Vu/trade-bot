@@ -15,7 +15,9 @@ mod slippage;
 
 pub use broker::{OrderGate, PaperBroker};
 pub use fee::{FeeAsset, FeeModel, RateFee};
-pub use fill_model::{Decision, Execution, FillModel, NextOpenFillModel, OrderState};
+pub use fill_model::{
+    Decision, Execution, FillModel, NextOpenFillModel, OrderState, TouchFillModel,
+};
 pub use perp::{PerpPaperBroker, PerpTerms};
 pub use slippage::{BpsSlippage, SlippageModel};
 

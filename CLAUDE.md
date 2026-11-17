@@ -708,6 +708,13 @@ Candle = four prices, can't tell whether high or low first. So:
   cover → buy waits (`deferred`, still open/cancellable), fills after them
   at its own candle, ts = that open; else / instant over → dropped
   unfilled (live `-2010`). Fills in live order, cash never negative.
+- eToro (`TouchFillModel`, `BacktestProvider::with_touch_fills`, CLI
+  `--venue etoro`): its resting limit is market-if-touched — first candle
+  open at/through the limit → open; else a touch (`low <= limit` buy,
+  `high >= limit` sell) → at the limit, taker, slippage NOT capped at the
+  limit (`FillModel::caps_at_limit` false: it executes at market). IOC/FOK
+  limits and stops refused at submit (`FillModel::accepts`; eToro's
+  `limitIOC` ignored its limit on demo 2026-11-18).
 - **intra-bar ambiguity**: stop and target both in one candle →
   model can't know which first, assumes worse. Finer-timeframe
   replay = future. Backtest P&L = model output, never promise.

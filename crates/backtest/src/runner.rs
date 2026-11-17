@@ -401,4 +401,74 @@ mod tests {
         // Peak 1,000 → trough 484.8487.
         assert_eq!(r.max_drawdown, dec!(0.5151513));
     }
+
+    /// GTC limit buy 1 @ 100 and an IOC limit buy at t0's close.
+    struct LimitBuyer;
+
+    impl Strategy for LimitBuyer {
+        fn name(&self) -> &str {
+            "limit_buyer"
+        }
+        fn on_candle(
+            &mut self,
+            _ctx: &mut strategy::Context,
+            c: &bot_core::Candle,
+        ) -> Vec<bot_core::Signal> {
+            if c.open_time.as_millis() != 0 {
+                return vec![];
+            }
+            let limit = |tif| bot_core::Signal::Submit {
+                instrument: c.instrument.clone(),
+                side: bot_core::Side::Buy,
+                size: bot_core::Size::Base(bot_core::Qty::new(dec!(1))),
+                kind: bot_core::OrderKind::Limit {
+                    price: bot_core::Price::new(dec!(100)),
+                    tif,
+                },
+            };
+            vec![
+                limit(bot_core::TimeInForce::Gtc),
+                limit(bot_core::TimeInForce::Ioc),
+            ]
+        }
+    }
+
+    /// eToro's model: t1 opens 101 and only touches 100 (low = 100) → the
+    /// GTC limit fills at 100 + 10 bps = 100.10, worse than its limit
+    /// (market-if-touched; the default model would wait for a
+    /// trade-through and never fill worse than 100). The IOC limit is
+    /// refused at submit, as eToro takes none.
+    #[tokio::test]
+    async fn etoro_limits_fill_on_a_touch_and_ioc_is_refused() {
+        let id = btcusdt().id.clone();
+        let provider = BacktestProvider::new(
+            vec![btcusdt()],
+            vec![
+                candle(&id, 0, ["101", "101", "101", "101"]),
+                candle(&id, 1, ["101", "101", "100", "100.5"]),
+            ],
+            PaperConfig {
+                fees: RateFee::new(dec!(0), dec!(0), FeeAsset::Quote).unwrap(),
+                slippage: BpsSlippage::new(dec!(10)).unwrap(),
+                initial_cash: Notional::new(dec!(1000)),
+            },
+        )
+        .with_touch_fills();
+        let config = EngineConfig {
+            whitelist: vec![id],
+            history_len: 10,
+            ..Default::default()
+        };
+        let run = engine::run(&provider, &mut LimitBuyer, Params::default(), &config)
+            .await
+            .unwrap();
+        assert_eq!(run.fills.len(), 1);
+        assert_eq!(run.fills[0].price.get(), dec!(100.10));
+        assert_eq!(run.rejections.len(), 1);
+        assert!(
+            run.rejections[0].reason.contains("immediate-or-cancel"),
+            "{}",
+            run.rejections[0].reason
+        );
+    }
 }

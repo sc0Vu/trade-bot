@@ -42,6 +42,87 @@ pub enum Decision {
 /// broker makes it swappable and the engine and strategies never see it.
 pub trait FillModel: Send + Sync {
     fn evaluate(&self, order: &Order, state: OrderState, candle: &Candle) -> Decision;
+
+    /// Refuses at submit an order the venue being modelled doesn't take
+    /// (the broker reports it like the venue's refusal). Default: all.
+    fn accepts(&self, _order: &Order) -> Result<(), &'static str> {
+        Ok(())
+    }
+
+    /// Whether a limit fill's slippage stops at the limit price (a real
+    /// limit never fills worse). False for a model whose "limit" becomes a
+    /// market order once touched. Default true.
+    fn caps_at_limit(&self) -> bool {
+        true
+    }
+}
+
+/// eToro's order model ([`crate::etoro`]): its resting "limit" is
+/// market-if-touched — once the price touches the limit the order executes
+/// at market, so it can fill worse than the limit (no cap; slippage
+/// applies), and a touch is enough (no queue to wait in).
+///
+/// - Market: the next open, taker (as [`NextOpenFillModel`]).
+/// - Limit buy (GTC): on its first candle an open at or below the limit
+///   fills at the open; afterwards (or within that candle) `low <= limit`
+///   fills at the limit; taker either way. Sell mirrors (`open >=`,
+///   `high >=`; live it is a take-profit on the position).
+/// - Refused at submit (as live): IOC/FOK limits (eToro's `limitIOC`
+///   ignored its limit on the demo account, 2026-11-18) and stops.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TouchFillModel;
+
+impl FillModel for TouchFillModel {
+    fn evaluate(&self, order: &Order, state: OrderState, c: &Candle) -> Decision {
+        match order.kind {
+            OrderKind::Market => Decision::Fill(Execution {
+                price: c.open,
+                liquidity: Liquidity::Taker,
+                at_open: true,
+            }),
+            OrderKind::Limit { price, .. } => {
+                let (at_open, touched) = match order.side {
+                    Side::Buy => (c.open <= price, c.low <= price),
+                    Side::Sell => (c.open >= price, c.high >= price),
+                };
+                if state.first_look && at_open {
+                    Decision::Fill(Execution {
+                        price: c.open,
+                        liquidity: Liquidity::Taker,
+                        at_open: true,
+                    })
+                } else if touched {
+                    Decision::Fill(Execution {
+                        price,
+                        liquidity: Liquidity::Taker,
+                        at_open: false,
+                    })
+                } else {
+                    Decision::Rest
+                }
+            }
+            // Refused at submit; never pending.
+            OrderKind::StopMarket { .. } | OrderKind::StopLimit { .. } => Decision::Expire,
+        }
+    }
+
+    fn accepts(&self, order: &Order) -> Result<(), &'static str> {
+        match order.kind {
+            OrderKind::Market => Ok(()),
+            OrderKind::Limit {
+                tif: TimeInForce::Gtc,
+                ..
+            } => Ok(()),
+            OrderKind::Limit { .. } => Err("eToro takes no immediate-or-cancel limit order"),
+            OrderKind::StopMarket { .. } | OrderKind::StopLimit { .. } => {
+                Err("eToro stop orders aren't supported")
+            }
+        }
+    }
+
+    fn caps_at_limit(&self) -> bool {
+        false
+    }
 }
 
 /// Default fill model: the rules in CLAUDE.md "Backtest fill model".
@@ -344,5 +425,113 @@ mod tests {
             eval(Side::Buy, kind, FIRST, ["100", "102", "99", "101"]),
             Decision::Rest
         );
+    }
+
+    mod touch {
+        use super::*;
+
+        fn limit(side: Side, price: &str) -> Order {
+            order(
+                side,
+                OrderKind::Limit {
+                    price: price.parse().unwrap(),
+                    tif: TimeInForce::Gtc,
+                },
+            )
+        }
+
+        fn first() -> OrderState {
+            OrderState {
+                triggered: false,
+                first_look: true,
+            }
+        }
+
+        fn later() -> OrderState {
+            OrderState {
+                triggered: false,
+                first_look: false,
+            }
+        }
+
+        /// Buy limit 100: open 99 (at or below) → the open; open 101, low
+        /// exactly 100 → a touch fills at 100 (NextOpen would wait for a
+        /// trade-through); low 100.01 → rests. Sell mirrors.
+        #[test]
+        fn a_touch_fills_at_the_limit_as_a_taker() {
+            let m = TouchFillModel;
+            let fill = |p: &str, at_open| {
+                Decision::Fill(Execution {
+                    price: p.parse().unwrap(),
+                    liquidity: Liquidity::Taker,
+                    at_open,
+                })
+            };
+            assert_eq!(
+                m.evaluate(
+                    &limit(Side::Buy, "100"),
+                    first(),
+                    &candle(1, ["99", "102", "98", "101"])
+                ),
+                fill("99", true)
+            );
+            assert_eq!(
+                m.evaluate(
+                    &limit(Side::Buy, "100"),
+                    later(),
+                    &candle(1, ["101", "102", "100", "101"])
+                ),
+                fill("100", false)
+            );
+            assert_eq!(
+                m.evaluate(
+                    &limit(Side::Buy, "100"),
+                    later(),
+                    &candle(1, ["101", "102", "100.01", "101"])
+                ),
+                Decision::Rest
+            );
+            assert_eq!(
+                m.evaluate(
+                    &limit(Side::Sell, "100"),
+                    later(),
+                    &candle(1, ["99", "100", "98", "99"])
+                ),
+                fill("100", false)
+            );
+            assert_eq!(
+                m.evaluate(
+                    &limit(Side::Sell, "100"),
+                    first(),
+                    &candle(1, ["100", "101", "99", "99"])
+                ),
+                fill("100", true)
+            );
+            assert!(!m.caps_at_limit());
+        }
+
+        #[test]
+        fn ioc_limits_and_stops_are_refused() {
+            let m = TouchFillModel;
+            let ioc = order(
+                Side::Buy,
+                OrderKind::Limit {
+                    price: "100".parse().unwrap(),
+                    tif: TimeInForce::Ioc,
+                },
+            );
+            assert!(m.accepts(&ioc).is_err());
+            assert!(
+                m.accepts(&order(
+                    Side::Sell,
+                    OrderKind::StopMarket {
+                        stop: "90".parse().unwrap()
+                    }
+                ))
+                .is_err()
+            );
+            assert!(m.accepts(&limit(Side::Buy, "100")).is_ok());
+            assert!(m.accepts(&order(Side::Buy, OrderKind::Market)).is_ok());
+        }
     }
 }

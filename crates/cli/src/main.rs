@@ -774,6 +774,10 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         ),
         a.to,
     );
+    if a.venue == Venue::Etoro {
+        // eToro's resting limit is market-if-touched; IOC and stops refused.
+        provider = provider.with_touch_fills();
+    }
     if perp {
         provider = with_perp(provider, &dir, &ids, &a)?;
     } else if a.leverage.is_some() || a.clearance.is_some() {
