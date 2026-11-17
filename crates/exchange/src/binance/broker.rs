@@ -431,6 +431,7 @@ impl Broker for BinanceBroker {
         if self.open.iter().any(|o| o.order.id == order.id) {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
+        crate::check_reduce_only(self.position(&order.instrument).qty().get(), &order)?;
         crate::check_open_count(
             self.instruments
                 .get(&order.instrument)

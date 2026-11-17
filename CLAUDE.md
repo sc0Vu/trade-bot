@@ -243,7 +243,7 @@ enum MarketEvent { Candle(Candle), Quote(Quote),
 // sell when flat/short on a shortable class: spot = no buys); from at − EngineConfig.delist_exit
 // (`[engine] delist_exit_hours`, default 24) engine::exit_delisting each event
 // cancels working orders on it (once each), then once none working/cancelling
-// closes the lot-rounded position at market (sell long, buy short; dust stays); engine-own orders: no
+// closes the lot-rounded position at market, reduce-only (sell long, buy short; dust stays); engine-own orders: no
 // on_order/on_rejected, refusals → RunReport. Same in backtest (parity).
 // CorpAction is empty enum in v1 → variant unconstructible until equities.
 // MarketEvent::ts(): candle → close_time (bar known), never open_time.
@@ -305,6 +305,13 @@ at t+1. Prevents deciding on close and trading at it.
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
 broker, `created_at` = event ts → `on_order` / `on_rejected`; (6) delisting exit.
 `EngineConfig { .. }` literals end `..Default::default()` (new fields break no caller).
+`Signal::Reduce { instrument, side, qty, kind }` = reduce-only (venue
+`reduceOnly`): risk as Submit + `Order::with_reduce_only` (base size only;
+`Order.reduce_only()`, serde field only when true), never refused as opening
+on a delisting; every broker `check_reduce_only` (qty ≤ the position it
+faces, else refused; spot: buys refused), perp paper clips the fill to
+what's left (never opens/flips), live sends `reduceOnly=true`; Rhai
+`market_reduce(id, side, qty)`.
 Risk v1: whitelist, only reducing orders on a delisting instrument, sizing (quote → base
 at order price, except market buy keeps quote budget; market reference =
 last close rounded to tick against trader, buy up / sell down: market order

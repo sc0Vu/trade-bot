@@ -76,6 +76,38 @@ impl ExchangeError {
     }
 }
 
+/// Refuses a reduce-only order that wouldn't reduce the position `held`
+/// (signed base units): a buy needs a short at least its size, a sell a
+/// long at least its size. Ordinary orders pass. Every broker calls it, so
+/// paper and live refuse alike (invariant 3); on spot it refuses every
+/// reduce-only buy and lets a sell of what's held through.
+pub(crate) fn check_reduce_only(
+    held: rust_decimal::Decimal,
+    new: &bot_core::Order,
+) -> Result<(), ExchangeError> {
+    if !new.reduce_only() {
+        return Ok(());
+    }
+    let qty = match new.size {
+        bot_core::Size::Base(q) => q.get(),
+        bot_core::Size::Quote(_) => {
+            return Err(ExchangeError::Rejected(
+                "a reduce-only order is sized in base units",
+            ));
+        }
+    };
+    let room = match new.side {
+        bot_core::Side::Buy => -held,
+        bot_core::Side::Sell => held,
+    };
+    if qty > room {
+        return Err(ExchangeError::Rejected(
+            "reduce-only order would not reduce the position",
+        ));
+    }
+    Ok(())
+}
+
 /// Refuses `new` if one more open order on its instrument would pass the
 /// venue's caps (`Instrument::check_open_count`). `open` is the broker's own
 /// working orders, any instrument; ones it is cancelling don't count (the

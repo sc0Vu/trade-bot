@@ -520,6 +520,7 @@ impl Broker for PaperBroker {
         if self.all_open().any(|o| o.id == order.id) {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
+        crate::check_reduce_only(self.position(&order.instrument).qty().get(), &order)?;
         if let Some(g) = &self.gate {
             g.check_submit(&order.instrument)
                 .map_err(ExchangeError::Rejected)?;

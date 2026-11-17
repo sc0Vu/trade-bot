@@ -567,6 +567,9 @@ fn algo_params(o: &Order, qty: Qty, client_id: String) -> Vec<(&'static str, Str
         OrderKind::Market | OrderKind::Limit { .. } => {}
     }
     p.push(("quantity", text(qty.get())));
+    if o.reduce_only() {
+        p.push(("reduceOnly", "true".to_owned()));
+    }
     p.push(("workingType", "CONTRACT_PRICE".to_owned()));
     p.push(("clientAlgoId", client_id));
     p.push(("newOrderRespType", "ACK".to_owned()));
@@ -610,6 +613,9 @@ fn order_params(
         }
     }
     p.push(("quantity", text(qty.get())));
+    if o.reduce_only() {
+        p.push(("reduceOnly", "true".to_owned()));
+    }
     p.push(("newClientOrderId", client_id));
     p.push(("newOrderRespType", "ACK".to_owned()));
     Ok(p)
@@ -622,6 +628,7 @@ impl Broker for UsdmBroker {
         if self.open.iter().any(|o| o.order.id == order.id) {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
+        crate::check_reduce_only(self.position(&order.instrument).qty().get(), &order)?;
         crate::check_open_count(
             &inst,
             self.open.iter().filter(|o| !o.cancelling).map(|o| &o.order),
@@ -1740,5 +1747,59 @@ mod tests {
             (Method::Delete, "/fapi/v1/algoOrder")
         );
         assert!(db.store.unfinished_orders().await.unwrap().is_empty());
+    }
+
+    /// A reduce-only order says so to Binance, regular or stop; a plain
+    /// one doesn't. Locally, a reduce-only buy with nothing short is
+    /// refused before any request.
+    #[tokio::test]
+    async fn reduce_only_is_sent_and_checked() {
+        let ro = order(
+            "o-1",
+            Side::Sell,
+            Size::Base(Qty::new(dec!(1))),
+            OrderKind::Market,
+        )
+        .with_reduce_only()
+        .unwrap();
+        let p = order_params(&ro, Qty::new(dec!(1)), "c".into()).unwrap();
+        assert!(p.contains(&("reduceOnly", "true".to_owned())));
+        let stop = Order::new(OrderSpec {
+            kind: OrderKind::StopMarket {
+                stop: Price::new(dec!(29000)),
+            },
+            ..ro.clone().into()
+        })
+        .unwrap()
+        .with_reduce_only()
+        .unwrap();
+        assert!(
+            algo_params(&stop, Qty::new(dec!(1)), "c".into())
+                .contains(&("reduceOnly", "true".to_owned()))
+        );
+        let plain = order(
+            "o-2",
+            Side::Sell,
+            Size::Base(Qty::new(dec!(1))),
+            OrderKind::Market,
+        );
+        assert!(
+            !order_params(&plain, Qty::new(dec!(1)), "c".into())
+                .unwrap()
+                .iter()
+                .any(|(k, _)| *k == "reduceOnly")
+        );
+        let (t, db) = (FakeTransport::default(), TempDb::new().await);
+        let mut b = broker(&t, &db).await;
+        let buy = order(
+            "o-3",
+            Side::Buy,
+            Size::Base(Qty::new(dec!(1))),
+            OrderKind::Market,
+        )
+        .with_reduce_only()
+        .unwrap();
+        assert!(b.submit(buy).await.is_err());
+        assert!(t.sent().is_empty());
     }
 }

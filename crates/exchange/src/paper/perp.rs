@@ -436,6 +436,7 @@ impl Broker for PerpPaperBroker {
         if self.pending.iter().any(|p| p.order.id == order.id) {
             return Err(ExchangeError::DuplicateOrder(order.id.clone()));
         }
+        crate::check_reduce_only(self.pos(&order.instrument).qty().get(), &order)?;
         let reference = self
             .marks
             .get(&order.instrument)
@@ -531,6 +532,18 @@ impl Broker for PerpPaperBroker {
                             let qty = match p.order.size {
                                 Size::Base(q) => q,
                                 Size::Quote(n) => inst.round_qty(Qty::new(n.get() / price.get())),
+                            };
+                            // Reduce-only never opens or flips: clipped to
+                            // what is left against it (the venue's rule).
+                            let qty = if p.order.reduce_only() {
+                                let held = self.pos(&p.order.instrument).qty().get();
+                                let room = match p.order.side {
+                                    Side::Buy => -held,
+                                    Side::Sell => held,
+                                };
+                                Qty::new(qty.get().min(room.max(Decimal::ZERO)))
+                            } else {
+                                qty
                             };
                             if !qty.is_positive() {
                                 continue;
@@ -884,5 +897,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Long 1. A reduce-only sell of 2 would flip: refused; a reduce-only
+    /// buy adds to the long: refused. A plain sell of 0.6 and a reduce-only
+    /// sell of 1, both filled at the next open in that order: the second
+    /// is clipped to the 0.4 left → flat, never short.
+    #[tokio::test]
+    async fn reduce_only_never_opens_or_flips() {
+        let ro = |n: u32, side: Side, q: Decimal| market(n, side, q, 1).with_reduce_only().unwrap();
+        let mut b = broker(dec!(100000), 5, MarginMode::Isolated);
+        bar(&mut b, 0, ["30000", "30000", "30000", "30000"]).await;
+        b.submit(market(1, Side::Buy, dec!(1), 0)).await.unwrap();
+        bar(&mut b, 1, ["30000", "30000", "30000", "30000"]).await;
+        assert!(b.submit(ro(2, Side::Sell, dec!(2))).await.is_err());
+        assert!(b.submit(ro(3, Side::Buy, dec!(0.5))).await.is_err());
+        b.submit(market(4, Side::Sell, dec!(0.6), 1)).await.unwrap();
+        b.submit(ro(5, Side::Sell, dec!(1))).await.unwrap();
+        let f = bar(&mut b, 2, ["30000", "30000", "30000", "30000"]).await;
+        let sold: Vec<Decimal> = f.iter().map(|f| f.qty.get()).collect();
+        assert_eq!(sold, vec![dec!(0.6), dec!(0.4)]);
+        assert!(b.position(&perp().id).is_flat());
     }
 }

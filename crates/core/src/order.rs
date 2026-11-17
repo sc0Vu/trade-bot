@@ -119,6 +119,17 @@ pub enum Signal {
         size: Size,
         kind: OrderKind,
     },
+    /// Place an order that may only reduce the position (venue
+    /// `reduceOnly`): `side` against it, `qty` at most its size. A broker
+    /// refuses one that wouldn't reduce, and never lets it open or flip
+    /// a position (a fill is clipped to what's left). Spot: a reduce-only
+    /// sell is an ordinary sell of what's held; a buy is refused.
+    Reduce {
+        instrument: InstrumentId,
+        side: Side,
+        qty: Qty,
+        kind: OrderKind,
+    },
     /// Cancel a resting order the strategy placed earlier.
     Cancel(OrderId),
 }
@@ -150,8 +161,58 @@ pub struct OrderSpec {
 /// `Instrument::check_order` before building the order, since a market
 /// order's notional needs a reference price this type doesn't hold.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "OrderSpec", into = "OrderSpec")]
-pub struct Order(OrderSpec);
+#[serde(try_from = "OrderWire", into = "OrderWire")]
+pub struct Order(OrderSpec, bool);
+
+/// [`Order`]'s serde shape: the spec's fields plus `reduce_only`, written
+/// only when set (so an ordinary order's JSON is unchanged).
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OrderWire {
+    id: OrderId,
+    instrument: InstrumentId,
+    side: Side,
+    size: Size,
+    kind: OrderKind,
+    created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reduce_only: bool,
+}
+
+impl TryFrom<OrderWire> for Order {
+    type Error = Error;
+    fn try_from(w: OrderWire) -> Result<Self, Error> {
+        let o = Self::new(OrderSpec {
+            id: w.id,
+            instrument: w.instrument,
+            side: w.side,
+            size: w.size,
+            kind: w.kind,
+            created_at: w.created_at,
+        })?;
+        if w.reduce_only {
+            o.with_reduce_only()
+        } else {
+            Ok(o)
+        }
+    }
+}
+
+impl From<Order> for OrderWire {
+    fn from(o: Order) -> Self {
+        let reduce_only = o.1;
+        let s = o.0;
+        Self {
+            id: s.id,
+            instrument: s.instrument,
+            side: s.side,
+            size: s.size,
+            kind: s.kind,
+            created_at: s.created_at,
+            reduce_only,
+        }
+    }
+}
 
 impl Order {
     pub fn new(spec: OrderSpec) -> Result<Self, Error> {
@@ -176,7 +237,23 @@ impl Order {
         if !prices_ok {
             return Err(Error::InvalidOrder("prices must be positive"));
         }
-        Ok(Self(spec))
+        Ok(Self(spec, false))
+    }
+
+    /// The same order, reduce-only ([`Signal::Reduce`]). Base-sized only:
+    /// a quote budget can't say how much of a position it reduces.
+    pub fn with_reduce_only(self) -> Result<Self, Error> {
+        if matches!(self.0.size, Size::Quote(_)) {
+            return Err(Error::InvalidOrder(
+                "a reduce-only order is sized in base units",
+            ));
+        }
+        Ok(Self(self.0, true))
+    }
+
+    /// Whether the order may only reduce the position.
+    pub fn reduce_only(&self) -> bool {
+        self.1
     }
 }
 
@@ -284,5 +361,27 @@ mod tests {
         assert!(OrderId::new("").is_err());
         assert!(OrderId::new("a".repeat(37)).is_err());
         assert!(OrderId::new("has space").is_err());
+    }
+
+    /// An ordinary order's JSON has no `reduce_only` (unchanged shape);
+    /// a reduce-only one carries it and reads back as reduce-only. A
+    /// quote budget can't be reduce-only.
+    #[test]
+    fn reduce_only_round_trips_and_needs_base_size() {
+        let plain = Order::new(spec(OrderKind::Market)).unwrap();
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("reduce_only"));
+        let ro = plain.clone().with_reduce_only().unwrap();
+        let json = serde_json::to_string(&ro).unwrap();
+        assert!(json.contains("\"reduce_only\":true"));
+        let back: Order = serde_json::from_str(&json).unwrap();
+        assert!(back.reduce_only());
+        assert_eq!(back, ro);
+        let quote = Order::new(OrderSpec {
+            size: Size::Quote(Notional::new(dec!(100))),
+            ..spec(OrderKind::Market)
+        })
+        .unwrap();
+        assert!(quote.with_reduce_only().is_err());
     }
 }

@@ -62,7 +62,8 @@
 //! - Fill: `order_id instrument side qty price liquidity ts fee_kind`
 //!   (`base` `quote` `other`) `fee_amount fee_asset fee_value` (quote
 //!   value; `()` when not known).
-//! - Signal: `action` (`submit` / `cancel`) `instrument side order_id`.
+//! - Signal: `action` (`submit` / `reduce` / `cancel`) `instrument side
+//!   order_id`.
 //!
 //! Signals: `market_buy(id, qty)`, `market_sell(id, qty)`,
 //! `market_buy_quote(id, quote)` (spend at most `quote`, fees included),
@@ -70,7 +71,9 @@
 //! argument `"ioc"` / `"fok"` / `"gtc"` sets time in force),
 //! `stop_buy(id, qty, stop)`, `stop_sell(id, qty, stop)` (stop-market),
 //! `stop_limit_buy(id, qty, stop, limit)`, `stop_limit_sell(..)`,
-//! `cancel(order_id)`. Risk rounds and checks them like any signal.
+//! `market_reduce(id, side, qty)` (reduce-only market order, `side`
+//! `"buy"` / `"sell"`: never opens or flips a position), `cancel(order_id)`.
+//! Risk rounds and checks them like any signal.
 //! `instrument_id(s)` gives an id in the form the host prints it
 //! (`"binance:btcusdt"` → `"binance:BTCUSDT"`), for comparing with
 //! `candle.instrument`.
@@ -800,21 +803,36 @@ fn register_signals(e: &mut Engine) {
         .register_get("action", |s: &mut Signal| -> ImmutableString {
             match s {
                 Signal::Submit { .. } => "submit".into(),
+                Signal::Reduce { .. } => "reduce".into(),
                 Signal::Cancel(_) => "cancel".into(),
             }
         })
         .register_get("instrument", |s: &mut Signal| match s {
-            Signal::Submit { instrument, .. } => Dynamic::from(instrument.to_string()),
+            Signal::Submit { instrument, .. } | Signal::Reduce { instrument, .. } => {
+                Dynamic::from(instrument.to_string())
+            }
             Signal::Cancel(_) => Dynamic::UNIT,
         })
         .register_get("side", |s: &mut Signal| match s {
-            Signal::Submit { side, .. } => Dynamic::from(side_str(*side)),
+            Signal::Submit { side, .. } | Signal::Reduce { side, .. } => {
+                Dynamic::from(side_str(*side))
+            }
             Signal::Cancel(_) => Dynamic::UNIT,
         })
         .register_get("order_id", |s: &mut Signal| match s {
             Signal::Cancel(id) => Dynamic::from(id.to_string()),
-            Signal::Submit { .. } => Dynamic::UNIT,
+            Signal::Submit { .. } | Signal::Reduce { .. } => Dynamic::UNIT,
         });
+
+    // Reduce-only market order (`Signal::Reduce`): `side` "buy" | "sell".
+    e.register_fn("market_reduce", |id: &str, s: &str, q: Dynamic| {
+        Ok::<_, Box<rhai::EvalAltResult>>(Signal::Reduce {
+            instrument: instrument_id(id)?,
+            side: side(s)?,
+            qty: Qty::new(dec(&q)?),
+            kind: OrderKind::Market,
+        })
+    });
 
     e.register_fn("market_buy", |id: &str, q: Dynamic| {
         submit(id, Side::Buy, base(&q)?, OrderKind::Market)
@@ -1188,6 +1206,30 @@ mod tests {
                 "coin": "x", "other": null, "open": 0,
                 "last2": [{"$decimal": "100"}, {"$decimal": "101"}], "all": 2,
             })
+        );
+    }
+
+    /// `market_reduce` builds a reduce-only market order; its `action`
+    /// reads "reduce".
+    #[test]
+    fn market_reduce_builds_a_reduce_only_signal() {
+        let mut s = make(
+            r#"fn on_candle(ctx, c) {
+                   let r = market_reduce("binance:btcusdt", "sell", 0.25);
+                   if r.action != "reduce" { throw "action " + r.action; }
+                   r
+               }"#,
+        );
+        let out = bar(s.as_mut(), &mut ctx(), 0, "100");
+        assert_eq!(s.fault(), None);
+        assert_eq!(
+            out,
+            vec![Signal::Reduce {
+                instrument: btc(),
+                side: Side::Sell,
+                qty: Qty::new(dec!(0.25)),
+                kind: OrderKind::Market,
+            }]
         );
     }
 

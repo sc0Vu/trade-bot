@@ -19,5 +19,5 @@ mod test_db;
 mod traits;
 
 pub use error::ExchangeError;
-pub(crate) use error::check_open_count;
+pub(crate) use error::{check_open_count, check_reduce_only};
 pub use traits::{Books, Broker, InstrumentQuery, MarketData, Provider};

@@ -410,10 +410,11 @@ impl Run<'_> {
             if inst.check_market(units, last.close, side).is_err() {
                 continue; // flat, or dust the venue won't take
             }
-            let signal = Signal::Submit {
+            // Reduce-only: the exit closes, it never opens or flips.
+            let signal = Signal::Reduce {
                 instrument: id.clone(),
                 side,
-                size: Size::Base(units),
+                qty: units,
                 kind: OrderKind::Market,
             };
             let oid = self.mint_id();
@@ -429,7 +430,9 @@ impl Run<'_> {
                 OrderKind::Market,
                 market,
                 now,
-            ) {
+            )
+            .and_then(|o| o.with_reduce_only().map_err(risk::RiskRejection::Invalid))
+            {
                 Ok(order) => {
                     let oid = order.id.clone();
                     match self.broker.submit(order).await {
@@ -481,11 +484,14 @@ impl Run<'_> {
                     }
                     Err(e) => Err(refusal(e)?),
                 },
-                Signal::Submit { instrument, .. } if ctx.halted(instrument) => {
+                Signal::Submit { instrument, .. } | Signal::Reduce { instrument, .. }
+                    if ctx.halted(instrument) =>
+                {
                     metrics::counter!(m::REJECTED, "source" => "risk", "code" => "halted")
                         .increment(1);
                     Err("instrument is halted: no orders until it resumes".to_owned())
                 }
+                // A reduce-only order can't open anything: never refused here.
                 Signal::Submit {
                     instrument, side, ..
                 } if ctx.delisting(instrument).is_some() && opens(ctx, instrument, *side) => {
@@ -493,12 +499,22 @@ impl Run<'_> {
                         .increment(1);
                     Err("instrument is scheduled for delisting: only orders that reduce the position".to_owned())
                 }
-                Signal::Submit {
-                    instrument,
-                    side,
-                    size,
-                    kind,
-                } => {
+                Signal::Submit { .. } | Signal::Reduce { .. } => {
+                    let (instrument, side, size, kind, reduce) = match &signal {
+                        Signal::Submit {
+                            instrument,
+                            side,
+                            size,
+                            kind,
+                        } => (instrument, side, size, kind, false),
+                        Signal::Reduce {
+                            instrument,
+                            side,
+                            qty,
+                            kind,
+                        } => (instrument, side, &Size::Base(*qty), kind, true),
+                        Signal::Cancel(_) => continue,
+                    };
                     let reference = ctx.last_candle(instrument).map(|c| c.close);
                     let now = ctx.now().unwrap_or(Timestamp::from_millis(i64::MIN));
                     let market = risk::MarketPrices {
@@ -516,7 +532,14 @@ impl Run<'_> {
                         *kind,
                         market,
                         now,
-                    ) {
+                    )
+                    .and_then(|o| {
+                        if reduce {
+                            o.with_reduce_only().map_err(risk::RiskRejection::Invalid)
+                        } else {
+                            Ok(o)
+                        }
+                    }) {
                         Ok(order) => {
                             let (id, instrument, side) =
                                 (order.id.clone(), order.instrument.clone(), order.side);
