@@ -1,0 +1,27 @@
+# supertrend: one coin, long while the SuperTrend says up, cash while down.
+# ATR bands that only ratchet toward price; a close through the far band
+# flips it. Common 10 / 3 setting, not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/supertrend.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "supertrend"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+period = 10             # true ranges in the ATR
+mult = "3"              # band width in ATRs
+window = 100            # bars the recursion runs over; <= history_len
+quote_amount = "100"    # USDT per buy (quote-budget market buy)
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 150

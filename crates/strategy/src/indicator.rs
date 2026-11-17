@@ -117,6 +117,130 @@ pub fn ema_series(values: &[Decimal], period: usize) -> Vec<Decimal> {
     out
 }
 
+/// Stochastic oscillator %K of the last bar of `bars` (oldest first):
+/// where its close sits in the high-low range of the last `period` bars,
+/// 0 at the lowest low, 100 at the highest high. A range of zero (no
+/// movement) is 50. `None` with fewer than `period` bars or `period` 0.
+pub fn stochastic_k(bars: &[&Candle], period: usize) -> Option<Decimal> {
+    if period == 0 || bars.len() < period {
+        return None;
+    }
+    let w = &bars[bars.len() - period..];
+    let hi = w.iter().map(|c| c.high.get()).max()?;
+    let lo = w.iter().map(|c| c.low.get()).min()?;
+    let close = w.last()?.close.get();
+    if hi == lo {
+        return Some(Decimal::from(50));
+    }
+    Some(Decimal::from(100) * (close - lo) / (hi - lo))
+}
+
+/// (%K, %D) on the last bar of `bars` and on the one before it: %D is the
+/// simple mean of the last `d_period` %K values. Needs `k_period +
+/// d_period` bars (one more than the latest %D, for the previous pair);
+/// `None` with fewer.
+pub fn stochastic(
+    bars: &[&Candle],
+    k_period: usize,
+    d_period: usize,
+) -> Option<[(Decimal, Decimal); 2]> {
+    if d_period == 0 || bars.len() < k_period + d_period {
+        return None;
+    }
+    // %K for each of the last d_period + 1 bars, oldest first.
+    let ks: Vec<Decimal> = (0..=d_period)
+        .rev()
+        .map(|back| stochastic_k(&bars[..bars.len() - back], k_period))
+        .collect::<Option<_>>()?;
+    let n = Decimal::from(d_period);
+    let d = |w: &[Decimal]| w.iter().sum::<Decimal>() / n;
+    let prev = (ks[d_period - 1], d(&ks[..d_period]));
+    let now = (ks[d_period], d(&ks[1..]));
+    Some([prev, now])
+}
+
+/// SuperTrend over `bars` (oldest first): direction on the last bar (`true`
+/// up) and its line (the trailing lower band when up, upper when down).
+///
+/// Bands are `hl2 ± mult·ATR` (ATR = simple mean of `period` true ranges,
+/// as [`atr`]), each ratcheting: the lower band never falls while the
+/// trend is up and the close stays above it, the upper never rises while
+/// down. The trend turns up when a close breaks above the upper band and
+/// down when one breaks below the lower. The recursion starts at the first
+/// bar with an ATR, trend up; callers pass a fixed window of the newest
+/// bars, so the result is the same in a backtest, a live run and a
+/// restart. Needs `period + 2` bars; `None` with fewer.
+pub fn supertrend(bars: &[&Candle], period: usize, mult: Decimal) -> Option<(bool, Decimal)> {
+    if period == 0 || bars.len() < period + 2 {
+        return None;
+    }
+    let two = Decimal::TWO;
+    let mut up = true;
+    let (mut upper, mut lower) = (Decimal::ZERO, Decimal::ZERO);
+    let mut prev_close = Decimal::ZERO;
+    for end in period + 1..=bars.len() {
+        let w = &bars[end - period - 1..end];
+        let a = atr(w.iter().copied(), period)?;
+        let c = w.last()?;
+        let hl2 = (c.high.get() + c.low.get()) / two;
+        let (basic_up, basic_low) = (hl2 + mult * a, hl2 - mult * a);
+        if end == period + 1 {
+            upper = basic_up;
+            lower = basic_low;
+        } else {
+            if basic_up < upper || prev_close > upper {
+                upper = basic_up;
+            }
+            if basic_low > lower || prev_close < lower {
+                lower = basic_low;
+            }
+        }
+        let close = c.close.get();
+        if up && close < lower {
+            up = false;
+        } else if !up && close > upper {
+            up = true;
+        }
+        prev_close = close;
+    }
+    Some((up, if up { lower } else { upper }))
+}
+
+/// Midpoint of the highest high and lowest low of `bars`.
+fn midpoint(bars: &[&Candle]) -> Option<Decimal> {
+    let hi = bars.iter().map(|c| c.high.get()).max()?;
+    let lo = bars.iter().map(|c| c.low.get()).min()?;
+    Some((hi + lo) / Decimal::TWO)
+}
+
+/// Ichimoku on the last bar of `bars` (oldest first): (tenkan, kijun,
+/// cloud bottom, cloud top). Tenkan and kijun are the high-low midpoints of
+/// the last `tenkan` and `kijun` bars; the cloud at a bar is the two spans
+/// computed `displacement` bars earlier (span A = (tenkan + kijun) / 2,
+/// span B = midpoint of `senkou_b` bars), as charts plot them shifted
+/// forward: only past data. Needs `displacement + max(kijun, senkou_b)`
+/// bars; `None` with fewer.
+pub fn ichimoku(
+    bars: &[&Candle],
+    tenkan: usize,
+    kijun: usize,
+    senkou_b: usize,
+    displacement: usize,
+) -> Option<(Decimal, Decimal, Decimal, Decimal)> {
+    let longest = tenkan.max(kijun).max(senkou_b);
+    if tenkan == 0 || kijun == 0 || senkou_b == 0 || bars.len() < displacement + longest {
+        return None;
+    }
+    let last = |n: usize, end: usize| &bars[end - n..end];
+    let now = bars.len();
+    let t = midpoint(last(tenkan, now))?;
+    let k = midpoint(last(kijun, now))?;
+    let then = now - displacement;
+    let span_a = (midpoint(last(tenkan, then))? + midpoint(last(kijun, then))?) / Decimal::TWO;
+    let span_b = midpoint(last(senkou_b, then))?;
+    Some((t, k, span_a.min(span_b), span_a.max(span_b)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +385,92 @@ mod tests {
         assert_eq!(ema_series(&v, 1), v.to_vec());
         assert!(ema_series(&v, 6).is_empty());
         assert!(ema_series(&v, 0).is_empty());
+    }
+
+    fn refs(c: &[Candle]) -> Vec<&Candle> {
+        c.iter().collect()
+    }
+
+    /// Highs/lows/closes: (12, 8, 10), (14, 9, 13), (15, 11, 11). Over
+    /// all 3: high 15, low 8, close 11 → %K = 100·3/7 = 42.857…
+    #[test]
+    fn stochastic_k_places_the_close_in_the_range() {
+        let c = vec![
+            bar(0, "10", "12", "8", "10"),
+            bar(1, "10", "14", "9", "13"),
+            bar(2, "13", "15", "11", "11"),
+        ];
+        let k = stochastic_k(&refs(&c), 3).unwrap();
+        assert_eq!(k, dec!(300) / dec!(7));
+        assert_eq!(stochastic_k(&refs(&c), 4), None);
+        let flat = vec![bar(0, "5", "5", "5", "5")];
+        assert_eq!(stochastic_k(&refs(&flat), 1), Some(dec!(50)));
+    }
+
+    /// k 2, d 2 over flat bars at 10, 12, 11, 14. %K over each bar and the
+    /// one before: bar 1 (10, 12) → 100; bar 2 (12, 11) → 0; bar 3 (11, 14)
+    /// → 100. prev = (%K 0, %D (100 + 0) / 2 = 50); now = (100, 50).
+    #[test]
+    fn stochastic_pairs_k_with_its_moving_average() {
+        let c: Vec<Candle> = ["10", "12", "11", "14"]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| bar(i as i64, p, p, p, p))
+            .collect();
+        let [prev, now] = stochastic(&refs(&c), 2, 2).unwrap();
+        assert_eq!(prev, (dec!(0), dec!(50)));
+        assert_eq!(now, (dec!(100), dec!(50)));
+        assert_eq!(stochastic(&refs(&c[..3]), 2, 2), None);
+    }
+
+    /// A steady climb (close 100 + 2i, high +1, low −2) stays up with the
+    /// line on the lower band, 107.5; a crash to 90 turns it down onto the
+    /// upper band, 119.5. Both from a separate Python run of the rule.
+    #[test]
+    fn supertrend_follows_and_flips() {
+        let climb: Vec<Candle> = (0..8)
+            .map(|i| {
+                let c = Decimal::from(100 + 2 * i);
+                let (o, h, l) = (c - dec!(1), c + dec!(1), c - dec!(2));
+                bar(
+                    i,
+                    &o.to_string(),
+                    &h.to_string(),
+                    &l.to_string(),
+                    &c.to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            supertrend(&refs(&climb), 3, dec!(2)),
+            Some((true, dec!(107.5)))
+        );
+        let mut crash = climb.clone();
+        crash.push(bar(8, "114", "114", "90", "90"));
+        assert_eq!(
+            supertrend(&refs(&crash), 3, dec!(2)),
+            Some((false, dec!(119.5)))
+        );
+        assert_eq!(supertrend(&refs(&climb[..4]), 3, dec!(2)), None);
+    }
+
+    /// tenkan 2, kijun 3, senkou_b 4, displacement 2 over 6 flat bars at
+    /// 10, 11, 12, 13, 14, 15. Now: tenkan mid(14,15) = 14.5, kijun
+    /// mid(13..15) = 14. Two bars back (end at 13): tenkan mid(12,13) =
+    /// 12.5, kijun mid(11..13) = 12 → span A 12.25; span B mid(10..13) =
+    /// 11.5. Cloud 11.5..12.25.
+    #[test]
+    fn ichimoku_cloud_comes_from_displaced_spans() {
+        let c: Vec<Candle> = (0..6)
+            .map(|i| {
+                let p = (10 + i).to_string();
+                bar(i, &p, &p, &p, &p)
+            })
+            .collect();
+        assert_eq!(
+            ichimoku(&refs(&c), 2, 3, 4, 2),
+            Some((dec!(14.5), dec!(14), dec!(11.5), dec!(12.25)))
+        );
+        assert_eq!(ichimoku(&refs(&c[..5]), 2, 3, 4, 2), None);
     }
 }

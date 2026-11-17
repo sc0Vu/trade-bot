@@ -581,6 +581,9 @@ backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
 (sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
 volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross,
+ichimoku,
+supertrend,
+stochastic,
 top_k_momentum,
 pair_reversion,
 tsmom,
@@ -692,6 +695,26 @@ to weight if > `band` off. Approx sqrt sets weight only; orders exact.
 Bets on volatility clustering (cuts drawdown, not a return forecast);
 late after crashes; trades as vol moves.
 
+`ichimoku` — `long_flat` skeleton. `indicator::ichimoku`: tenkan /
+kijun = high-low midpoints of last `tenkan` / `kijun` bars; cloud = span A
+((tenkan + kijun)/2) and span B (midpoint of `senkou_b`) computed
+`displacement` (default = kijun) bars back. Flat, close > cloud top and
+tenkan > kijun → buy; long, close < cloud bottom → sell. Needs
+displacement + max(periods) bars.
+
+`supertrend` — `long_flat` skeleton. `indicator::supertrend`: hl2 ±
+`mult`·ATR(`period`, simple), lower band only rises while close stays above
+it, upper only falls; close < lower flips down, > upper flips up; recursion
+over the newest `window` (default 100, ≥ period + 2) bars, seeded up
+(fixed window: backtest/live/restart equal). Long while up.
+
+`stochastic` — `long_flat` skeleton (shared single-coin helper: dust =
+cash, no decision while order open). %K = (close − LL)/(HH − LL)·100 over
+`k_period` (flat range → 50), %D = mean of last `d_period` %K
+(`indicator::stochastic`, needs k + d bars: prev and current pair). Flat,
+%K crosses above %D (prev ≤, now >) and %K < `oversold` → buy; long, cross
+below and %K > `overbought` → sell. Mean reversion; knife risk.
+
 `trailing_stop` — one coin, stateful. First candle flat → buy
 `quote_amount` (already long → trail). Long (books: sellable, dust = out):
 peak = highest close since long; close ≤ peak·(1 − `trail_pct`) → market
@@ -795,12 +818,15 @@ crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, `script` (feature `rhai`:
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
-               buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, macd_cross,
+               buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, ichimoku, macd_cross,
                momentum_rotation, pair_reversion, ratio_hop, rebalance, risk_parity, rsi_reversion,
-               sma_trend, top_k_momentum, trailing_stop, tsmom, vol_target, volatility_breakout)
+               sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, vol_target,
+               volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
                return_sd = sample sd of simple returns, approx. sqrt: sizing only;
+               stochastic / stochastic_k, supertrend (fixed-window recursion),
+               ichimoku (displaced spans: past data only) over `&[&Candle]`;
                ema_series = mean-seeded EMA, callers pass a fixed newest window)
   exchange/    Provider + MarketData + Broker traits; binance{testnet,demo,live}; paper broker; binance ws;
                max (MaiCoin: public data + kline ws so far)

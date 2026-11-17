@@ -1,0 +1,29 @@
+# stochastic: one coin. Buys when %K crosses above %D while oversold, sells
+# when it crosses below while overbought. Mean reversion: in a downtrend it
+# buys early and has no stop. Textbook 14 / 3 / 20 / 80, not tuned; edge
+# unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/stochastic.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "stochastic"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+k_period = 14           # bars in %K's high-low range
+d_period = 3            # %K values averaged into %D
+oversold = "20"         # a cross up below this buys
+overbought = "80"       # a cross down above this sells
+quote_amount = "100"    # USDT per buy (quote-budget market buy)
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 60

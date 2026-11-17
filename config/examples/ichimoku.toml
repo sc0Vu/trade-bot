@@ -1,0 +1,28 @@
+# ichimoku: one coin. Long when the close is above the cloud and Tenkan is
+# above Kijun; out when the close drops below the cloud. Textbook 9 / 26 /
+# 52 (from a six-day trading week), not tuned; edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/ichimoku.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "ichimoku"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+tenkan = 9              # bars in the conversion line
+kijun = 26              # bars in the base line
+senkou_b = 52           # bars in leading span B
+displacement = 26       # the cloud comes from this many bars back
+quote_amount = "100"    # USDT per buy (quote-budget market buy)
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 120       # >= displacement + senkou_b

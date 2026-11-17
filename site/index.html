@@ -204,6 +204,8 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
           <tr><td>buy_and_hold</td><td>Nothing: the benchmark. Buys once, holds forever.</td><td>The coin falls.</td></tr>
           <tr><td>dca</td><td>Spreading entry over time (hour, day, week, month).</td><td>Removes timing risk, not direction risk; buys all the way down.</td></tr>
           <tr><td>sma_trend</td><td>Trends: long above the SMA, cash below.</td><td>Ranges cause whipsaws.</td></tr>
+          <tr><td>ichimoku</td><td>Trends confirmed twice: price clear of the cloud and Tenkan over Kijun.</td><td>Late entries and exits; a wide cloud gives back much of a move.</td></tr>
+          <tr><td>supertrend</td><td>Trends, with an ATR trailing stop that only ratchets toward price.</td><td>Turns: gives back up to mult ATRs each time; chop that crosses the band.</td></tr>
           <tr><td>trailing_stop</td><td>Capping the fall from the best close: sells a set % off the peak, buys back a set % off the trough.</td><td>Chop: sells near lows, rebuys higher; crashes gap past the stop.</td></tr>
           <tr><td>dual_ma_cross</td><td>Trends: long while the fast average is above the slow one.</td><td>Ranges and lag.</td></tr>
           <tr><td>macd_cross</td><td>Trends: long while MACD is above its signal line.</td><td>Ranges (turns early, whipsaws) and lag at turns.</td></tr>
@@ -215,6 +217,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
           <tr><td>avwap</td><td>Price holding above its anchored VWAP.</td><td>Chop around the anchor.</td></tr>
           <tr><td>bollinger_reversion</td><td>Ranges: buys below the lower band, sells back above the mean.</td><td>Downtrends: the mean falls with the price (no stop).</td></tr>
           <tr><td>rsi_reversion</td><td>Ranges: buys oversold, sells overbought.</td><td>Sustained downtrends (no stop, by design; optional trend filter only gates buys).</td></tr>
+          <tr><td>stochastic</td><td>Turns from the extremes of the recent range (%K crossing %D when oversold / overbought).</td><td>Trends: the oscillator pins at an extreme; buys early, sells late (no stop).</td></tr>
           <tr><td>momentum_rotation</td><td>Recent winners among several coins keep winning.</td><td>Sharp reversals, choppy leadership.</td></tr>
           <tr><td>top_k_momentum</td><td>Recent winners keep winning: holds the best k of several coins at 1/k each.</td><td>Sharp reversals and churning leadership (each change is a round trip).</td></tr>
           <tr><td>pair_reversion</td><td>Two coins' price ratio returning to its mean: holds the one that is cheap relative to the other.</td><td>The ratio trends: keeps switching into the coin that keeps getting cheaper.</td></tr>

@@ -345,6 +345,47 @@ async fn every_strategy_survives_a_restart() {
                 slippage_bps = "10""#,
         },
         Case {
+            strategy: "stochastic",
+            fixture: "indicators",
+            coins: BTC,
+            bars: 30,
+            params: r#"coin = "binance:BTCUSDT"
+                k_period = 3
+                d_period = 2
+                oversold = "30"
+                overbought = "70"
+                quote_amount = "1000"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
+            strategy: "supertrend",
+            fixture: "indicators",
+            coins: BTC,
+            bars: 30,
+            params: r#"coin = "binance:BTCUSDT"
+                period = 3
+                mult = "1.5"
+                window = 8
+                quote_amount = "1000"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
+            strategy: "ichimoku",
+            fixture: "indicators",
+            coins: BTC,
+            bars: 30,
+            params: r#"coin = "binance:BTCUSDT"
+                tenkan = 2
+                kijun = 3
+                senkou_b = 4
+                displacement = 2
+                quote_amount = "1000"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
+        Case {
             strategy: "vol_target",
             fixture: "vol_target",
             coins: BTC,
