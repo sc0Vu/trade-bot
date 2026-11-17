@@ -157,16 +157,17 @@ impl Position {
         } else {
             // Against the position: close up to all of it first.
             let closing = signed.abs().min(held.abs());
-            let entry = basis / held;
-            // Long: gain when price > entry; short: when price < entry.
-            realized += closing * (price - entry) * sign(held);
-            if closing == held.abs() {
-                qty = Decimal::ZERO;
-                basis = Decimal::ZERO;
+            // The closed units' share of the entry notional: all of it on a
+            // full close (no division, so no rounding), pro rata otherwise.
+            let share = if closing == held.abs() {
+                basis
             } else {
-                qty = held - closing * sign(held);
-                basis = entry * qty;
-            }
+                basis * closing / held.abs()
+            };
+            // closed × (price − entry) × side = side × closed × price − share.
+            realized += sign(held) * closing * price - share;
+            qty = held - closing * sign(held);
+            basis -= share;
             let rest = signed.abs() - closing;
             if rest.is_sign_positive() && !rest.is_zero() {
                 // Flip: what's left opens the other way at the fill price.
@@ -801,6 +802,26 @@ mod tests {
             dec!(-0.32),
         );
         assert!(pos.is_flat());
+    }
+
+    /// Short 1 @ 100 and 2 @ 101: entry notional −302, entry price
+    /// 100.666… (repeating). Buying all 3 back @ 100 realizes exactly
+    /// 302 − 300 = 2: a full close takes the whole basis, no division
+    /// (Binance reported such a round trip to the cent; a divided entry
+    /// left 28-digit dust).
+    #[test]
+    fn a_full_perpetual_close_realizes_exactly() {
+        let p = perp();
+        let mut pos = Position::flat(p.id.clone());
+        pos.apply(&perp_fill(Side::Sell, dec!(1), dec!(100), dec!(0)), &p)
+            .unwrap();
+        pos.apply(&perp_fill(Side::Sell, dec!(2), dec!(101), dec!(0)), &p)
+            .unwrap();
+        pos.apply(&perp_fill(Side::Buy, dec!(3), dec!(100), dec!(0)), &p)
+            .unwrap();
+        assert_eq!(pos.realized_pnl(), Notional::new(dec!(2)));
+        assert!(pos.is_flat());
+        assert_eq!(pos.cost_basis(), Notional::ZERO);
     }
 
     /// Long 2 at mark 100, rate 0.0001: pays 0.02. Short 3, same: receives
