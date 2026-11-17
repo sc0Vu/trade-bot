@@ -25,6 +25,9 @@ mod time;
 pub use error::{Error, FilterError};
 pub use fill::{Fee, Fill, FillSpec, Liquidity};
 pub use ids::{Asset, InstrumentId, Symbol, VenueId};
+/// Serde helper: an exact `Decimal` as a JSON string, never a float
+/// (`#[serde(with = "bot_core::decimal_str")]`).
+pub use instrument::decimal_str;
 pub use instrument::{AssetClass, Instrument, InstrumentSpec, PriceBand, Settlement};
 pub use market::{Candle, CandleSpec, CorpAction, Interval, MarketEvent, Quote, QuoteSpec};
 pub use money::{Notional, Price, Qty};

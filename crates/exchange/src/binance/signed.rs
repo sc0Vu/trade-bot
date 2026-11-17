@@ -411,6 +411,24 @@ impl SignedClient {
         path: &str,
         params: &[(&str, String)],
     ) -> Result<Value, ExchangeError> {
+        self.call(self.signed_request(method, path, params)).await
+    }
+
+    /// [`signed`](Self::signed), returning the body's text: for a reply
+    /// whose money comes as JSON numbers, read exactly from the text
+    /// (`serde_json::value::RawValue`), never through `f64`.
+    pub async fn signed_text(
+        &self,
+        method: Method,
+        path: &str,
+        params: &[(&str, String)],
+    ) -> Result<String, ExchangeError> {
+        self.call_full(self.signed_request(method, path, params))
+            .await
+            .map(|(_, text)| text)
+    }
+
+    fn signed_request(&self, method: Method, path: &str, params: &[(&str, String)]) -> HttpRequest {
         let mut all = params.to_vec();
         all.push(("recvWindow", self.recv_window_ms.to_string()));
         all.push((
@@ -419,16 +437,19 @@ impl SignedClient {
         ));
         let q = query(&all);
         let sig = sign(&self.creds.secret, &q);
-        self.call(HttpRequest {
+        HttpRequest {
             method,
             path: path.into(),
             query: format!("{q}&signature={sig}"),
             api_key: Some(self.creds.key.clone()),
-        })
-        .await
+        }
     }
 
     async fn call(&self, req: HttpRequest) -> Result<Value, ExchangeError> {
+        self.call_full(req).await.map(|(v, _)| v)
+    }
+
+    async fn call_full(&self, req: HttpRequest) -> Result<(Value, String), ExchangeError> {
         let r = self.call_inner(req.clone()).await;
         if let Err(e) = &r {
             let code = match e {
@@ -445,7 +466,7 @@ impl SignedClient {
         r
     }
 
-    async fn call_inner(&self, req: HttpRequest) -> Result<Value, ExchangeError> {
+    async fn call_inner(&self, req: HttpRequest) -> Result<(Value, String), ExchangeError> {
         let path = req.path.clone();
         let method = match req.method {
             Method::Get => "GET",
@@ -476,7 +497,7 @@ impl SignedClient {
                 _ => ExchangeError::Http(format!("{path}: HTTP {}", res.status)),
             });
         }
-        Ok(body)
+        Ok((body, res.body))
     }
 }
 

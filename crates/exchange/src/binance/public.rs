@@ -26,6 +26,8 @@ pub struct PublicClient {
     base: String,
     venue: VenueId,
     limiter: Arc<RateLimiter>,
+    /// `/api/v3` (spot) or `/fapi/v1` (USDⓈ-M futures): same kline shape.
+    prefix: &'static str,
 }
 
 impl PublicClient {
@@ -48,7 +50,28 @@ impl PublicClient {
             base: base.into().trim_end_matches('/').to_owned(),
             venue: VenueId::new("binance").unwrap_or_else(|_| unreachable!("valid venue id")),
             limiter: Arc::new(RateLimiter::new(super::limits::default_limits())),
+            prefix: "/api/v3",
         }
+    }
+
+    /// A client of Binance USDⓈ-M futures' keyless REST at `base` (e.g.
+    /// [`super::usdm::LIVE_URL`]): instruments tagged venue
+    /// [`super::usdm::VENUE`], klines from `/fapi/v1/klines`. See
+    /// [`super::usdm`] for its instruments and funding history.
+    pub fn usdm(base: impl Into<String>) -> Self {
+        let mut c = Self::new(base);
+        c.venue =
+            VenueId::new(super::usdm::VENUE).unwrap_or_else(|_| unreachable!("valid venue id"));
+        c.prefix = "/fapi/v1";
+        c
+    }
+
+    pub(crate) fn venue(&self) -> &VenueId {
+        &self.venue
+    }
+
+    pub(crate) fn limiter(&self) -> &Arc<RateLimiter> {
+        &self.limiter
     }
 
     /// Paces requests through `limiter` instead of a private one (share it
@@ -58,7 +81,11 @@ impl PublicClient {
         self
     }
 
-    async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value, ExchangeError> {
+    pub(crate) async fn get(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<Value, ExchangeError> {
         let keys: Vec<String> = query.iter().map(|(k, _)| format!("{k}=")).collect();
         admit(&self.limiter, Method::Get, path, &keys.join("&")).await?;
         let res = self
@@ -109,9 +136,10 @@ impl PublicClient {
         let mut out = Vec::new();
         let mut cursor = start.as_millis();
         while cursor < end.as_millis() {
+            let path = format!("{}/klines", self.prefix);
             let page = self
                 .get(
-                    "/api/v3/klines",
+                    &path,
                     &[
                         ("symbol", symbol.to_string()),
                         ("interval", interval.code().to_owned()),
@@ -143,6 +171,9 @@ impl PublicClient {
     /// Filters are today's: Binance has changed tick sizes over time, so an
     /// old backtest uses current filters, an approximation.
     pub async fn instrument(&self, symbol: &Symbol) -> Result<Instrument, ExchangeError> {
+        if self.prefix == "/fapi/v1" {
+            return self.perp_instrument(symbol).await.map(|p| p.instrument);
+        }
         let info = self
             .get("/api/v3/exchangeInfo", &[("symbol", symbol.to_string())])
             .await?;
@@ -223,7 +254,7 @@ fn decode(what: &str) -> ExchangeError {
     ExchangeError::Decode(what.to_owned())
 }
 
-fn str_field<T: FromStr>(v: &Value, what: &str) -> Result<T, ExchangeError> {
+pub(crate) fn str_field<T: FromStr>(v: &Value, what: &str) -> Result<T, ExchangeError> {
     v.as_str()
         .ok_or_else(|| decode(what))?
         .parse()
@@ -313,7 +344,7 @@ pub(crate) fn parse_exchange_info(
 /// An open-order cap from its filter (`MAX_NUM_ORDERS`,
 /// `MAX_NUM_ALGO_ORDERS`). No filter: no cap. Present but malformed: an
 /// error.
-fn cap(filter: Option<&Value>, key: &str) -> Result<Option<u32>, ExchangeError> {
+pub(crate) fn cap(filter: Option<&Value>, key: &str) -> Result<Option<u32>, ExchangeError> {
     filter
         .map(|f| {
             f[key]

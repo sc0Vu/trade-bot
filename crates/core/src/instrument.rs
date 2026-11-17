@@ -94,7 +94,7 @@ pub struct PriceBand {
 
 /// Exact decimals as strings, never through a float (invariant 1's rule,
 /// applied to the band's multipliers).
-pub(crate) mod decimal_str {
+pub mod decimal_str {
     use rust_decimal::Decimal;
     use serde::{Deserialize, Deserializer, Serializer};
 

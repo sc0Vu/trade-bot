@@ -147,6 +147,14 @@ no fill). `Report::compute_full(.., events, ..)`: perp fills move cash by
 realized only, funding booked before fills settled at the first close ≥ it
 (broker order; Binance stamps funding ms after the hour), equity = cash + qty·close
 − basis, closed trade = fill against the position; `Report.funding`. Last price ≠ mark: cautious.
+Data (`exchange::binance::usdm`): venue `binance-usdm` (own ids, cache,
+books); `PublicClient::usdm(host)` klines `/fapi/v1/klines`;
+`perp_instrument` from `/fapi/v1/exchangeInfo` (PERPETUAL + margin =
+quote only; MIN_NOTIONAL `notional`, caps `limit`, no band: futures'
+PERCENT_PRICE is vs mark) + `liquidationFee`; `funding_rates` (mark
+`None` when venue left it empty: pre-2023 history); `brackets` (signed
+`/fapi/v1/leverageBracket`, numbers read from text via
+`SignedClient::signed_text`; demo key works on demo + testnet hosts).
 Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as
