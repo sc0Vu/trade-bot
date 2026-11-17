@@ -202,14 +202,19 @@ impl PerpPaperBroker {
         }
     }
 
-    /// Units by which |position| grows if `side` `qty` fills.
-    fn growth(&self, id: &InstrumentId, side: Side, qty: Decimal) -> Decimal {
+    /// Whether `side` `qty` opens anything: grows the position, or
+    /// crosses zero into the other side (even a smaller one). Only such an
+    /// order is checked for margin; one that only reduces is never refused.
+    fn opens(&self, id: &InstrumentId, side: Side, qty: Decimal) -> bool {
         let held = self.pos(id).qty().get();
-        let signed = match side {
-            Side::Buy => qty,
-            Side::Sell => -qty,
+        let after = match side {
+            Side::Buy => held + qty,
+            Side::Sell => held - qty,
         };
-        ((held + signed).abs() - held.abs()).max(Decimal::ZERO)
+        after.abs() > held.abs()
+            || (!after.is_zero()
+                && !held.is_zero()
+                && after.is_sign_negative() != held.is_sign_negative())
     }
 
     fn slipped(&self, inst: &Instrument, side: Side, price: Price) -> Price {
@@ -438,12 +443,12 @@ impl Broker for PerpPaperBroker {
                 "leverage above the bracket's maximum for this size",
             ));
         }
-        let grow = self.growth(&order.instrument, order.side, qty);
+        let opens = self.opens(&order.instrument, order.side, qty);
         let fee = self.quote_fee(&inst, order.side, Qty::new(qty), price, Liquidity::Taker);
         let reserved = self
             .need(&inst, order.side, Qty::new(qty), price, fee)?
             .max(Notional::ZERO);
-        if grow > Decimal::ZERO && reserved > self.available(&order.instrument) {
+        if opens && reserved > self.available(&order.instrument) {
             return Err(ExchangeError::Rejected("insufficient margin"));
         }
         let id = order.id.clone();
@@ -516,9 +521,9 @@ impl Broker for PerpPaperBroker {
                             // Margin at the real fill price, against what is
                             // free now (its own reservation released): short
                             // → dropped unfilled, as the venue would refuse.
-                            let grow = self.growth(&p.order.instrument, p.order.side, qty.get());
+                            let opens = self.opens(&p.order.instrument, p.order.side, qty.get());
                             let need = self.need(&inst, p.order.side, qty, price, fee)?;
-                            if grow > Decimal::ZERO && need > self.available(&p.order.instrument) {
+                            if opens && need > self.available(&p.order.instrument) {
                                 tracing::warn!(order = %p.order.id, "paper perpetual fill dropped: insufficient margin");
                                 continue;
                             }
@@ -782,6 +787,13 @@ mod tests {
         assert_eq!(b.position(&perp().id).qty(), Qty::new(dec!(-19)));
         assert_eq!(b.wallet(), Notional::new(dec!(28.63)));
         assert_eq!(b.isolated_margin(&perp().id), Notional::new(dec!(570)));
+        // Short 19 @ 60 (liquidation 89.64). At 85, buying 25 flips to a
+        // smaller long 6: the close returns 570 − 475 − 1.0625 fee =
+        // 93.9375, the long needs 255 → 161.06 > 28.63 → refused, though
+        // the position shrinks (19 → 6). Buying 19 only closes: accepted.
+        bar(&mut b, 3, ["60", "85", "60", "85"]).await;
+        assert!(b.submit(market(4, Side::Buy, dec!(25), 3)).await.is_err());
+        assert!(b.submit(market(5, Side::Buy, dec!(19), 3)).await.is_ok());
     }
 
     /// 3,015 (3,000 margin + 15 fee) needed on 1,000 → refused. At 25x, 1
