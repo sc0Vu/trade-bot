@@ -234,14 +234,17 @@ impl Grid {
         self.stage = Stage::Stopped(reason.to_owned());
     }
 
-    /// Base a buy at gap `i` is expected to bring: its lot at the level,
-    /// less the fee. Caps what a restart credits to the gap.
+    /// Base a buy at gap `i` brings at most: its lot at the level. Caps
+    /// what a restart or a fresh start credits to the gap. Not net of the
+    /// fee: where the venue takes the fee in the coin (Binance spot) the
+    /// position already holds less, and the cap only bounds it; where it
+    /// takes it in the quote (eToro) the position holds the whole lot, and a
+    /// cap net of the fee left an unsellable crumb in dust (demo
+    /// 2026-11-18: 0.0000056 ETH, refused by eToro's $1 remainder rule).
     fn nominal(&self, inst: &Instrument, i: usize) -> Qty {
-        let q = inst
-            .qty_for(self.p.quote_per_grid, self.levels[i])
+        inst.qty_for(self.p.quote_per_grid, self.levels[i])
             .map(|q| inst.round_qty(q))
-            .unwrap_or(Qty::ZERO);
-        q * (Decimal::ONE - self.p.fee)
+            .unwrap_or(Qty::ZERO)
     }
 
     /// No order of ours on the coin can still fill.
@@ -1087,18 +1090,19 @@ mod tests {
     }
 
     /// Fresh start holding 1 BTC at 100: the gap above the price (100 to
-    /// 105) takes its lot, lot(100/100) * 0.999 = 0.999, sold at 105; the
-    /// 0.001 left can't fill the next gap's sell at 110 (0.11 USDT < 5),
-    /// so it's dust and that gap buys at 105.
+    /// 105) takes up to its gross lot, lot(100/100) = 1, so all of it, sold
+    /// at 105; nothing is left for the next gap (no dust), which buys at
+    /// 105. (Netting the fee off the cap, as before, left 0.001 in dust: on
+    /// a venue charging the fee in the quote, a crumb no sell could take.)
     #[test]
     fn a_fresh_start_gives_held_coin_to_the_gaps_above() {
         let (mut s, mut ctx) = start(params(""));
         hold(&mut ctx, dec!(1));
         assert_eq!(
             bar(s.as_mut(), &mut ctx, 0, "100"),
-            vec![buy("90"), buy("95"), sell("105", dec!(0.999)), buy("105")]
+            vec![buy("90"), buy("95"), sell("105", dec!(1)), buy("105")]
         );
-        assert_eq!(dust(s.as_ref()), dec!(0.001));
+        assert_eq!(dust(s.as_ref()), dec!(0));
     }
 
     fn saved(gaps: serde_json::Value, dust: &str) -> serde_json::Value {
@@ -1108,7 +1112,7 @@ mod tests {
 
     /// Saved with buys working at 90 and 95; the books now hold 1 BTC more
     /// (a buy filled while down). The nearest one, 95, takes it: up to its
-    /// lot lot(100/95) * 0.999 = 1.05157737, so all of the 1.
+    /// lot lot(100/95) = 1.05263, so all of the 1.
     #[test]
     fn a_buy_filled_while_down_is_credited_to_the_nearest_gap() {
         let (mut s, mut ctx) = start(params(""));
