@@ -1079,6 +1079,8 @@ migration/     SeaORM migrations
 strategies/    script strategies (`sma_trend.rhai`: reference port, tested vs built-in)
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.
   examples/    one runnable config per built-in (`<strategy>.toml`, paper/testnet), README
+               `etoro/`: venue examples (demo configs + `params/<strategy>-<what>.toml`),
+               tested by `venue_examples_load` (not part of one-per-strategy)
 data/          downloaded klines, per-network run dbs (gitignored)
 .github/       ci.yml (`make check` + deploy configs via each tool's image), release.yml
                (tag `v<workspace version>` → `trade-bot` for linux x86_64/arm64 gnu,
@@ -1101,7 +1103,8 @@ README.md      user-facing overview, quick start, config, limitations
 ```
 
 ## Commands
-`make` lists targets (`check` = fmt-check + lint + doc + test, run before commit;
+`make` lists targets (`etoro-stocks-data` / `etoro-stocks-backtest`: eToro stock examples
+vs buy-and-hold SPY; `HISTORY_LEN` optional; `check` = fmt-check + lint + doc + test, run before commit;
 `migrate-*`, `fetch-data`, `backtest`, `run-paper`; vars `DATABASE_URL`,
 `VENUE` (binance|max), `SYMBOL`, `FROM`, `FEE`, `INITIAL_CASH`, …). No live target on purpose: `--i-understand` must be
 typed per run (invariant 7). Raw equivalents:

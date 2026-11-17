@@ -1,0 +1,5 @@
+# The benchmark: buy SPY (regular hours) once with $9,900 and hold.
+coin = "etoro:SPY.RTH"
+quote_amount = "9900"
+fee = "0.0002"        # eToro's $1 per stock order as a rate (conservative)
+slippage_bps = "5"

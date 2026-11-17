@@ -22,6 +22,10 @@ One complete, runnable config per built-in strategy:
 | `ratio_hop.toml` | several coins, rotate when units ratchet up |
 | `grid.toml` | one coin, spot grid |
 
+Venue-specific examples live in subdirectories: `etoro/` (US stocks and
+ETFs on eToro: demo-account configs, backtest params, and `make
+etoro-stocks-backtest`).
+
 Run one on paper (testnet by default; set `exchange.network = "demo"` for
 Demo Trading):
 

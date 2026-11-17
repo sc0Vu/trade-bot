@@ -341,10 +341,18 @@ after 120 hours without a bar. eToro publishes no tick or unit step and
 volume is often missing, so `avwap` has no data there.
 
 ```sh
-cargo run -p cli -- fetch-data --venue etoro --symbol AAPL,BTC --from 2026-01-01
-cargo run -p cli -- backtest --venue etoro --strategy sma_trend --params p.toml \
-    --symbol AAPL --from 2026-02-01 --to 2026-08-01 --fee 0 --slippage-bps 5
+make etoro-stocks-data                                    # SPY, QQQ, AAPL, MSFT, NVDA daily
+make etoro-stocks-backtest FROM=2024-01-01 TO=2026-11-01  # examples vs buy-and-hold SPY
+# or any symbol and strategy:
+make backtest VENUE=etoro STRATEGY=sma_trend SYMBOL=AAPL.RTH INTERVAL=1d \
+     FROM=2024-01-01 TO=2026-11-01 SLIPPAGE_BPS=5 FEE=0.0002 HISTORY_LEN=100 \
+     PARAMS=config/examples/etoro/params/sma_trend-aapl.toml
 ```
+
+`config/examples/etoro/` has the params, two configs for your demo account,
+and what to know: eToro charges $1 per stock order (set `--fee` to $1 / your
+order size), `.RTH` symbols trade regular hours and start in mid-2023,
+plain symbols (`AAPL`, `SPY`) go back to 2018 daily.
 
 ## Paper and live trading
 

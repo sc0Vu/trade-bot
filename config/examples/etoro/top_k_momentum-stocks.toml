@@ -1,0 +1,30 @@
+# eToro demo account: hold the 2 strongest of four large US stocks / ETFs
+# (60-day return), half the capital each. Markets that are closed are
+# treated as halted: no orders on them until they open.
+#
+#   cargo run -p cli -- run --paper --config config/examples/etoro/top_k_momentum-stocks.toml
+#
+# Edge unverified: in the 2024-2026 backtest it trailed buy-and-hold SPY.
+
+mode = "paper"
+whitelist = ["etoro:AAPL.RTH", "etoro:MSFT.RTH", "etoro:NVDA.RTH", "etoro:QQQ.RTH"]
+
+[exchange]
+venue = "etoro"
+network = "demo"
+interval = "1d"
+
+[strategy]
+name = "top_k_momentum"
+
+[strategy.params]
+coins = ["etoro:AAPL.RTH", "etoro:MSFT.RTH", "etoro:NVDA.RTH", "etoro:QQQ.RTH"]
+k = 2
+lookback = 60
+capital = "2000"      # USD the strategy manages
+band = "0.05"
+fee = "0.001"         # $1 per order on ~$1,000 slots
+slippage_bps = "5"
+
+[engine]
+history_len = 100

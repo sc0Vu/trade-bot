@@ -1148,6 +1148,53 @@ mod tests {
         assert_eq!(covered, all, "one example per registered strategy");
     }
 
+    /// Venue examples (`config/examples/<venue>/`): every run config loads
+    /// and its strategy builds; every `params/<strategy>-<what>.toml`
+    /// builds the strategy its name starts with. Not part of the
+    /// one-per-strategy set above.
+    #[test]
+    fn venue_examples_load() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/examples");
+        let mut seen = 0;
+        for venue in std::fs::read_dir(&root).unwrap() {
+            let venue = venue.unwrap().path();
+            if !venue.is_dir() {
+                continue;
+            }
+            for entry in std::fs::read_dir(&venue).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_none_or(|e| e != "toml") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                let mut loaded = None;
+                Jail::expect_with(|_| {
+                    loaded =
+                        Some(parse(&text).unwrap_or_else(|e| panic!("{}: {e:#}", path.display())));
+                    Ok(())
+                });
+                let c = loaded.unwrap();
+                strategy::build(&c.strategy.name, &strategy::Params::new(c.strategy.params))
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                seen += 1;
+            }
+            let params = venue.join("params");
+            if params.is_dir() {
+                for entry in std::fs::read_dir(&params).unwrap() {
+                    let path = entry.unwrap().path();
+                    let stem = path.file_stem().unwrap().to_str().unwrap().to_owned();
+                    let name = stem.split('-').next().unwrap();
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let p = strategy::Params::from_toml(&text)
+                        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                    strategy::build(name, &p).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen >= 5, "the eToro examples are found ({seen})");
+    }
+
     #[test]
     fn example_config_loads() {
         Jail::expect_with(|_| {

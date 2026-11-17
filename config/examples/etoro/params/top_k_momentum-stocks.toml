@@ -1,0 +1,8 @@
+# Hold the 2 strongest of 4 large US stocks over the last 60 days.
+coins = ["etoro:AAPL.RTH", "etoro:MSFT.RTH", "etoro:NVDA.RTH", "etoro:QQQ.RTH"]
+k = 2
+lookback = 60
+capital = "10000"
+band = "0.05"
+fee = "0.0002"        # $1 per order on ~$5,000 slots
+slippage_bps = "5"

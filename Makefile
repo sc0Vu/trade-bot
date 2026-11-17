@@ -17,6 +17,11 @@ SLIPPAGE_BPS ?=
 # (default 1000, in the symbol's quote asset).
 FEE          ?=
 INITIAL_CASH ?=
+# Optional: bars of history a strategy keeps (default 500; daily stock
+# history rarely has that many before FROM).
+HISTORY_LEN  ?=
+# eToro stock examples (config/examples/etoro/params): daily bars.
+ETORO_STOCKS ?= SPY.RTH,QQQ.RTH,AAPL.RTH,MSFT.RTH,NVDA.RTH
 
 CLI := cargo run -p cli --
 # Optional features `check` also covers, so code behind them can't rot.
@@ -25,7 +30,7 @@ FEATURES := --features strategy/rhai,backtest/rhai,cli/rhai
 .DEFAULT_GOAL := help
 .PHONY: help build test lint fmt fmt-check doc check \
         migrate-up migrate-down migrate-status migrate-fresh \
-        fetch-data backtest run-paper clean
+        fetch-data backtest etoro-stocks-data etoro-stocks-backtest run-paper clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -70,14 +75,29 @@ migrate-fresh: ## DROP ALL TABLES, then re-apply every migration (dev only)
 
 ## --- Bot (override SYMBOL, INTERVAL, FROM, TO, STRATEGY, PARAMS, SLIPPAGE_BPS)
 
-fetch-data: ## Cache klines into data/ (VENUE=binance|max)
+fetch-data: ## Cache klines into data/ (VENUE=binance|binance-usdm|etoro|max)
 	$(CLI) fetch-data --venue $(VENUE) --symbol $(SYMBOL) --interval $(INTERVAL) --from $(FROM)
 
 backtest: ## Backtest STRATEGY on VENUE's SYMBOL over FROM..TO (SLIPPAGE_BPS required; PARAMS, FEE, INITIAL_CASH)
 	@test -n "$(SLIPPAGE_BPS)" || { echo "set SLIPPAGE_BPS, e.g. make backtest SLIPPAGE_BPS=5"; exit 2; }
 	$(CLI) backtest --venue $(VENUE) --strategy $(STRATEGY) --symbol $(SYMBOL) --interval $(INTERVAL) \
 		--from $(FROM) --to $(TO) --slippage-bps $(SLIPPAGE_BPS) $(if $(PARAMS),--params $(PARAMS)) \
-		$(if $(FEE),--fee $(FEE)) $(if $(INITIAL_CASH),--initial-cash $(INITIAL_CASH))
+		$(if $(FEE),--fee $(FEE)) $(if $(INITIAL_CASH),--initial-cash $(INITIAL_CASH)) \
+		$(if $(HISTORY_LEN),--history-len $(HISTORY_LEN))
+
+etoro-stocks-data: ## Cache daily eToro stock history since 2022 (ETORO_PUBLIC_KEY / ETORO_PRIVATE_KEY)
+	$(CLI) fetch-data --venue etoro --symbol $(ETORO_STOCKS) --interval 1d --from 2022-01-01
+
+# Each example vs the SPY benchmark, same dates and costs: $10,000, 5 bps,
+# fee 0.0002 = eToro's $1 per stock order on ~$5,000-$9,000 orders.
+etoro-stocks-backtest: ## Backtest the eToro stock examples vs buy-and-hold SPY (FROM, TO; daily bars)
+	@for ex in "buy_and_hold SPY.RTH buy_and_hold-spy" "sma_trend AAPL.RTH sma_trend-aapl" \
+	           "top_k_momentum AAPL.RTH,MSFT.RTH,NVDA.RTH,QQQ.RTH top_k_momentum-stocks"; do \
+		set -- $$ex; echo "== $$1 on $$2 ($(FROM) to $(TO))"; \
+		$(CLI) backtest --venue etoro --strategy $$1 --symbol $$2 --interval 1d \
+			--from $(FROM) --to $(TO) --slippage-bps 5 --fee 0.0002 --initial-cash 10000 \
+			--history-len 100 --params config/examples/etoro/params/$$3.toml || exit 1; \
+	done
 
 run-paper: ## Paper trade against testnet prices (the safe default)
 	$(CLI) run --paper

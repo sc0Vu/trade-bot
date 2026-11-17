@@ -1,0 +1,7 @@
+# Long AAPL (regular hours) above its 50-day average, cash below.
+coin = "etoro:AAPL.RTH"
+sma_period = 50
+band_pct = "0.01"
+quote_amount = "9000"   # room left for a losing round trip (cash shrinks)
+fee = "0.0002"        # eToro's $1 per stock order as a rate: ~$1 / $5,000
+slippage_bps = "5"

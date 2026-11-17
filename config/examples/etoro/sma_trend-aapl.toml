@@ -1,0 +1,35 @@
+# eToro demo account: long Apple (regular hours) above its 50-day average,
+# cash below. Daily bars: one decision a day after the close; the market is
+# closed overnight and at weekends (no orders then).
+#
+#   export ETORO_PUBLIC_KEY=… ETORO_PRIVATE_KEY=…    # a demo user key
+#   cargo run -p cli -- run --paper --config config/examples/etoro/sma_trend-aapl.toml
+#
+# Textbook params, not tuned; edge unverified. Backtest first:
+#   make etoro-stocks-data && make etoro-stocks-backtest FROM=2024-01-01 TO=2026-11-01
+
+mode = "paper"
+whitelist = ["etoro:AAPL.RTH"]
+
+[exchange]
+venue = "etoro"
+network = "demo"      # your eToro demo account; real money needs the live gate
+interval = "1d"
+
+[strategy]
+name = "sma_trend"
+
+[strategy.params]
+coin = "etoro:AAPL.RTH"
+sma_period = 50
+band_pct = "0.01"
+quote_amount = "900"  # USD per buy; eToro's minimum is $10, its fee $1 per stock order
+fee = "0.002"         # $1 / ~$500: a stock order's fixed $1 as a rate
+slippage_bps = "5"
+
+[engine]
+history_len = 100
+
+# On a real account US stocks need a W-8BEN on file with eToro:
+# [etoro]
+# w8ben_signed = true
