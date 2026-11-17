@@ -184,7 +184,10 @@ real money = all three locks). Startup: `prepare` (one-way mode required,
 never switched; marginType, `-4046` ok; leverage, Binance's echo must
 match), `reconcile` (journal rows: find, cancel, wait, record, close;
 `tb…` orphans refused / `--cancel-orphans`; `align` over 7 days). `UsdmBroker`:
-`POST /fapi/v1/order` MARKET/LIMIT only (stops refused: algo service),
+`POST /fapi/v1/order` MARKET/LIMIT; stops → `POST /fapi/v1/algoOrder`
+(CONDITIONAL, triggerPrice, CONTRACT_PRICE; journal id = algoId; polled as
+algo until `actualOrderId`, then as that order; reconcile + orphan scan check
+algo orders first / `openAlgoOrders`; checked on demo 2026-11-18),
 `Size::Quote` → base at last close (paper converts at fill: small diff);
 settle polls every working order (`order` + `userTrades?orderId`), funding
 → in-memory position only (books = fills); each Candle `align`:

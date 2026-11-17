@@ -311,7 +311,8 @@ leverage, and reconciles its books (`data/<network>-usdm.db`). Binance is
 the truth for the position: every bar the bot compares it with its books,
 and adopts trades it didn't place (a liquidation, auto-deleverage or a
 manual trade) so the two agree; a difference no trade explains stops the
-run. Give the bot its symbols to itself. Market and limit orders only; turn
+run. Give the bot its symbols to itself. Stop orders go through Binance's
+algo-order service and trigger on the last price, as in the backtest. Turn
 off BNB fee burn (a BNB fee can't be valued exactly). On exit it cancels
 its open orders, but positions stay open on Binance, where they can still
 be liquidated.

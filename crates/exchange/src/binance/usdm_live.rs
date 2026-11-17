@@ -10,9 +10,15 @@
 //!   are set to the run's (`-4046` "no need to change" is fine; Binance
 //!   refuses a margin-type change while a position or order is open).
 //! - **Orders**: `POST /fapi/v1/order`, `newClientOrderId` = run tag + our
-//!   id (as spot), journaled `pending` first. Market and limit only: stop
-//!   orders on futures moved to a separate algo-order service and are
-//!   refused here. A quote budget (`Size::Quote`) has no futures
+//!   id (as spot), journaled `pending` first. Stops go to the algo-order
+//!   service (`POST /fapi/v1/algoOrder`, `CONDITIONAL`, `triggerPrice`,
+//!   last-price trigger as the backtest's; `/fapi/v1/order` refuses them
+//!   with `-4120` since 2025-12-09): journaled with the `algoId`, polled as
+//!   an algo order until its `actualOrderId` appears, then as that order.
+//!   Reconcile looks every journal row up as an algo order first (by
+//!   client id; `-2013` = not one). A trade of a stop that triggered
+//!   between its poll and the bar's alignment is adopted as `venue-…`
+//!   (books stay right; the strategy sees that order id). A quote budget (`Size::Quote`) has no futures
 //!   equivalent: it is converted to base at the last close, lot-rounded
 //!   (the paper broker converts at the fill price, a small difference).
 //! - **Fills**: each settle polls every working order's status and
@@ -278,7 +284,11 @@ pub async fn align(
 struct LiveOrder {
     order: Order,
     client_id: String,
-    venue_id: i64,
+    /// The matching engine's order: from the ack, or for a stop once its
+    /// algo order triggered (`actualOrderId`).
+    venue_id: Option<i64>,
+    /// A stop's algo order (`algoId`).
+    algo_id: Option<i64>,
     cancelling: bool,
     seen_trades: HashSet<i64>,
     seen_qty: Qty,
@@ -342,10 +352,49 @@ impl UsdmBroker {
     }
 
     /// New trades of order `idx`; whether it is finished.
+    /// A stop not yet triggered: reads its algo order. Returns `Some(done)`
+    /// while there is no matching-engine order to poll (`done`: it ended
+    /// untriggered: cancelled, expired, rejected); `None` once it has one.
+    async fn poll_algo(&mut self, idx: usize) -> Result<Option<bool>, ExchangeError> {
+        let Some(algo_id) = self.open[idx]
+            .algo_id
+            .filter(|_| self.open[idx].venue_id.is_none())
+        else {
+            return Ok(None);
+        };
+        let algo = self
+            .client
+            .signed(
+                Method::Get,
+                "/fapi/v1/algoOrder",
+                &[("algoId", algo_id.to_string())],
+            )
+            .await?;
+        match actual_order_id(&algo)? {
+            Some(id) => {
+                self.open[idx].venue_id = Some(id);
+                Ok(None)
+            }
+            None => {
+                let ended = algo_ended(&algo);
+                if ended {
+                    self.books.mark_closed(&self.open[idx].client_id).await?;
+                }
+                Ok(Some(ended))
+            }
+        }
+    }
+
     async fn poll(&mut self, idx: usize) -> Result<(Vec<Fill>, bool), ExchangeError> {
+        if let Some(done) = self.poll_algo(idx).await? {
+            return Ok((Vec::new(), done));
+        }
         let (symbol, venue_id) = {
             let o = &self.open[idx];
-            (o.order.instrument.symbol().to_string(), o.venue_id)
+            let id = o
+                .venue_id
+                .ok_or_else(|| ExchangeError::Decode("order without a venue id".into()))?;
+            (o.order.instrument.symbol().to_string(), id)
         };
         let status = self
             .client
@@ -400,6 +449,70 @@ fn text(d: Decimal) -> String {
     d.normalize().to_string()
 }
 
+/// A triggered algo order's matching-engine order (`actualOrderId`, a
+/// string, empty until triggered).
+fn actual_order_id(algo: &Value) -> Result<Option<i64>, ExchangeError> {
+    match &algo["actualOrderId"] {
+        Value::String(s) if s.is_empty() => Ok(None),
+        Value::String(s) => s
+            .parse()
+            .map(Some)
+            .map_err(|_| ExchangeError::Decode("algo actualOrderId".into())),
+        Value::Number(n) => Ok(n.as_i64()),
+        Value::Null => Ok(None),
+        _ => Err(ExchangeError::Decode("algo actualOrderId".into())),
+    }
+}
+
+/// An algo order that ended without triggering.
+fn algo_ended(algo: &Value) -> bool {
+    matches!(
+        algo["algoStatus"].as_str(),
+        Some("CANCELED" | "EXPIRED" | "REJECTED" | "FINISHED")
+    )
+}
+
+/// Parameters for `POST /fapi/v1/algoOrder`: a stop as a conditional
+/// order triggered by the last price (`CONTRACT_PRICE`, as the backtest's
+/// fill model triggers on the bar's last-price range).
+fn algo_params(o: &Order, qty: Qty, client_id: String) -> Vec<(&'static str, String)> {
+    let side = match o.side {
+        Side::Buy => "BUY",
+        Side::Sell => "SELL",
+    };
+    let mut p = vec![
+        ("algoType", "CONDITIONAL".to_owned()),
+        ("symbol", o.instrument.symbol().to_string()),
+        ("side", side.to_owned()),
+    ];
+    match o.kind {
+        OrderKind::StopMarket { stop } => {
+            p.push(("type", "STOP_MARKET".to_owned()));
+            p.push(("triggerPrice", text(stop.get())));
+        }
+        OrderKind::StopLimit { stop, limit, tif } => {
+            p.push(("type", "STOP".to_owned()));
+            p.push(("triggerPrice", text(stop.get())));
+            p.push(("price", text(limit.get())));
+            p.push(("timeInForce", tif_code(tif).to_owned()));
+        }
+        OrderKind::Market | OrderKind::Limit { .. } => {}
+    }
+    p.push(("quantity", text(qty.get())));
+    p.push(("workingType", "CONTRACT_PRICE".to_owned()));
+    p.push(("clientAlgoId", client_id));
+    p.push(("newOrderRespType", "ACK".to_owned()));
+    p
+}
+
+fn tif_code(t: TimeInForce) -> &'static str {
+    match t {
+        TimeInForce::Gtc => "GTC",
+        TimeInForce::Ioc => "IOC",
+        TimeInForce::Fok => "FOK",
+    }
+}
+
 /// Parameters for `POST /fapi/v1/order` with base quantity `qty`.
 fn order_params(
     o: &Order,
@@ -421,21 +534,11 @@ fn order_params(
         OrderKind::Market => p.push(("type", "MARKET".to_owned())),
         OrderKind::Limit { price, tif } => {
             p.push(("type", "LIMIT".to_owned()));
-            p.push((
-                "timeInForce",
-                match tif {
-                    TimeInForce::Gtc => "GTC",
-                    TimeInForce::Ioc => "IOC",
-                    TimeInForce::Fok => "FOK",
-                }
-                .to_owned(),
-            ));
+            p.push(("timeInForce", tif_code(tif).to_owned()));
             p.push(("price", text(price.get())));
         }
         OrderKind::StopMarket { .. } | OrderKind::StopLimit { .. } => {
-            return Err(ExchangeError::Rejected(
-                "stop orders on perpetuals aren't supported live",
-            ));
+            return Err(ExchangeError::Rejected("stops go through algo_params"));
         }
     }
     p.push(("quantity", text(qty.get())));
@@ -481,15 +584,25 @@ impl Broker for UsdmBroker {
                 "client order id longer than 36 chars",
             ));
         }
-        let params = order_params(&order, qty, client_id.clone())?;
+        let stop = matches!(
+            order.kind,
+            OrderKind::StopMarket { .. } | OrderKind::StopLimit { .. }
+        );
+        let (path, params) = if stop {
+            (
+                "/fapi/v1/algoOrder",
+                algo_params(&order, qty, client_id.clone()),
+            )
+        } else {
+            (
+                "/fapi/v1/order",
+                order_params(&order, qty, client_id.clone())?,
+            )
+        };
         self.books
             .insert_pending(&client_id, &order.instrument, order.side, order.created_at)
             .await?;
-        let ack = match self
-            .client
-            .signed(Method::Post, "/fapi/v1/order", &params)
-            .await
-        {
+        let ack = match self.client.signed(Method::Post, path, &params).await {
             Ok(ack) => ack,
             Err(e) => {
                 if e.is_order_rejection() {
@@ -498,15 +611,19 @@ impl Broker for UsdmBroker {
                 return Err(e);
             }
         };
-        let venue_id = ack["orderId"]
+        // A stop's journal id is its algoId: reconcile looks an order up
+        // as an algo order (by client id) before as a regular one.
+        let key = if stop { "algoId" } else { "orderId" };
+        let ack_id = ack[key]
             .as_i64()
-            .ok_or_else(|| ExchangeError::Decode("futures order ack orderId".into()))?;
-        self.books.mark_open(&client_id, venue_id).await?;
+            .ok_or_else(|| ExchangeError::Decode(format!("futures order ack {key}")))?;
+        self.books.mark_open(&client_id, ack_id).await?;
         let id = order.id.clone();
         self.open.push(LiveOrder {
             order,
             client_id,
-            venue_id,
+            venue_id: (!stop).then_some(ack_id),
+            algo_id: stop.then_some(ack_id),
             cancelling: false,
             seen_trades: HashSet::new(),
             seen_qty: Qty::ZERO,
@@ -515,22 +632,50 @@ impl Broker for UsdmBroker {
     }
 
     async fn cancel(&mut self, id: OrderId) -> Result<(), ExchangeError> {
-        let o = self
+        let idx = self
             .open
-            .iter_mut()
-            .find(|o| o.order.id == id && !o.cancelling)
+            .iter()
+            .position(|o| o.order.id == id && !o.cancelling)
             .ok_or_else(|| ExchangeError::UnknownOrder(id.clone()))?;
+        if let (None, Some(algo_id)) = (self.open[idx].venue_id, self.open[idx].algo_id) {
+            let cancelled = self
+                .client
+                .signed(
+                    Method::Delete,
+                    "/fapi/v1/algoOrder",
+                    &[("algoId", algo_id.to_string())],
+                )
+                .await;
+            match cancelled {
+                Ok(_) => {
+                    self.open[idx].cancelling = true;
+                    return Ok(());
+                }
+                // It may have triggered meanwhile: then cancel the order
+                // it became; if it hasn't, the refusal stands.
+                Err(e @ ExchangeError::Venue { .. }) => {
+                    if self.poll_algo(idx).await?.is_some() {
+                        return Err(e);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let o = &self.open[idx];
+        let venue_id = o
+            .venue_id
+            .ok_or_else(|| ExchangeError::Decode("order without a venue id".into()))?;
         self.client
             .signed(
                 Method::Delete,
                 "/fapi/v1/order",
                 &[
                     ("symbol", o.order.instrument.symbol().to_string()),
-                    ("orderId", o.venue_id.to_string()),
+                    ("orderId", venue_id.to_string()),
                 ],
             )
             .await?;
-        o.cancelling = true;
+        self.open[idx].cancelling = true;
         Ok(())
     }
 
@@ -564,7 +709,7 @@ impl Broker for UsdmBroker {
                     .open
                     .iter()
                     .filter(|o| o.order.instrument == c.instrument)
-                    .map(|o| o.venue_id)
+                    .filter_map(|o| o.venue_id)
                     .collect();
                 let (adopted, position) = align(
                     &self.client,
@@ -642,10 +787,23 @@ pub async fn reconcile(
             continue; // not a perpetual of this run (another venue's books)
         };
         let symbol = inst.id.symbol().to_string();
-        let lookup = match order.venue_order_id {
+        // A stop is an algo order first: cancel it while untriggered (it
+        // then ends with nothing filled); once triggered, settle the
+        // order it became.
+        let mut lookup = match order.venue_order_id {
             Some(id) => ("orderId", id.to_string()),
             None => ("origClientOrderId", order.client_order_id.clone()),
         };
+        if let Some(algo) = find_algo(client, &order.client_order_id).await? {
+            match settle_algo(client, &algo, retry_delay).await? {
+                Some(actual) => lookup = ("orderId", actual.to_string()),
+                None => {
+                    books.mark_closed(&order.client_order_id).await?;
+                    done.orders_closed += 1;
+                    continue;
+                }
+            }
+        }
         let mut status = match client
             .signed(
                 Method::Get,
@@ -760,11 +918,26 @@ pub async fn reconcile(
                     &[("symbol", symbol.clone())],
                 )
                 .await?;
-            for o in open
+            let algos = client
+                .signed(
+                    Method::Get,
+                    "/fapi/v1/openAlgoOrders",
+                    &[("symbol", symbol.clone())],
+                )
+                .await?;
+            // Regular orders by clientOrderId, untriggered stops by
+            // clientAlgoId; both carry our prefix when they are ours.
+            let regular = open
                 .as_array()
                 .ok_or_else(|| ExchangeError::Decode("openOrders".into()))?
-            {
-                let cid = o["clientOrderId"].as_str().unwrap_or_default();
+                .iter()
+                .map(|o| (o["clientOrderId"].as_str().unwrap_or_default(), false));
+            let stops = algos
+                .as_array()
+                .ok_or_else(|| ExchangeError::Decode("openAlgoOrders".into()))?
+                .iter()
+                .map(|o| (o["clientAlgoId"].as_str().unwrap_or_default(), true));
+            for (cid, algo) in regular.chain(stops).collect::<Vec<_>>() {
                 if !cid.starts_with(CLIENT_ID_PREFIX) || known.contains(cid) {
                     continue;
                 }
@@ -777,16 +950,18 @@ pub async fn reconcile(
                         )));
                     }
                     Orphans::Cancel => {
-                        client
-                            .signed(
-                                Method::Delete,
+                        let (path, params) = if algo {
+                            ("/fapi/v1/algoOrder", vec![("clientAlgoId", cid.to_owned())])
+                        } else {
+                            (
                                 "/fapi/v1/order",
-                                &[
+                                vec![
                                     ("symbol", symbol.clone()),
                                     ("origClientOrderId", cid.to_owned()),
                                 ],
                             )
-                            .await?;
+                        };
+                        client.signed(Method::Delete, path, &params).await?;
                         tracing::warn!(instrument = %inst.id, order = cid, "cancelled an orphan order");
                     }
                 }
@@ -802,6 +977,72 @@ pub async fn reconcile(
         }
     }
     Ok(done)
+}
+
+/// The algo order with client id `cid`, if there is one (Binance answers
+/// an unknown client id with `-2013`, checked on demo 2026-11-18).
+async fn find_algo(client: &SignedClient, cid: &str) -> Result<Option<Value>, ExchangeError> {
+    match client
+        .signed(
+            Method::Get,
+            "/fapi/v1/algoOrder",
+            &[("clientAlgoId", cid.to_owned())],
+        )
+        .await
+    {
+        Ok(v) if v["algoId"].is_i64() => Ok(Some(v)),
+        Ok(_) => Err(ExchangeError::Decode(
+            "algoOrder reply without algoId".into(),
+        )),
+        Err(ExchangeError::Venue { code, .. }) if code == NO_SUCH_ORDER => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Cancels an untriggered algo order and waits for it to end. Returns
+/// the order it triggered into, if it did (before or during the cancel).
+async fn settle_algo(
+    client: &SignedClient,
+    algo: &Value,
+    retry_delay: Duration,
+) -> Result<Option<i64>, ExchangeError> {
+    let algo_id = algo["algoId"]
+        .as_i64()
+        .ok_or_else(|| ExchangeError::Decode("algoId".into()))?;
+    let mut algo = algo.clone();
+    for attempt in 0..10 {
+        if let Some(id) = actual_order_id(&algo)? {
+            return Ok(Some(id));
+        }
+        if algo_ended(&algo) {
+            return Ok(None);
+        }
+        if attempt == 0 {
+            match client
+                .signed(
+                    Method::Delete,
+                    "/fapi/v1/algoOrder",
+                    &[("algoId", algo_id.to_string())],
+                )
+                .await
+            {
+                Ok(_) | Err(ExchangeError::Venue { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        } else {
+            tokio::time::sleep(retry_delay).await;
+        }
+        algo = client
+            .signed(
+                Method::Get,
+                "/fapi/v1/algoOrder",
+                &[("algoId", algo_id.to_string())],
+            )
+            .await?;
+    }
+    Err(ExchangeError::Decode(format!(
+        "algo order {algo_id} didn't end on Binance; retry later"
+    )))
 }
 
 fn now_millis() -> i64 {
@@ -1179,21 +1420,13 @@ mod tests {
         assert!(b.settle(&candle("31000")).await.is_err());
     }
 
-    /// No venue request for what the broker refuses itself: a stop, or a
-    /// quote budget before any close. After a close of 30,000, 1,000 USDT
-    /// is sent as 0.033 BTC (lot 0.001, rounded down).
+    /// A quote budget before any close is refused without a request.
+    /// After a close of 30,000, 1,000 USDT is sent as 0.033 BTC (lot
+    /// 0.001, rounded down).
     #[tokio::test]
-    async fn stops_and_unpriced_budgets_are_refused_locally() {
+    async fn quote_budgets_are_sized_at_the_last_close() {
         let (t, db) = (FakeTransport::default(), TempDb::new().await);
         let mut b = broker(&t, &db).await;
-        let stop = OrderKind::StopMarket {
-            stop: Price::new(dec!(31000)),
-        };
-        assert!(
-            b.submit(order("o-1", Side::Buy, Size::Base(Qty::new(dec!(1))), stop))
-                .await
-                .is_err()
-        );
         let budget = Size::Quote(Notional::new(dec!(1000)));
         assert!(
             b.submit(order("o-2", Side::Buy, budget, OrderKind::Market))
@@ -1211,6 +1444,79 @@ mod tests {
             param(&t.sent().last().unwrap().query, "quantity"),
             Some("0.033")
         );
+    }
+
+    /// A stop goes to the algo service (`STOP_MARKET`, `triggerPrice`,
+    /// last-price trigger, `clientAlgoId` = our client id). While `NEW`
+    /// nothing else is asked; once triggered, its `actualOrderId` (a
+    /// string) is polled as a normal order: FILLED 1 @ 31,005 → one fill.
+    /// Cancelling an untriggered stop deletes the algo order.
+    #[tokio::test]
+    async fn stops_live_as_algo_orders_until_they_trigger() {
+        let (t, db) = (FakeTransport::default(), TempDb::new().await);
+        let mut b = broker(&t, &db).await;
+        let stop = OrderKind::StopMarket {
+            stop: Price::new(dec!(31000)),
+        };
+        t.reply(200, r#"{"algoId":1000000291115025,"algoStatus":"NEW"}"#);
+        b.submit(order("o-1", Side::Buy, Size::Base(Qty::new(dec!(1))), stop))
+            .await
+            .unwrap();
+        let req = t.sent()[0].clone();
+        assert_eq!(req.path, "/fapi/v1/algoOrder");
+        for (k, v) in [
+            ("algoType", "CONDITIONAL"),
+            ("type", "STOP_MARKET"),
+            ("triggerPrice", "31000"),
+            ("quantity", "1"),
+            ("workingType", "CONTRACT_PRICE"),
+            ("clientAlgoId", "tbrun-o-1"),
+        ] {
+            assert_eq!(param(&req.query, k), Some(v), "{k}");
+        }
+        t.reply(
+            200,
+            r#"{"algoId":1000000291115025,"algoStatus":"NEW","actualOrderId":""}"#,
+        );
+        t.reply(200, r#"[{"symbol":"BTCUSDT","positionAmt":"0"}]"#);
+        assert!(b.settle(&candle("30500")).await.unwrap().is_empty());
+        t.reply(
+            200,
+            r#"{"algoId":1000000291115025,"algoStatus":"TRIGGERED","actualOrderId":"555"}"#,
+        );
+        t.reply(
+            200,
+            r#"{"orderId":555,"status":"FILLED","executedQty":"1"}"#,
+        );
+        t.reply(
+            200,
+            &format!("[{}]", trade(9, 555, "BUY", "31005", "1", "12.402")),
+        );
+        t.reply(200, r#"[{"symbol":"BTCUSDT","positionAmt":"1"}]"#);
+        let fills = b.settle(&candle("31200")).await.unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(param(&t.sent()[4].query, "orderId"), Some("555"));
+        assert_eq!(b.position(&btc().id).qty().get(), dec!(1));
+        assert!(b.open_orders().is_empty());
+        t.reply(200, r#"{"algoId":7,"algoStatus":"NEW"}"#);
+        b.submit(order(
+            "o-2",
+            Side::Sell,
+            Size::Base(Qty::new(dec!(1))),
+            OrderKind::StopMarket {
+                stop: Price::new(dec!(29000)),
+            },
+        ))
+        .await
+        .unwrap();
+        t.reply(200, r#"{"algoId":7,"code":"200","msg":"success"}"#);
+        b.cancel(OrderId::new("o-2").unwrap()).await.unwrap();
+        let del = t.sent().last().unwrap().clone();
+        assert_eq!(
+            (del.method, del.path.as_str()),
+            (Method::Delete, "/fapi/v1/algoOrder")
+        );
+        assert_eq!(param(&del.query, "algoId"), Some("7"));
     }
 
     /// Hedge mode is refused; "no need to change" margin type is fine;
@@ -1265,12 +1571,14 @@ mod tests {
             .await
             .unwrap();
         let script = |t: &FakeTransport| {
+            t.reply(400, r#"{"code":-2013,"msg":"Order does not exist."}"#);
             t.reply(200, r#"{"orderId":77,"status":"FILLED","executedQty":"1"}"#);
             t.reply(
                 200,
                 &format!("[{}]", trade(9, 77, "BUY", "30000", "1", "12")),
             );
             t.reply(200, r#"[{"clientOrderId":"tbelse-o-4","orderId":80}]"#);
+            t.reply(200, "[]");
         };
         let t = FakeTransport::default();
         script(&t);
@@ -1285,12 +1593,13 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("--cancel-orphans"), "{err}");
         assert_eq!(
-            param(&t.sent()[0].query, "origClientOrderId"),
+            param(&t.sent()[1].query, "origClientOrderId"),
             Some("tbold-o-1")
         );
         assert!(db.store.unfinished_orders().await.unwrap().is_empty());
         let t = FakeTransport::default();
         t.reply(200, r#"[{"clientOrderId":"tbelse-o-4","orderId":80}]"#);
+        t.reply(200, "[]");
         t.reply(200, r#"{"orderId":80}"#);
         t.reply(200, r#"[{"symbol":"BTCUSDT","positionAmt":"1"}]"#);
         let r = reconcile(
@@ -1303,8 +1612,51 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(r.fills_recovered, 0);
-        assert_eq!(t.sent()[1].method, Method::Delete);
+        assert_eq!(t.sent()[2].method, Method::Delete);
         let b = broker(&t, &db).await;
         assert_eq!(b.position(&btc().id).qty().get(), dec!(1));
+    }
+
+    /// A stop journaled before a crash, still untriggered: found as an
+    /// algo order by client id, cancelled, re-read until it ended
+    /// (CANCELED, no `actualOrderId`), and its row closed with no fill.
+    #[tokio::test]
+    async fn exit_cancels_an_untriggered_stop() {
+        use storage::OrderJournal;
+        let db = TempDb::new().await;
+        db.store
+            .insert_pending(
+                "tbold-o-2",
+                &btc().id,
+                Side::Sell,
+                Timestamp::from_millis(0),
+            )
+            .await
+            .unwrap();
+        db.store.mark_open("tbold-o-2", 7).await.unwrap();
+        let t = FakeTransport::default();
+        t.reply(200, r#"{"algoId":7,"algoStatus":"NEW","actualOrderId":""}"#);
+        t.reply(200, r#"{"algoId":7,"code":"200","msg":"success"}"#);
+        t.reply(
+            200,
+            r#"{"algoId":7,"algoStatus":"CANCELED","actualOrderId":""}"#,
+        );
+        let r = reconcile(
+            &client(&t),
+            &[btc()],
+            &*db.store,
+            Phase::Exit,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert_eq!((r.orders_closed, r.fills_recovered), (1, 0));
+        let sent = t.sent();
+        assert_eq!(param(&sent[0].query, "clientAlgoId"), Some("tbold-o-2"));
+        assert_eq!(
+            (sent[1].method, sent[1].path.as_str()),
+            (Method::Delete, "/fapi/v1/algoOrder")
+        );
+        assert!(db.store.unfinished_orders().await.unwrap().is_empty());
     }
 }
