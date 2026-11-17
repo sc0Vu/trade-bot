@@ -27,6 +27,7 @@ pub mod broker;
 pub mod client;
 pub mod feed;
 pub mod market;
+pub mod stream;
 
 pub use client::{Account, EtoroClient, EtoroKeys};
 

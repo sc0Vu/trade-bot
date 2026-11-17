@@ -52,6 +52,11 @@ impl EtoroKeys {
         }
     }
 
+    /// The two keys (api, user), for the WebSocket's `Authenticate`.
+    pub(crate) fn parts(&self) -> (&str, &str) {
+        (&self.api_key, &self.user_key)
+    }
+
     /// From [`API_KEY_VAR`] and [`USER_KEY_VAR`]; missing or empty is an
     /// error naming the variable, never echoing a value.
     pub fn from_env() -> Result<Self, ExchangeError> {
