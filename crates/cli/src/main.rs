@@ -118,6 +118,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
             warmup: cfg.engine.history_len,
             max_outage: std::time::Duration::from_secs(cfg.exchange.max_outage_secs),
             user_stream: cfg.exchange.user_stream,
+            earn: cfg.earn.to_exchange(),
         },
         creds,
         cfg.whitelist.clone(),

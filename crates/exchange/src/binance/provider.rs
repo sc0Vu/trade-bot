@@ -72,6 +72,9 @@ pub struct BinanceConfig {
     /// overridden: the stream would watch the network's real host, not
     /// the override's orders.
     pub user_stream: bool,
+    /// Keep a share of the quote cash in Simple Earn ([`super::earn`]);
+    /// live only (the CLI refuses it elsewhere).
+    pub earn: Option<super::earn::EarnConfig>,
 }
 
 impl BinanceConfig {
@@ -289,11 +292,17 @@ impl Provider for BinanceSpotProvider {
             fills_recovered = r.fills_recovered,
             "reconciled with Binance"
         );
-        let instruments = books_instruments
+        let instruments: Vec<Instrument> = books_instruments
             .into_iter()
             .filter(|i| self.universe.contains(&i.id))
             .collect();
         let offset_ms = client.offset_ms();
+        // The cash the Earn sweep manages: the universe's one quote asset.
+        let quote = {
+            let mut q = instruments.iter().map(|i: &Instrument| i.quote.clone());
+            let first = q.next();
+            first.filter(|f| q.all(|x| x == *f))
+        };
         let broker = BinanceBroker::open(
             client,
             instruments,
@@ -302,6 +311,10 @@ impl Provider for BinanceSpotProvider {
         )
         .await?
         .with_recovered(r.fills);
+        let broker = match (self.config.earn, quote) {
+            (Some(cfg), Some(asset)) => broker.with_earn(super::earn::EarnSweep::new(cfg, asset)),
+            _ => broker,
+        };
         Ok(Box::new(match self.config.ws_api_url() {
             Some(url) => broker.with_user_stream(UserStream::spawn(
                 url.to_owned(),
@@ -343,6 +356,7 @@ mod tests {
             warmup: 0,
             max_outage: std::time::Duration::from_secs(600),
             user_stream: true,
+            earn: None,
         }
     }
 

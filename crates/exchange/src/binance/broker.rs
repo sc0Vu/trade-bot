@@ -100,6 +100,8 @@ pub struct BinanceBroker {
     repoll: HashSet<i64>,
     last_full_poll: Option<std::time::Instant>,
     full_poll_every: std::time::Duration,
+    /// Keeps a share of the quote cash in Simple Earn (`[earn]`).
+    earn: Option<super::earn::EarnSweep>,
 }
 
 /// What one poll found.
@@ -144,6 +146,7 @@ impl BinanceBroker {
             repoll: HashSet::new(),
             last_full_poll: None,
             full_poll_every: FULL_POLL_EVERY,
+            earn: None,
         })
     }
 
@@ -151,6 +154,13 @@ impl BinanceBroker {
     /// every [`FULL_POLL_EVERY`] (see the type's docs).
     pub fn with_user_stream(mut self, stream: UserStream) -> Self {
         self.stream = Some(stream);
+        self
+    }
+
+    /// Sweeps a share of the quote cash into Simple Earn from `settle`
+    /// (see [`super::earn`]).
+    pub fn with_earn(mut self, sweep: super::earn::EarnSweep) -> Self {
+        self.earn = Some(sweep);
         self
     }
 
@@ -528,6 +538,15 @@ impl Broker for BinanceBroker {
             }
         }
         fills.sort_by_key(|f| f.ts);
+        // The Earn sweep moves quote cash: never while a buy of ours could
+        // be spending it. A failure is a warning: the cash is safe either
+        // way, and the next sweep reads everything afresh.
+        let buying = self.open.iter().any(|o| o.order.side == Side::Buy);
+        if let Some(earn) = self.earn.as_mut().filter(|e| e.due() && !buying)
+            && let Err(e) = earn.sweep(&self.client).await
+        {
+            tracing::warn!(error = %e, "simple earn sweep failed; retrying at the next");
+        }
         Ok(fills)
     }
 
@@ -1231,6 +1250,7 @@ mod tests {
         let (b, t, _db, _binance) = streamed_broker().await;
         let mut b = BinanceBroker {
             full_poll_every: std::time::Duration::ZERO,
+            earn: None,
             ..b
         };
         reply_untouched(&t, 28);
@@ -1279,5 +1299,67 @@ mod tests {
         b.cancel(OrderId::new("o-1").unwrap()).await.unwrap();
         t.reply(200, r#"{"orderId":29}"#);
         b.submit(limit_buy("o-2")).await.unwrap();
+    }
+
+    fn earn_sweep() -> crate::binance::earn::EarnSweep {
+        crate::binance::earn::EarnSweep::new(
+            crate::binance::earn::EarnConfig {
+                ratio: dec!(0.1),
+                band: dec!(0.01),
+                product: crate::binance::earn::EarnProduct::Flexible,
+                every: std::time::Duration::ZERO,
+            },
+            bot_core::Asset::new("USDT").unwrap(),
+        )
+    }
+
+    /// No order working: settle sweeps (product list, account, position;
+    /// 1000 free and 100 in Earn is on target, nothing moved). With a buy
+    /// working it doesn't sweep at all: the buy may be spending the cash.
+    #[tokio::test]
+    async fn settle_sweeps_into_earn_only_while_no_buy_works() {
+        let (b, t, _db) = broker().await;
+        let mut b = b.with_earn(earn_sweep());
+        t.reply(200, r#"{"rows":[{"productId":"USDT001","canPurchase":true,"minPurchaseAmount":"0.1"}],"total":1}"#);
+        t.reply(
+            200,
+            r#"{"balances":[{"asset":"USDT","free":"900","locked":"0"}],"canTrade":true}"#,
+        );
+        t.reply(
+            200,
+            r#"{"rows":[{"totalAmount":"100","productId":"USDT001"}],"total":1}"#,
+        );
+        b.settle(&any_event()).await.unwrap();
+        let paths: Vec<String> = t.sent().iter().map(|r| r.path.clone()).collect();
+        assert_eq!(
+            paths,
+            [
+                "/sapi/v1/simple-earn/flexible/list",
+                "/api/v3/account",
+                "/sapi/v1/simple-earn/flexible/position"
+            ]
+        );
+
+        let (b, t, _db) = broker().await;
+        let mut b = b.with_earn(earn_sweep());
+        t.reply(200, r#"{"symbol":"BTCUSDT","orderId":28,"orderListId":-1,"clientOrderId":"o-1","transactTime":1700000000000}"#);
+        b.submit(order(
+            "o-1",
+            Side::Buy,
+            Size::Quote(Notional::new(dec!(100))),
+            OrderKind::Market,
+        ))
+        .await
+        .unwrap();
+        // The settle polls the working buy (status, trades) but sends no
+        // Earn request.
+        t.reply(200, r#"{"symbol":"BTCUSDT","orderId":28,"status":"NEW","executedQty":"0","cummulativeQuoteQty":"0","origQty":"0","type":"MARKET","side":"BUY"}"#);
+        t.reply(200, "[]");
+        let _ = b.settle(&any_event()).await;
+        assert!(
+            t.sent()
+                .iter()
+                .all(|r| !r.path.contains("simple-earn") && r.path != "/api/v3/account")
+        );
     }
 }

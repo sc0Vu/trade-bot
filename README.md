@@ -292,6 +292,13 @@ export BINANCE_API_KEY=… BINANCE_API_SECRET=…   # better: from a gitignored 
 make run-paper
 ```
 
+A live run can keep a share of its quote cash in Binance Simple Earn
+(`[earn] enabled = true`, `ratio = "0.1"` for 10%): every hour, while no buy
+is working, it tops the Earn balance up or redeems it back to that share,
+and strategies trade from the rest. Flexible products by default; a locked
+product is only topped up, never redeemed early. Binance serves Simple
+Earn on its live host only, so the config refuses it on testnet and demo.
+
 When a coin the bot trades is scheduled for delisting, the bot stops
 buying it at once and sells what it holds `delist_exit_hours` (default 24)
 before the delisting, whatever the strategy does. A live run reads the

@@ -104,6 +104,18 @@ history_len = 500
 # publish it).
 delist_exit_hours = 24
 
+# Keep a share of the quote cash in Binance Simple Earn. Off by default.
+# Live network only: Binance serves Simple Earn on its live host alone.
+# The ratio counts the account's whole quote cash (spot free + Earn), so
+# strategies trade from the rest; buys never wait on a redemption.
+[earn]
+# enabled = true
+# ratio = "0.1"            # keep 10% of the quote cash in Earn
+# band = "0.01"            # move only when off by more than 1% of it
+# product = "flexible"     # or "locked" (topped up, never redeemed early)
+# locked_days = 30         # term of the locked product (with "locked")
+# interval_minutes = 60    # time between sweeps
+
 [db]
 # Where `run` keeps its books: orders sent, fills, holdings. Default: one
 # SQLite file per network, data/<network>.db (data/ is gitignored). The

@@ -5,6 +5,7 @@
 
 mod broker;
 pub mod delist;
+pub mod earn;
 pub mod feed;
 mod fees;
 pub mod limits;

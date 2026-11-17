@@ -47,6 +47,9 @@ pub struct Config {
     pub api: ApiSection,
     #[serde(default)]
     pub log: LogSection,
+    /// Keep a share of the quote cash in Binance Simple Earn (live only).
+    #[serde(default)]
+    pub earn: EarnSection,
     /// How a paper run on a venue without a testnet (MAX) fills orders.
     /// Required with `exchange.venue = "max"`; unused on Binance, whose
     /// paper runs trade on its testnet or demo network.
@@ -92,6 +95,86 @@ pub struct PaperSection {
     /// the decision saw.
     #[serde(deserialize_with = "exact_decimal")]
     pub slippage_bps: Decimal,
+}
+
+/// `[earn]`: keep `ratio` of the quote cash in Binance Simple Earn.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EarnSection {
+    /// Off unless set.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Share of the quote cash (spot free + Earn) kept in Earn (`"0.1"` =
+    /// 10%). In (0, 1). Required when enabled.
+    #[serde(default, deserialize_with = "opt_exact_decimal")]
+    pub ratio: Option<Decimal>,
+    /// Move only when off by more than this share of the cash (`"0.01"`,
+    /// the default), so small moves don't churn. In [0, 0.5).
+    #[serde(default = "one_percent", deserialize_with = "exact_decimal")]
+    pub band: Decimal,
+    /// `flexible` (the default; redeemable any time) or `locked` (a
+    /// `locked_days` term: only topped up, never redeemed early).
+    #[serde(default)]
+    pub product: EarnProductKind,
+    /// Term of the locked product. Required with `product = "locked"`.
+    pub locked_days: Option<u32>,
+    /// Minutes between sweeps (default 60).
+    #[serde(default = "sixty")]
+    pub interval_minutes: u64,
+}
+
+/// `[earn] product`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EarnProductKind {
+    #[default]
+    Flexible,
+    Locked,
+}
+
+fn one_percent() -> Decimal {
+    Decimal::new(1, 2)
+}
+
+fn sixty() -> u64 {
+    60
+}
+
+impl Default for EarnSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ratio: None,
+            band: one_percent(),
+            product: EarnProductKind::Flexible,
+            locked_days: None,
+            interval_minutes: sixty(),
+        }
+    }
+}
+
+impl EarnSection {
+    /// The sweep settings, if enabled and valid (see `Config::validate`).
+    pub fn to_exchange(&self) -> Option<exchange::binance::earn::EarnConfig> {
+        if !self.enabled {
+            return None;
+        }
+        Some(exchange::binance::earn::EarnConfig {
+            ratio: self.ratio?,
+            band: self.band,
+            product: match self.product {
+                EarnProductKind::Flexible => exchange::binance::earn::EarnProduct::Flexible,
+                EarnProductKind::Locked => exchange::binance::earn::EarnProduct::Locked {
+                    days: self.locked_days?,
+                },
+            },
+            every: std::time::Duration::from_secs(self.interval_minutes.saturating_mul(60)),
+        })
+    }
+}
+
+fn opt_exact_decimal<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Decimal>, D::Error> {
+    exact_decimal(d).map(Some)
 }
 
 /// A decimal from a string only (`"0.0015"`), never a TOML float
@@ -422,6 +505,33 @@ impl Config {
                 bail!("paper.slippage_bps must be >= 0");
             }
         }
+        if self.earn.enabled {
+            let ratio = self
+                .earn
+                .ratio
+                .context("earn.enabled needs earn.ratio (e.g. \"0.1\" for 10%)")?;
+            if ratio <= Decimal::ZERO || ratio >= Decimal::ONE {
+                bail!("earn.ratio must be in (0, 1)");
+            }
+            if self.earn.band < Decimal::ZERO || self.earn.band >= Decimal::new(5, 1) {
+                bail!("earn.band must be in [0, 0.5)");
+            }
+            if self.earn.product == EarnProductKind::Locked && self.earn.locked_days.is_none() {
+                bail!("earn.product = \"locked\" needs earn.locked_days");
+            }
+            if self.earn.interval_minutes == 0 {
+                bail!("earn.interval_minutes must be >= 1");
+            }
+            if self.exchange.venue != Venue::Binance {
+                bail!("earn (Simple Earn) is Binance only");
+            }
+            if self.exchange.network != Network::Live {
+                bail!(
+                    "earn needs exchange.network = \"live\": Binance serves Simple Earn on \
+                     its live host only (demo and testnet answer 404)"
+                );
+            }
+        }
         if !self.metrics.listen.ip().is_loopback() && !self.metrics.allow_public {
             bail!(
                 "metrics.listen {} is not loopback; the endpoint has no authentication, \
@@ -601,6 +711,50 @@ mod tests {
         Jail::expect_with(|_| {
             let c = parse(&MIN.replace("[exchange]", "[exchange]\ninterval = \"1s\"")).unwrap();
             assert_eq!(c.exchange.interval, Interval::S1);
+            Ok(())
+        });
+    }
+
+    /// Off by default. Enabled: needs the live network, a ratio in (0, 1),
+    /// a term for a locked product; then it maps to the sweep's settings.
+    #[test]
+    fn earn_is_off_by_default_and_live_only() {
+        Jail::expect_with(|_| {
+            assert!(parse(MIN).unwrap().earn.to_exchange().is_none());
+            let with = |net: &str, earn: &str| {
+                parse(&format!(
+                    "{}\n[earn]\n{earn}",
+                    MIN.replace("[exchange]", &format!("[exchange]\nnetwork = \"{net}\""))
+                ))
+            };
+            let err = |r: anyhow::Result<Config>| r.unwrap_err().to_string();
+            assert!(err(with("demo", "enabled = true\nratio = \"0.1\"")).contains("live"));
+            assert!(err(with("live", "enabled = true")).contains("ratio"));
+            assert!(err(with("live", "enabled = true\nratio = \"1\"")).contains("(0, 1)"));
+            assert!(
+                with("live", "enabled = true\nratio = 0.1").is_err(),
+                "float"
+            );
+            assert!(
+                err(with(
+                    "live",
+                    "enabled = true\nratio = \"0.1\"\nproduct = \"locked\""
+                ))
+                .contains("locked_days")
+            );
+            let c = with(
+                "live",
+                "enabled = true\nratio = \"0.1\"\nproduct = \"locked\"\nlocked_days = 30",
+            )
+            .unwrap();
+            let e = c.earn.to_exchange().unwrap();
+            assert_eq!(e.ratio, Decimal::new(1, 1));
+            assert_eq!(e.band, Decimal::new(1, 2));
+            assert_eq!(
+                e.product,
+                exchange::binance::earn::EarnProduct::Locked { days: 30 }
+            );
+            assert_eq!(e.every, std::time::Duration::from_secs(3600));
             Ok(())
         });
     }

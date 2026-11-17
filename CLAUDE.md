@@ -344,6 +344,17 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    since) → per-symbol asks, unknown = not trading (public client reports
    venue errors as `Http` with body: feed keeps retrying 429). Checked on
    demo 2026-11-17 (`live_trading_status`, ignored test).
+   Simple Earn (`binance::earn`, config `[earn]`: enabled=false, ratio, band
+   "0.01", product flexible|locked + locked_days, interval_minutes 60; live
+   network + Binance only, validated): `EarnSweep` from `BinanceBroker::settle`
+   when due and no buy of ours working; reads `/api/v3/account` free quote +
+   flexible (and locked) positions fresh each sweep (5xx = unknown outcome →
+   seen next time, never retried); `plan`: fund = spot free + earn, move to
+   ratio·fund if off by > band·fund (subscribe ≥ product min, ≤ spot; redeem
+   flexible only; 8 dp truncated). Locked: top up only, `redeemTo` SPOT, no
+   auto-renew. Ratio counts the account's whole quote cash. Amounts at debug
+   log only. Docs read 2026-11-17 (list/position weight 150, sub/redeem 1);
+   demo/testnet 404; not yet run live.
    Delisting schedule (`binance::delist`): live network on Binance's own host
    only (demo/testnet 404, checked 2026-11-17) → `DelistWatch` wraps the feed,
    polls `GET /sapi/v1/spot/delist-schedule` (`SignedClient::keyed`: key, no
