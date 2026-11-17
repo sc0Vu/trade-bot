@@ -9,8 +9,11 @@
 //!
 //! A perpetual buys nothing outright: its fills move "cash" (the wallet)
 //! only by realized P&L and fees, funding settlements (`MarketEvent::
-//! Funding`, replayed before same-time fills, as the engine sees them)
-//! by what they pay, and equity counts its unrealized P&L at the latest
+//! Funding`) by what they pay, and a settlement counts before every fill
+//! settled at the first close time at or after it, as the broker sees it
+//! (the feed delivers it before that candle, whose fills, stamped at its
+//! open, may precede it on the clock: Binance stamps funding ms after the
+//! hour), and equity counts its unrealized P&L at the latest
 //! close (qty × close − entry notional), not its notional. A closed trade
 //! is any fill that shrinks the position, liquidations included.
 
@@ -159,21 +162,12 @@ impl Report {
                 interest += ledger.cash * (e.ratio * e.apr * years);
             }
             prev = Some(t);
-            loop {
-                // Funding at ts settles before fills at ts (feed order).
-                let next_fill = fills.peek().map(|f| f.ts).filter(|ts| *ts <= t);
-                match funding.peek() {
-                    Some(&(ts, id, rate, mark)) if ts <= t && next_fill.is_none_or(|f| ts <= f) => {
-                        ledger.fund(id, rate, mark);
-                        funding.next();
-                        ledger.instant_done();
-                        continue;
-                    }
-                    _ => {}
-                }
-                let Some(f) = fills.next_if(|f| f.ts <= t) else {
-                    break;
-                };
+            // Funding up to this close came before its candle (module docs).
+            while let Some((_, id, rate, mark)) = funding.next_if(|f| f.0 <= t) {
+                ledger.fund(id, rate, mark);
+                ledger.instant_done();
+            }
+            while let Some(f) = fills.next_if(|f| f.ts <= t) {
                 if let Some(inst) = by_id.get(&f.instrument) {
                     ledger.apply(f, inst);
                 }
@@ -614,9 +608,10 @@ mod tests {
     }
 
     /// Perpetual short, wallet 10,000: sell 1 @ 30,000 (fee 15) at t1's
-    /// open; funding 0.01% at mark 29,500 at t3's open, before t3's buy
-    /// back @ 29,000 (fee 14.5) at that same instant: the short receives
-    /// 2.95. Cash: 9,985 → 9,987.95 → +1,000 − 14.5 = 10,973.45.
+    /// open; funding 0.01% at mark 29,500 stamped 15 ms after t3's open,
+    /// later on the clock than t3's buy back @ 29,000 (fee 14.5, stamped at
+    /// the open) but settled before it, as the broker does (t3's fills
+    /// come with t3's close): the short receives 2.95. Cash: 9,985 → 9,987.95 → +1,000 − 14.5 = 10,973.45.
     /// Equity per close: t0 10,000; t1 (31,000) 9,985 − 1,000 = 8,985;
     /// t2 (29,000) 9,985 + 1,000 = 10,985; t3 10,973.45 → max drawdown
     /// 1,015 / 10,000. Realized −15 + 2.95 + 985.5 = 973.45; one closed
@@ -646,7 +641,7 @@ mod tests {
             instrument: id.clone(),
             rate: dec!(0.0001),
             mark: Price::new(dec!(29500)),
-            ts: Timestamp::from_millis(3 * HOUR),
+            ts: Timestamp::from_millis(3 * HOUR + 15),
         }];
         let r = Report::compute_full(
             &run,

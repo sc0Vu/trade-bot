@@ -144,7 +144,8 @@ Backtest: `BacktestProvider::with_perp(PerpSetup { terms, clearance })`
 → PerpPaperBroker (wallet = initial cash; asset classes = Perpetual only),
 `with_events` merges `Funding` (engine: Funding → ctx position refreshed,
 no fill). `Report::compute_full(.., events, ..)`: perp fills move cash by
-realized only, funding booked before same-ts fills, equity = cash + qty·close
+realized only, funding booked before fills settled at the first close ≥ it
+(broker order; Binance stamps funding ms after the hour), equity = cash + qty·close
 − basis, closed trade = fill against the position; `Report.funding`. Last price ≠ mark: cautious.
 Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
