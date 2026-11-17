@@ -122,6 +122,13 @@ against the position closes first (realized = closed·(px − entry)·sign), res
 flips at fill px; fees (quote only, base refused) and funding
 (`apply_funding(rate, mark)`: −qty·mark·rate, longs pay at rate > 0) →
 realized. `MarketEvent::Funding { instrument, rate, mark, ts }`.
+`core::margin` (one-way USDⓈ-M): `Brackets` (contiguous from 0: floor/cap,
+max_leverage, rate, cum; = `/fapi/v1/leverageBracket`), maintenance =
+|notional|·rate − cum, `initial_margin` = notional/leverage,
+`unrealized_pnl` = qty·mark − basis, `liquidation_price` = Binance FAQ
+(WB − TMM₁ + UPNL₁ + cum − side·size·EP)/(size·MMR − side·size), bracket
+chosen where the LP notional falls; isolated: WB = isolated wallet, others
+0. Pinned by the FAQ's worked example (1,153.26 / 26,316.89).
 Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as

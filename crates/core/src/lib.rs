@@ -15,6 +15,7 @@ mod error;
 mod fill;
 mod ids;
 mod instrument;
+pub mod margin;
 mod market;
 mod money;
 mod order;
