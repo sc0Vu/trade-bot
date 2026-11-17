@@ -296,4 +296,109 @@ mod tests {
         );
         assert_eq!(r.final_equity, Notional::new(dec!(1000)));
     }
+
+    /// sma_long_short (SMA 3, notional 1,000) on a perpetual, isolated 2x,
+    /// wallet 1,000, no fees or slippage; each bar opens at the previous
+    /// close. Closes 100 100 100 110 90 80 120 120:
+    /// - t3 (110 > SMA 103.33): buy 9.0909 → t4's open 110, margin 499.9995.
+    /// - t4 (90 < SMA 100): flip, sell 20.20201 → t5's open 90: the long
+    ///   loses 9.0909 × 20 = 181.818, short 11.11111 @ 90 (margin
+    ///   499.99995); wallet 500.0005 + 499.9995 − 181.818 − 499.99995 =
+    ///   318.18205.
+    /// - t5 (80 < SMA 93.33): stays short. Equity 818.182 + 11.11111 × 10
+    ///   = 929.2931.
+    /// - t6 (120 > SMA 96.67): flip back needs 8.33333 × 120 / 2 = 499.9998
+    ///   new margin less 499.99995 − 333.3333 returned = 333.33315 >
+    ///   318.18205 free → refused; t7 (SMA 106.67) the same.
+    /// Final equity: 818.182 − 11.11111 × 30 = 484.8487.
+    #[tokio::test]
+    async fn sma_long_short_trades_both_sides_of_a_perpetual() {
+        use bot_core::margin::{Bracket, Brackets, MarginMode};
+        use bot_core::{AssetClass, Decimal, Instrument, InstrumentSpec, Side};
+        use exchange::paper::PerpTerms;
+        use std::collections::HashMap;
+        let perp = Instrument::new(InstrumentSpec {
+            class: AssetClass::Perpetual,
+            ..(*btcusdt()).clone()
+        })
+        .unwrap();
+        let id = perp.id.clone();
+        let closes = ["100", "100", "100", "110", "90", "80", "120", "120"];
+        let mut prev = "100";
+        let mut bars = Vec::new();
+        for (i, c) in closes.iter().enumerate() {
+            let (o, cl): (Decimal, Decimal) = (prev.parse().unwrap(), c.parse().unwrap());
+            let (h, l) = (o.max(cl).to_string(), o.min(cl).to_string());
+            bars.push(candle(&id, i as i64, [prev, &h, &l, c]));
+            prev = c;
+        }
+        let brackets = Brackets::new(vec![Bracket {
+            floor: Notional::ZERO,
+            cap: Notional::new(dec!(1000000)),
+            max_leverage: 20,
+            rate: dec!(0.004),
+            cum: dec!(0),
+        }])
+        .unwrap();
+        let provider = BacktestProvider::new(
+            vec![perp],
+            bars,
+            PaperConfig {
+                fees: RateFee::new(dec!(0), dec!(0), FeeAsset::Quote).unwrap(),
+                slippage: BpsSlippage::zero(),
+                initial_cash: Notional::new(dec!(1000)),
+            },
+        )
+        .with_perp(crate::PerpSetup {
+            terms: HashMap::from([(
+                id.clone(),
+                PerpTerms {
+                    leverage: 2,
+                    mode: MarginMode::Isolated,
+                    brackets,
+                },
+            )]),
+            clearance: dec!(0.0125),
+        });
+        let params = Params::from_toml(
+            "coin = \"binance:BTCUSDT\"\nsma_period = 3\nnotional = \"1000\"\nfee = \"0\"\nslippage_bps = \"0\"",
+        )
+        .unwrap();
+        let mut s = strategy::build("sma_long_short", &params).unwrap();
+        let config = EngineConfig {
+            whitelist: vec![id],
+            history_len: 10,
+            ..Default::default()
+        };
+        let run = engine::run(&provider, s.as_mut(), params, &config)
+            .await
+            .unwrap();
+        let fills: Vec<(Side, Decimal, Decimal)> = run
+            .fills
+            .iter()
+            .map(|f| (f.side, f.qty.get(), f.price.get()))
+            .collect();
+        assert_eq!(
+            fills,
+            vec![
+                (Side::Buy, dec!(9.0909), dec!(110)),
+                (Side::Sell, dec!(20.20201), dec!(90)),
+            ]
+        );
+        assert_eq!(run.rejections.len(), 2);
+        assert!(run.rejections.iter().all(|r| r.reason.contains("margin")));
+        let r = Report::compute_full(
+            &run,
+            provider.candles(),
+            provider.events(),
+            provider.instruments(),
+            provider.initial_cash(),
+            Interval::H1,
+            None,
+        );
+        assert_eq!(r.final_equity, Notional::new(dec!(484.8487)));
+        assert_eq!(r.realized_pnl, Notional::new(dec!(-181.818)));
+        // Peak 1,000 → trough 484.8487.
+        assert_eq!(r.max_drawdown, dec!(0.5151513));
+    }
 }

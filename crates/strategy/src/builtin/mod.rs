@@ -56,6 +56,7 @@ pub mod ratio_hop;
 pub mod rebalance;
 pub mod risk_parity;
 pub mod rsi_reversion;
+pub mod sma_long_short;
 pub mod sma_trend;
 pub mod stochastic;
 pub mod supertrend;

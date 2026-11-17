@@ -203,6 +203,7 @@ footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--m
         <tbody>
           <tr><td>buy_and_hold</td><td>Nothing: the benchmark. Buys once, holds forever.</td><td>The coin falls.</td></tr>
           <tr><td>dca</td><td>Spreading entry over time (hour, day, week, month).</td><td>Removes timing risk, not direction risk; buys all the way down.</td></tr>
+          <tr><td>sma_long_short</td><td>Trends both ways: long above the SMA, short below on a perpetual (cash on spot).</td><td>Whipsaws and funding on both sides.</td></tr>
           <tr><td>sma_trend</td><td>Trends: long above the SMA, cash below.</td><td>Ranges cause whipsaws.</td></tr>
           <tr><td>ichimoku</td><td>Trends confirmed twice: price clear of the cloud and Tenkan over Kijun.</td><td>Late entries and exits; a wide cloud gives back much of a move.</td></tr>
           <tr><td>supertrend</td><td>Trends, with an ATR trailing stop that only ratchets toward price.</td><td>Turns: gives back up to mult ATRs each time; chop that crosses the band.</td></tr>

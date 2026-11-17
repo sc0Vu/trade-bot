@@ -7,6 +7,7 @@ One complete, runnable config per built-in strategy:
 | `avwap.toml` | one coin, long above its anchored VWAP |
 | `buy_and_hold.toml` | the benchmark: buy once, hold |
 | `dca.toml` | one coin, a fixed buy every period, hold |
+| `sma_long_short.toml` | one coin, long above its moving average, short below on a perpetual (flat on spot) |
 | `sma_trend.toml` | one coin, long above its moving average |
 | `dual_ma_cross.toml` | one coin, long while the fast average is above the slow |
 | `macd_cross.toml` | one coin, long while MACD is above its signal |

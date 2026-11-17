@@ -1,0 +1,32 @@
+# sma_long_short: one coin, long above its simple moving average, short
+# below it where the instrument can be shorted (USDⓈ-M perpetuals), flat
+# below it on spot (as here: perpetuals are backtest-only so far). Fixed
+# notional per entry, flips in one order. Textbook params, not tuned; edge
+# unverified. Backtest before trusting it; on a perpetual:
+#
+#   cargo run -p cli -- backtest --venue binance-usdm --strategy sma_long_short \
+#       --params p.toml --symbol BTCUSDT --from 2026-01-01 --to 2026-08-01 \
+#       --fee 0.0005 --slippage-bps 2 --leverage 2
+#
+#   cargo run -p cli -- run --paper --config config/examples/sma_long_short.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "sma_long_short"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+sma_period = 200        # closes in the average; <= engine.history_len
+band_pct = "0.01"       # 1% dead zone each side, against whipsaw
+notional = "100"        # USDT per position at entry (base units = notional / close)
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 500

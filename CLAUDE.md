@@ -649,7 +649,7 @@ Start. No/refused state: resume on most valuable sellable held coin
 (baselines from that eval), else buy `quote_amount`. Flat start (every
 backtest) unchanged.
 Every built-in saves state (`builtin::STATE_VERSION` = 1): stateless ones
-(sma_trend, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
+(sma_trend, sma_long_short, dual_ma_cross, donchian_breakout, atr_breakout, rsi_reversion, avwap,
 volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross,
 ichimoku,
 supertrend,
@@ -693,6 +693,13 @@ Monday/`month`, `builtin::calendar`, shared with avwap). Optional
 `max_buys`. Order on coin working → retry next candle same period; rejected
 → uncounted, period stays used (no `-2010` loop). Never sells. Removes
 entry-timing risk, not direction risk; fee + slippage per buy.
+`sma_long_short` — `sma_trend` both ways: long above SMA·(1+band), short
+below SMA·(1−band) if `allows_short` (perp), else flat (spot = sma_trend
+sized in base). `notional` (quote) → lot(notional/close) base at entry; flip
+= one market order (held + new); dust = flat; idle only (open or
+cancelling → nothing). Stateless. Leverage/margin = broker's, unseen.
+Funding + whipsaw costs both sides; pinned on a perp through the engine
+(`backtest` runner test: 2x flip back refused for margin, equity 484.8487).
 `sma_trend` — one coin, long or flat (cash = defensive; v1 spot no short).
 Long while close > SMA(`sma_period` closes, current bar included) ×
 (1 + `band_pct`); cash below SMA × (1 − `band_pct`). Buy = quote-budget market
@@ -890,7 +897,7 @@ crates/
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
                buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, ichimoku, macd_cross,
                momentum_rotation, pair_reversion, ratio_hop, rebalance, risk_parity, rsi_reversion,
-               sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, vol_target,
+               sma_long_short, sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, vol_target,
                volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;
