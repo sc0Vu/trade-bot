@@ -42,6 +42,9 @@ pub struct EtoroInstrument {
     pub etoro_id: i64,
     /// eToro's asset type (`Stocks`, `Crypto`, `ETF`, ...).
     pub kind: String,
+    /// eToro's `requiresW8Ben`: a real account must have the US tax form
+    /// (W-8BEN) on file to trade it (US stocks).
+    pub requires_w8ben: bool,
 }
 
 fn decode(what: impl Into<String>) -> ExchangeError {
@@ -98,6 +101,25 @@ impl EtoroClient {
         Ok((id, kind, display))
     }
 
+    /// Whether eToro instrument `id` can be traded right now
+    /// (`isCurrentlyTradable` from the instrument search: false while its
+    /// market is closed — a London stock in the US afternoon — checked on
+    /// demo 2026-11-18; `isExchangeOpen` means something else and is false
+    /// for BTC).
+    pub async fn tradable_now(&self, id: i64) -> Result<bool, ExchangeError> {
+        let body = self
+            .get(
+                Pool::MarketData,
+                "/api/v1/market-data/search",
+                &[
+                    ("fields", "instrumentId,isCurrentlyTradable".to_owned()),
+                    ("instrumentId", id.to_string()),
+                ],
+            )
+            .await?;
+        parse_tradable(&body, id)
+    }
+
     /// `symbol` as a tradable instrument for this account (module docs).
     pub async fn instrument(&self, symbol: &Symbol) -> Result<EtoroInstrument, ExchangeError> {
         let (id, kind, _) = self.lookup(symbol).await?;
@@ -114,7 +136,22 @@ impl EtoroClient {
             )
             .await?;
         let body = ok(&path, reply)?;
-        parse_instrument(&body, symbol, id, kind)
+        let found = parse_instrument(&body, symbol, id, kind)?;
+        // Orders, fees and the books are in USD: an instrument priced in
+        // another currency (BARC.L in pence, 7203.T in yen) would mix them.
+        let rates = self
+            .get(
+                Pool::MarketData,
+                "/api/v1/market-data/instruments/rates",
+                &[("instrumentIds", id.to_string())],
+            )
+            .await?;
+        if !usd_priced(&rates, id)? {
+            return Err(ExchangeError::Rejected(
+                "this eToro instrument is priced in a currency other than USD (not supported yet)",
+            ));
+        }
+        Ok(found)
     }
 
     /// Closed candles of eToro instrument `id` (ours: `instrument`) with
@@ -220,6 +257,8 @@ pub(crate) fn parse_instrument(
         #[serde(borrow)]
         min_position_exposure: &'a RawValue,
         allow_open_position: bool,
+        #[serde(default)]
+        requires_w8_ben: Option<bool>,
         units_quantity_type: String,
         leverage_configs: Vec<Config>,
     }
@@ -278,7 +317,52 @@ pub(crate) fn parse_instrument(
         instrument,
         etoro_id: id,
         kind,
+        requires_w8ben: e.requires_w8_ben.unwrap_or(false),
     })
+}
+
+/// Whether a rates reply prices instrument `id` in USD: both conversion
+/// rates exactly 1 (BARC.L: 0.013219, pence → USD; checked 2026-11-18).
+pub(crate) fn usd_priced(body: &str, id: i64) -> Result<bool, ExchangeError> {
+    #[derive(Deserialize)]
+    struct Reply<'a> {
+        #[serde(borrow)]
+        rates: Vec<Rate<'a>>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Rate<'a> {
+        #[serde(rename = "instrumentID")]
+        instrument_id: i64,
+        #[serde(borrow)]
+        conversion_rate_ask: &'a RawValue,
+        #[serde(borrow)]
+        conversion_rate_bid: &'a RawValue,
+    }
+    let r: Reply = serde_json::from_str(body).map_err(|e| decode(format!("rates: {e}")))?;
+    let rate = r
+        .rates
+        .iter()
+        .find(|x| x.instrument_id == id)
+        .ok_or_else(|| decode(format!("rates: none for instrument {id}")))?;
+    Ok(
+        raw_decimal(rate.conversion_rate_ask, "conversionRateAsk")? == Decimal::ONE
+            && raw_decimal(rate.conversion_rate_bid, "conversionRateBid")? == Decimal::ONE,
+    )
+}
+
+/// A search reply → instrument `id`'s `isCurrentlyTradable`.
+pub(crate) fn parse_tradable(body: &str, id: i64) -> Result<bool, ExchangeError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| decode(format!("search: {e}")))?;
+    v["items"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|i| i["instrumentId"].as_i64() == Some(id))
+        })
+        .and_then(|i| i["isCurrentlyTradable"].as_bool())
+        .ok_or_else(|| decode(format!("search: no tradability for instrument {id}")))
 }
 
 fn candle(
@@ -508,6 +592,16 @@ mod tests {
             (dec!(0.00000001), dec!(10))
         );
         assert_eq!(e.etoro_id, 1001);
+        assert!(!e.requires_w8ben);
+        let w8 = body.replace(
+            r#""allowOpenPosition":true"#,
+            r#""allowOpenPosition":true,"requiresW8Ben":true"#,
+        );
+        assert!(
+            parse_instrument(&w8, &"AAPL".parse().unwrap(), 1001, "Stocks".into())
+                .unwrap()
+                .requires_w8ben
+        );
         let cfd = r#"{"eligibilities":[{"instrumentId":315,"minPositionExposure":50,"allowOpenPosition":true,"unitsQuantityType":"Whole","leverageConfigs":[{"settlementType":"CFD","direction":"LONG","leverageValues":[2,5]}]}]}"#;
         assert!(parse_instrument(cfd, &"BTCFUT".parse().unwrap(), 315, "CFD".into()).is_err());
     }
@@ -526,5 +620,25 @@ mod tests {
         assert_eq!(bars[0].close.get(), dec!(350.82));
         assert_eq!(bars[0].volume.get(), dec!(15009.0));
         assert_eq!(bars[1].volume.get(), dec!(0));
+    }
+
+    /// Real replies (2026-11-18, 18:39 UTC): BARC.L closed, AAPL open.
+    #[test]
+    fn tradability_comes_from_is_currently_tradable() {
+        let closed = r#"{"page":1,"items":[{"internalSymbolFull":"BARC.L","instrumentId":2013,"isCurrentlyTradable":false,"isExchangeOpen":false}]}"#;
+        assert!(!parse_tradable(closed, 2013).unwrap());
+        let open = r#"{"items":[{"instrumentId":1001,"isCurrentlyTradable":true,"isExchangeOpen":false}]}"#;
+        assert!(parse_tradable(open, 1001).unwrap());
+        assert!(parse_tradable(open, 7).is_err());
+    }
+
+    /// Real rates (2026-11-18): AAPL converts at 1.0 (USD), BARC.L at
+    /// 0.013219 (pence).
+    #[test]
+    fn only_usd_priced_instruments_pass() {
+        let body = r#"{"rates":[{"instrumentID":1001,"ask":350.93,"bid":350.86,"conversionRateAsk":1.0,"conversionRateBid":1.0},{"instrumentID":2013,"ask":417.9,"conversionRateAsk":0.013219,"conversionRateBid":0.013218}]}"#;
+        assert!(usd_priced(body, 1001).unwrap());
+        assert!(!usd_priced(body, 2013).unwrap());
+        assert!(usd_priced(body, 5).is_err());
     }
 }

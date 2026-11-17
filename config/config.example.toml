@@ -101,6 +101,11 @@ limit_timeout = 3
 # brackets_from = "demo"    # "demo" (default), "testnet" or "live"
 # clearance = "0.0125"      # default: the symbols' published liquidationFee
 
+# eToro account declarations (exchange.venue = "etoro" only).
+# [etoro]
+# w8ben_signed = false      # true once your W-8BEN is on file: a real account
+#                           # needs it for US stocks (refused at start otherwise)
+
 # The local paper broker, for venue = "max" (Binance paper runs use its
 # testnet or demo network instead). Same model as `backtest`: an order
 # fills at the next bar's open, taker fills slipped. Positions live in

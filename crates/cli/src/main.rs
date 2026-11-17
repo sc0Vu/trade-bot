@@ -531,6 +531,7 @@ async fn run_etoro(cfg: config::Config, network: Network) -> anyhow::Result<()> 
             interval: cfg.exchange.interval,
             warmup: cfg.engine.history_len,
             max_outage: Duration::from_secs(cfg.exchange.max_outage_secs),
+            w8ben_signed: cfg.etoro.as_ref().is_some_and(|e| e.w8ben_signed),
         },
         cfg.whitelist.clone(),
         books.clone(),

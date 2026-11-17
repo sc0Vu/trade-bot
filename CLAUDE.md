@@ -560,6 +560,17 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    refuse start. Cancel refused (market orders). Demo 2026-11-18: hand
    round trip + sma_trend 1m run (buy, sell, stop) → books = account to the
    cent (realized −0.41540728 vs credit −0.42).
+   USD-priced only: `instrument` refuses conversionRateAsk/Bid ≠ 1
+   (`/api/v1/market-data/instruments/rates`; BARC.L pence 0.013219, 7203.T
+   yen). Market hours: `feed::MarketHours` wraps the feed, polls each
+   instrument's `isCurrentlyTradable` (`/api/v1/market-data/search`;
+   `isExchangeOpen` ≠ open: false for BTC) before the first event + every
+   `STATUS_POLL` (60 s) → `TradingStatus` on change (closed = halted: risk
+   refuses, single-coin waits, multi-coin trades the open ones), stamped
+   with the next event; poll failure keeps last state. `AAPL` = extended
+   hours, `AAPL.RTH` = regular hours. Config `[etoro] w8ben_signed`
+   (default false; etoro venue only): real account + eligibility
+   `requiresW8Ben` + not declared → refused at start (demo exempt).
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety

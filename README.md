@@ -434,6 +434,16 @@ top of a buy's amount. Bars are polled a few seconds after each interval
 boundary; a closed market simply produces none. Give the bot its symbols
 to itself: a sell closes the account's oldest positions on that symbol.
 
+Stocks keep market hours. The bot asks eToro every minute whether each
+instrument can be traded now and treats a closed market like a halt: no
+orders on it until it opens. A single-stock strategy waits overnight; a
+strategy over several instruments (`etoro:AAPL` with `etoro:BTC`, say)
+keeps trading the ones that are open. `etoro:AAPL` trades eToro's extended
+hours; `etoro:AAPL.RTH` regular hours only. Only USD-priced instruments are
+supported (a London or Tokyo stock is refused). On a real account US
+stocks need a W-8BEN on file with eToro; declare it with `[etoro]
+w8ben_signed = true`, or the bot refuses them at start.
+
 ### MAX (MaiCoin)
 
 MAX has no testnet, so the bot never sends it orders yet. With

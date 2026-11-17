@@ -144,12 +144,116 @@ impl MarketData for EtoroFeed {
     }
 }
 
+/// How often [`MarketHours`] asks whether each market is open.
+pub const STATUS_POLL: Duration = Duration::from_secs(60);
+
+/// Where [`MarketHours`] reads tradability from.
+#[async_trait]
+pub trait TradableSource: Send + Sync {
+    async fn tradable(&self, etoro_id: i64) -> Result<bool, ExchangeError>;
+}
+
+#[async_trait]
+impl TradableSource for EtoroClient {
+    async fn tradable(&self, etoro_id: i64) -> Result<bool, ExchangeError> {
+        self.tradable_now(etoro_id).await
+    }
+}
+
+/// A feed that also reports when each instrument's market opens and
+/// closes, as `MarketEvent::TradingStatus` (`trading: false` while
+/// closed). The engine then treats a closed market like a halt: risk
+/// refuses orders on it, single-coin strategies wait, multi-coin ones
+/// trade the instruments that are open (a stock sleeps overnight while
+/// crypto keeps going). Polled before the first event and every `every`;
+/// changes only, the first poll reporting markets already closed; stamped
+/// with the next market event's time and delivered before it. A failed
+/// poll is a warning: the last known state stands.
+pub struct MarketHours {
+    inner: Box<dyn MarketData>,
+    source: Box<dyn TradableSource>,
+    ids: Vec<(InstrumentId, i64)>,
+    every: Duration,
+    last_poll: Option<Instant>,
+    /// Instruments the events sent so far report closed.
+    closed: std::collections::HashSet<InstrumentId>,
+    queue: VecDeque<MarketEvent>,
+}
+
+impl MarketHours {
+    pub fn new(
+        inner: Box<dyn MarketData>,
+        source: Box<dyn TradableSource>,
+        ids: Vec<(InstrumentId, i64)>,
+        every: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            source,
+            ids,
+            every,
+            last_poll: None,
+            closed: std::collections::HashSet::new(),
+            queue: VecDeque::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl MarketData for MarketHours {
+    async fn next(&mut self) -> Result<Option<MarketEvent>, ExchangeError> {
+        if let Some(e) = self.queue.pop_front() {
+            return Ok(Some(e));
+        }
+        let Some(event) = self.inner.next().await? else {
+            return Ok(None);
+        };
+        if self.last_poll.is_none_or(|t| t.elapsed() >= self.every) {
+            self.last_poll = Some(Instant::now());
+            for (id, etoro_id) in &self.ids {
+                match self.source.tradable(*etoro_id).await {
+                    Ok(open) => {
+                        let was_closed = self.closed.contains(id);
+                        if open == was_closed {
+                            if open {
+                                self.closed.remove(id);
+                                tracing::info!(instrument = %id, "eToro market open");
+                            } else {
+                                self.closed.insert(id.clone());
+                                tracing::info!(instrument = %id, "eToro market closed: no orders until it opens");
+                            }
+                            self.queue.push_back(MarketEvent::TradingStatus {
+                                instrument: id.clone(),
+                                trading: open,
+                                ts: event.ts(),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(instrument = %id, error = %e, "eToro market status unavailable; keeping the last known")
+                    }
+                }
+            }
+        }
+        if self.queue.is_empty() {
+            return Ok(Some(event));
+        }
+        self.queue.push_back(event);
+        Ok(self.queue.pop_front())
+    }
+}
+
 /// How an eToro run connects.
 #[derive(Clone, Debug)]
 pub struct EtoroConfig {
     pub interval: Interval,
     pub warmup: usize,
     pub max_outage: Duration,
+    /// The account holder declared a signed W-8BEN (`[etoro]
+    /// w8ben_signed`): a real account may then trade instruments eToro
+    /// flags `requiresW8Ben` (US stocks); without it they are refused at
+    /// start. Demo accounts don't need it.
+    pub w8ben_signed: bool,
 }
 
 /// eToro as a provider: [`EtoroFeed`] and [`EtoroBroker`] on one account.
@@ -188,6 +292,15 @@ impl EtoroProvider {
                 return Err(ExchangeError::UnknownInstrument(id.clone()));
             }
             let e = self.client.instrument(id.symbol()).await?;
+            if e.requires_w8ben
+                && !self.config.w8ben_signed
+                && self.client.account() == super::Account::Real
+            {
+                return Err(ExchangeError::Credentials(format!(
+                    "{id}: eToro requires a signed W-8BEN to trade it; once it is on file, \
+                     set [etoro] w8ben_signed = true"
+                )));
+            }
             out.push((e.instrument, e.etoro_id));
         }
         Ok(out)
@@ -222,12 +335,18 @@ impl Provider for EtoroProvider {
             let (etoro_id, _, _) = self.client.lookup(id.symbol()).await?;
             ids.push((id.clone(), etoro_id));
         }
-        Ok(Box::new(EtoroFeed::new(
+        let feed = EtoroFeed::new(
             self.client.clone(),
-            ids,
+            ids.clone(),
             self.config.interval,
             self.config.warmup,
             self.config.max_outage,
+        );
+        Ok(Box::new(MarketHours::new(
+            Box::new(feed),
+            Box::new(self.client.clone()),
+            ids,
+            STATUS_POLL,
         )))
     }
 
@@ -331,5 +450,69 @@ mod tests {
                 .collect();
         assert_eq!(got, want);
         assert!(matches!(f.queue[4], MarketEvent::Candle(_)));
+    }
+
+    struct Script(std::sync::Mutex<VecDeque<Result<bool, ExchangeError>>>);
+
+    #[async_trait]
+    impl TradableSource for Script {
+        async fn tradable(&self, _: i64) -> Result<bool, ExchangeError> {
+            self.0.lock().unwrap().pop_front().unwrap_or(Ok(true))
+        }
+    }
+
+    struct Bars(VecDeque<MarketEvent>);
+
+    #[async_trait]
+    impl MarketData for Bars {
+        async fn next(&mut self) -> Result<Option<MarketEvent>, ExchangeError> {
+            Ok(self.0.pop_front())
+        }
+    }
+
+    /// One instrument, polled at every event (`every` 0): closed (event
+    /// sent before bar 1, stamped with its time), still closed (nothing),
+    /// poll failure (last state kept, nothing), open (sent before bar 4).
+    #[tokio::test]
+    async fn market_hours_report_changes_only() {
+        let id: InstrumentId = "etoro:BARC.L".parse().unwrap();
+        let source = Script(std::sync::Mutex::new(VecDeque::from([
+            Ok(false),
+            Ok(false),
+            Err(ExchangeError::Http("down".into())),
+            Ok(true),
+        ])));
+        let bars = Bars(
+            (1..=4)
+                .map(|i| MarketEvent::Candle(bar("BARC.L", i)))
+                .collect(),
+        );
+        let mut w = MarketHours::new(
+            Box::new(bars),
+            Box::new(source),
+            vec![(id.clone(), 2013)],
+            Duration::ZERO,
+        );
+        let mut out = Vec::new();
+        while let Some(e) = w.next().await.unwrap() {
+            out.push(match e {
+                MarketEvent::TradingStatus { trading, ts, .. } => {
+                    format!("status {trading} @{}", ts.as_millis() / 3_600_000)
+                }
+                MarketEvent::Candle(c) => format!("bar {}", c.open_time.as_millis() / 3_600_000),
+                _ => unreachable!(),
+            });
+        }
+        assert_eq!(
+            out,
+            [
+                "status false @1",
+                "bar 1",
+                "bar 2",
+                "bar 3",
+                "status true @4",
+                "bar 4"
+            ]
+        );
     }
 }

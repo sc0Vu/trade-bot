@@ -57,6 +57,20 @@ pub struct Config {
     /// Margin terms of a perpetual paper run (`exchange.venue =
     /// "binance-usdm"`, required there).
     pub perp: Option<PerpSection>,
+    /// eToro account declarations (`exchange.venue = "etoro"` only).
+    pub etoro: Option<EtoroSection>,
+}
+
+/// `[etoro]`: what the account holder declares about the eToro account.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EtoroSection {
+    /// A signed US tax form (W-8BEN) is on file with eToro. A real
+    /// account needs it to trade instruments eToro flags `requiresW8Ben`
+    /// (US stocks); without this the bot refuses them at start rather than
+    /// have eToro refuse every order. Default false; demo ignores it.
+    #[serde(default)]
+    pub w8ben_signed: bool,
 }
 
 /// Where a USDⓈ-M run's orders fill.
@@ -537,6 +551,9 @@ impl Config {
         if let Some(other) = self.whitelist.iter().find(|i| *i.venue() != venue) {
             bail!("whitelist has {other}, but exchange.venue is {venue}");
         }
+        if self.etoro.is_some() && self.exchange.venue != Venue::Etoro {
+            bail!("[etoro] is for exchange.venue = \"etoro\"");
+        }
         if self.exchange.venue == Venue::Etoro {
             if self.exchange.interval == Interval::S1 {
                 bail!("eToro serves no 1s candles; set exchange.interval to 1m or longer");
@@ -767,6 +784,10 @@ mod tests {
             assert_eq!(c.exchange.venue, Venue::Etoro);
             assert_eq!(Venue::Etoro.id().as_str(), "etoro");
             assert!(parse(&toml.replace("\"1m\"", "\"1s\"")).is_err());
+            assert!(!c.etoro.is_some_and(|e| e.w8ben_signed));
+            let signed = parse(&format!("{toml}\n[etoro]\nw8ben_signed = true")).unwrap();
+            assert!(signed.etoro.unwrap().w8ben_signed);
+            assert!(parse(&format!("{MIN}\n[etoro]\nw8ben_signed = true")).is_err());
             Ok(())
         });
     }
