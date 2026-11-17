@@ -26,10 +26,11 @@
 //! not the venue's mark price, so this is the cautious reading. A breached
 //! position is closed at its liquidation price (rounded to tick against
 //! the trader) with a clearance fee of `clearance` × notional (an
-//! assumption the caller states: Binance's varies by symbol). Isolated:
-//! what's left of the position's margin after the loss and the fee comes
-//! back to the wallet, never less than nothing; cross: the wallet never
-//! goes below zero (the rest is the venue's insurance fund). The fill
+//! assumption the caller states: Binance's varies by symbol), taken from
+//! the margin left at that price and capped by it (isolated: the
+//! position's margin; cross: the wallet), so nothing is lost past it.
+//! Should a loss still exceed it, isolated loses its margin only and the
+//! cross wallet floors at zero (the venue's insurance fund). The fill
 //! carries order id
 //! `liq-N`.
 
@@ -318,7 +319,19 @@ impl PerpPaperBroker {
             (Side::Buy, inst.round_price(lp, Side::Sell))
         };
         let qty = Qty::new(p.qty().get().abs());
-        let fee = Notional::new(inst.notional(qty, price).get() * self.clearance);
+        // The clearance fee comes out of the margin left at that price
+        // (Binance), never more: isolated = its margin, cross = the wallet.
+        let entry = p.cost_basis().get() / p.qty().get();
+        let pnl = p.qty().get() * (price.get() - entry);
+        let left = match self.mode(id) {
+            MarginMode::Isolated => self.isolated_margin(id).get(),
+            MarginMode::Cross => self.wallet.get(),
+        } + pnl;
+        let fee = Notional::new(
+            (inst.notional(qty, price).get() * self.clearance)
+                .min(left)
+                .max(Decimal::ZERO),
+        );
         let order_id = OrderId::new(format!("liq-{}", self.next_liq)).ok()?;
         self.next_liq += 1;
         let fill = Fill::new(FillSpec {
@@ -617,9 +630,10 @@ mod tests {
     }
 
     /// Same long; LP = (3000 − 30000)/(0.004 − 1) = 27,108.43…, sold at
-    /// 27,108.4 (tick, against the trader) with 1.25% clearance (338.855):
-    /// loss 2,891.6 + fee > the 3,000 margin → the margin is gone, nothing
-    /// more: wallet stays 6,985. A bar whose low stays above LP doesn't.
+    /// 27,108.4 (tick, against the trader): loss 2,891.6 leaves 108.4 of
+    /// margin; 1.25% clearance (338.855) is capped at it → fee 108.4, the
+    /// margin is gone, nothing more: wallet stays 6,985. A bar whose low
+    /// stays above LP doesn't liquidate.
     #[tokio::test]
     async fn isolated_long_is_liquidated_at_its_price_and_loses_only_its_margin() {
         let mut b = broker(dec!(10000), 10, MarginMode::Isolated);
@@ -637,7 +651,7 @@ mod tests {
             (f[0].side, f[0].price),
             (Side::Sell, Price::new(dec!(27108.4)))
         );
-        assert_eq!(f[0].fee, Fee::Quote(Notional::new(dec!(338.855))));
+        assert_eq!(f[0].fee, Fee::Quote(Notional::new(dec!(108.4))));
         assert_eq!(f[0].ts, candle(2, ["1", "1", "1", "1"]).close_time);
         assert!(b.position(&perp().id).is_flat());
         assert_eq!(b.wallet(), Notional::new(dec!(6985)));
@@ -676,8 +690,8 @@ mod tests {
 
     /// Cross 10x, wallet 5,000: long 1 @ 30,000 → wallet 4,985, LP =
     /// (4985 − 30000)/(0.004 − 1) = 25,115.46…; a low of 25,200 survives,
-    /// 25,000 liquidates at 25,115.4: loss 4,884.6 + 313.9425 clearance
-    /// exceeds the wallet → wallet 0 (the rest is the insurance fund's).
+    /// 25,000 liquidates at 25,115.4: loss 4,884.6 leaves 100.4; clearance
+    /// (313.9425) capped at it → fee 100.4, wallet 0.
     #[tokio::test]
     async fn cross_long_is_liquidated_against_the_whole_wallet() {
         let mut b = broker(dec!(5000), 10, MarginMode::Cross);
@@ -692,6 +706,7 @@ mod tests {
         );
         let f = bar(&mut b, 3, ["25300", "25300", "25000", "25100"]).await;
         assert_eq!(f[0].price, Price::new(dec!(25115.4)));
+        assert_eq!(f[0].fee, Fee::Quote(Notional::new(dec!(100.4))));
         assert_eq!(b.wallet(), Notional::ZERO);
         assert!(b.position(&perp().id).is_flat());
     }
