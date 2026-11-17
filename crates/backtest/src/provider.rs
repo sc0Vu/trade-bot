@@ -154,14 +154,11 @@ impl BacktestProvider {
         from: Timestamp,
         bars: usize,
     ) -> Result<Self, DataError> {
-        let start = from.as_millis().saturating_sub(
-            i64::try_from(bars)
-                .unwrap_or(i64::MAX)
-                .saturating_mul(interval.as_millis()),
-        );
+        // The last `bars` bars, however far back: a market that closes
+        // (weekends, holidays) or an outage leaves fewer bars than hours.
         let mut warmup = Vec::new();
         for i in &self.instruments {
-            let before = dir.load_klines(&i.id, interval, Timestamp::from_millis(start), from)?;
+            let before = dir.load_klines(&i.id, interval, Timestamp::from_millis(0), from)?;
             let skip = before.len().saturating_sub(bars);
             warmup.extend(before.into_iter().skip(skip));
         }
@@ -273,5 +270,44 @@ impl Provider for BacktestProvider {
                     .ok_or_else(|| ExchangeError::UnknownInstrument(id.clone()))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{HOUR, btcusdt, candle, temp_dir};
+    use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
+    use rust_decimal_macros::dec;
+
+    /// Bars at hours 0, 1, 2, then a 60-hour close, then 62, 63; `--from`
+    /// at 64 with a 3-bar warm-up takes bars 2, 62, 63: the last three
+    /// cached, not the last three hours (which hold only two).
+    #[test]
+    fn warm_up_takes_the_last_bars_across_a_closed_market() {
+        let dir = DataDir::new(temp_dir("warmup-gap"));
+        let id = btcusdt().id.clone();
+        let bars: Vec<Candle> = [0, 1, 2, 62, 63]
+            .iter()
+            .map(|&i| candle(&id, i, ["100", "100", "100", "100"]))
+            .collect();
+        dir.write_klines(&id, Interval::H1, &bars).unwrap();
+        let p = BacktestProvider::new(
+            vec![btcusdt()],
+            vec![],
+            PaperConfig {
+                fees: RateFee::new(dec!(0), dec!(0), FeeAsset::Quote).unwrap(),
+                slippage: BpsSlippage::zero(),
+                initial_cash: Notional::new(dec!(1)),
+            },
+        )
+        .warm_up_from_cache(&dir, Interval::H1, Timestamp::from_millis(64 * HOUR), 3)
+        .unwrap();
+        let opens: Vec<i64> = p
+            .warmup
+            .iter()
+            .map(|c| c.open_time.as_millis() / HOUR)
+            .collect();
+        assert_eq!(opens, vec![2, 62, 63]);
     }
 }
