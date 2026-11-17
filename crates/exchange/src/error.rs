@@ -45,7 +45,11 @@ pub enum ExchangeError {
 /// Binance codes that refuse one order and say nothing about the account:
 /// `-1013` filter failure, `-2010` new order rejected (e.g. insufficient
 /// balance), `-2011` cancel rejected (e.g. order already closed).
-const BINANCE_ORDER_REJECTIONS: [i64; 3] = [-1013, -2010, -2011];
+///
+/// USDⓈ-M futures add their own refusals of one order: `-2019` margin is
+/// insufficient, `-2027` / `-2028` position too large for the leverage,
+/// `-4164` notional below the minimum. Spot never returns them.
+const BINANCE_ORDER_REJECTIONS: [i64; 7] = [-1013, -2010, -2011, -2019, -2027, -2028, -4164];
 
 impl ExchangeError {
     /// True when the venue refused this one order or cancel and the next

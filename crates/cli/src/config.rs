@@ -59,10 +59,27 @@ pub struct Config {
     pub perp: Option<PerpSection>,
 }
 
-/// `[perp]`: how a USDⓈ-M paper run margins its positions.
+/// Where a USDⓈ-M run's orders fill.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PerpFills {
+    /// The local paper broker on live futures prices (`--paper` only):
+    /// nothing is sent to Binance. Needs `[paper]`.
+    #[default]
+    Local,
+    /// Orders on `exchange.network`'s futures exchange: testnet / demo
+    /// under `--paper`, real money only through the live gate's three
+    /// locks. Books in `data/<network>-usdm.db` by default.
+    Venue,
+}
+
+/// `[perp]`: how a USDⓈ-M run margins its positions and where it fills.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PerpSection {
+    /// `"local"` (default) or `"venue"`; see [`PerpFills`].
+    #[serde(default)]
+    pub fills: PerpFills,
     /// Leverage for every whitelisted symbol (≥ 1; refused above what the
     /// account's brackets allow).
     pub leverage: u32,
@@ -515,22 +532,24 @@ impl Config {
             bail!("whitelist has {other}, but exchange.venue is {venue}");
         }
         if self.exchange.venue == Venue::BinanceUsdm {
-            if self.mode == Mode::Live {
-                bail!(
-                    "live perpetual orders are not supported yet; binance-usdm runs paper only \
-                     (live futures prices, local fills and margin)"
-                );
-            }
-            if self.paper.is_none() {
-                bail!(
-                    "exchange.venue = \"binance-usdm\" needs a [paper] section (initial_cash, fee, slippage_bps)"
-                );
-            }
             let Some(perp) = &self.perp else {
                 bail!(
                     "exchange.venue = \"binance-usdm\" needs a [perp] section (leverage, margin)"
                 );
             };
+            if perp.fills == PerpFills::Local {
+                if self.mode == Mode::Live {
+                    bail!(
+                        "mode = \"live\" with perp.fills = \"local\": local fills are paper; \
+                         set perp.fills = \"venue\" for orders on Binance"
+                    );
+                }
+                if self.paper.is_none() {
+                    bail!(
+                        "perp.fills = \"local\" needs a [paper] section (initial_cash, fee, slippage_bps)"
+                    );
+                }
+            }
             if perp.leverage == 0 {
                 bail!("perp.leverage must be >= 1");
             }
@@ -665,23 +684,38 @@ mod tests {
         params = { coin = "binance-usdm:BTCUSDT", quote_amount = "100", fee = "0.0005", slippage_bps = "2" }
     "#;
 
-    /// Perpetuals run paper only: `[paper]` and `[perp]` required, live
-    /// refused at load, `[perp]` refused on another venue.
+    /// `[perp]` required. Local fills (default) are paper: `[paper]`
+    /// required, `mode = "live"` refused. Venue fills need no `[paper]`
+    /// and may be live (the run's gate then asks for all three locks).
+    /// `[perp]` is refused on another venue.
     #[test]
-    fn perpetual_runs_are_paper_only() {
+    fn perpetual_runs_gate_by_where_they_fill() {
         Jail::expect_with(|_| {
             let c = parse(USDM_PAPER).unwrap();
             let p = c.perp.unwrap();
             assert_eq!(p.leverage, 3);
             assert_eq!(p.margin, bot_core::margin::MarginMode::Cross);
+            assert_eq!(p.fills, PerpFills::Local);
             assert_eq!((p.brackets_from, p.clearance), (Network::Demo, None));
             let live = format!("mode = \"live\"\n{USDM_PAPER}");
             assert!(
                 parse(&live)
                     .unwrap_err()
                     .to_string()
-                    .contains("not supported")
+                    .contains("local fills are paper")
             );
+            let venue =
+                USDM_PAPER.replace("leverage = 3", "leverage = 3\n        fills = \"venue\"");
+            let live_venue = format!("mode = \"live\"\n{venue}");
+            assert_eq!(
+                parse(&live_venue).unwrap().perp.unwrap().fills,
+                PerpFills::Venue
+            );
+            let no_paper = venue.replace(
+                "[paper]\n        initial_cash = \"1000\"\n        fee = \"0.0005\"\n        slippage_bps = \"2\"",
+                "",
+            );
+            assert!(parse(&no_paper).unwrap().paper.is_none());
             let no_perp = USDM_PAPER.replace(
                 "[perp]\n        leverage = 3\n        margin = \"cross\"",
                 "",

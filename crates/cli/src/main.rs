@@ -90,13 +90,22 @@ async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<
 
 async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     if cfg.exchange.venue == Venue::BinanceUsdm {
+        let venue_fills = cfg
+            .perp
+            .as_ref()
+            .is_some_and(|p| p.fills == config::PerpFills::Venue);
+        if venue_fills {
+            // The same three locks as spot: --paper = testnet/demo only.
+            let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
+            return run_usdm_orders(cfg, network, a.cancel_orphans).await;
+        }
         anyhow::ensure!(
             !a.live,
-            "live perpetual orders are not supported yet; binance-usdm runs with --paper only"
+            "perp.fills = \"local\" is a paper run; set perp.fills = \"venue\" for orders on Binance"
         );
         if a.cancel_orphans {
             tracing::warn!(
-                "--cancel-orphans ignored: a perpetual paper run places no orders on Binance"
+                "--cancel-orphans ignored: a local-fill paper run places no orders on Binance"
             );
         }
         return run_usdm_paper(cfg).await;
@@ -367,6 +376,109 @@ async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
         print_summary(&r);
     }
     Ok(())
+}
+
+/// A USDⓈ-M run with orders on `network`'s futures exchange (gated by
+/// the caller): account set up to `[perp]`, reconciled at start, open
+/// orders cancelled at exit (positions stay open on Binance). Books in
+/// their own database (`data/<network>-usdm.db` unless `db.url`), so a
+/// spot run never meets a futures journal row. No strategy-state resume
+/// yet: a restart starts the strategy fresh on the books' position.
+async fn run_usdm_orders(
+    cfg: config::Config,
+    network: Network,
+    cancel_orphans: bool,
+) -> anyhow::Result<()> {
+    use exchange::binance::usdm_live::{UsdmConfig, UsdmProvider};
+    let perp = cfg
+        .perp
+        .as_ref()
+        .context("exchange.venue = \"binance-usdm\" needs a [perp] section")?;
+    let creds = Credentials::from_env()?;
+    let url = cfg.db.url.clone().unwrap_or_else(|| {
+        format!(
+            "sqlite://data/{}-usdm.db?mode=rwc",
+            config::network_name(network)
+        )
+    });
+    if cfg.db.url.is_none() {
+        std::fs::create_dir_all("data").context("creating data/")?;
+    }
+    let books = SqlStore::open(&url).await.context("opening the database")?;
+    books.bind_network(config::network_name(network)).await?;
+    let books = Arc::new(books);
+    let provider = UsdmProvider::new(
+        UsdmConfig {
+            network,
+            interval: cfg.exchange.interval,
+            warmup: cfg.engine.history_len,
+            max_outage: Duration::from_secs(cfg.exchange.max_outage_secs),
+            http_timeout: Duration::from_secs(cfg.exchange.http_timeout_secs),
+            leverage: perp.leverage,
+            mode: perp.margin,
+        },
+        creds,
+        cfg.whitelist.clone(),
+        books,
+    )
+    .with_orphans(if cancel_orphans {
+        Orphans::Cancel
+    } else {
+        Orphans::Refuse
+    });
+    if cfg.api.enabled {
+        tracing::warn!("api is not available on a perpetual run yet; not started");
+    }
+    let params = Params::new(cfg.strategy.params);
+    let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
+    let engine_cfg = EngineConfig {
+        whitelist: cfg.whitelist,
+        history_len: cfg.engine.history_len,
+        delist_exit: cfg.engine.delist_exit(),
+    };
+    if network == Network::Live {
+        eprintln!("LIVE: sending real orders to Binance USDⓈ-M futures");
+    }
+    telemetry::start(&cfg.metrics);
+    let mut observer = telemetry::RunObserver {
+        include_money: cfg.metrics.include_money,
+        live: None,
+        state: None,
+    };
+    tracing::info!(
+        provider = provider.id(),
+        network = config::network_name(network),
+        strategy = %cfg.strategy.name,
+        leverage = perp.leverage,
+        run_tag = provider.run_tag(),
+        "starting"
+    );
+    let outcome = tokio::select! {
+        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, None) => r.map(Some),
+        s = shutdown::signal() => {
+            eprintln!("{}: stopping; cancelling open orders (signal again to skip)", s?);
+            Ok(None)
+        }
+    };
+    let closed = match shutdown::close_out_unless(provider.close_out(), shutdown::signal()).await {
+        shutdown::CloseOut::Done(r) => r.map_err(anyhow::Error::from),
+        shutdown::CloseOut::Abandoned(s) => Err(anyhow::anyhow!(
+            "{s} during close-out: abandoned; orders may still be open on Binance \
+             until the next start reconciles them"
+        )),
+    };
+    match &closed {
+        Ok(c) => tracing::info!(
+            orders_closed = c.orders_closed,
+            fills_recovered = c.fills_recovered,
+            "closed out open orders; positions stay open on Binance"
+        ),
+        Err(e) => eprintln!("could not close out open orders: {e}; check the account"),
+    }
+    if let Some(r) = outcome? {
+        print_summary(&r);
+    }
+    closed.map(|_| ())
 }
 
 /// A signed client of `network`'s USDⓈ-M host, keys from env.

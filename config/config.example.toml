@@ -30,9 +30,10 @@ whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
 # venue = "max" only paper runs are allowed, on MAX's live prices with the
 # local paper broker below ([paper] required, no API key read), and the
 # whitelist must be max: instruments (max:BTCTWD, max:BTCUSDT).
-# "binance-usdm" (USDⓈ-M perpetuals): paper runs only (live futures prices
-# and funding, local fills and margin), whitelist binance-usdm: instruments,
-# [paper] and [perp] required; live orders are refused (see README,
+# "binance-usdm" (USDⓈ-M perpetuals): whitelist binance-usdm: instruments,
+# [perp] required. [perp] fills = "local" (default): paper on live futures
+# prices with local fills ([paper] required); "venue": orders on
+# exchange.network's futures exchange, gated like spot (see README,
 # "Perpetual futures").
 venue = "binance"
 # Binance only:
@@ -91,6 +92,7 @@ limit_timeout = 3
 # required there). Brackets come from the account: BINANCE_API_KEY /
 # BINANCE_API_SECRET must be set and belong to brackets_from's network.
 # [perp]
+# fills = "local"           # "local" (paper, local broker) or "venue" (orders on Binance)
 # leverage = 2              # every symbol; refused above the bracket's max
 # margin = "isolated"       # or "cross"
 # brackets_from = "demo"    # "demo" (default), "testnet" or "live"

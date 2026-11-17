@@ -319,8 +319,14 @@ impl SignedClient {
     /// Measures server time minus local time, so a skewed local clock
     /// doesn't get every signed request rejected (`-1021`).
     pub async fn sync_time(&mut self) -> Result<(), ExchangeError> {
+        self.sync_time_at("/api/v3/time").await
+    }
+
+    /// [`sync_time`](Self::sync_time) against another server-time path
+    /// (USDⓈ-M futures: `/fapi/v1/time`).
+    pub async fn sync_time_at(&mut self, path: &str) -> Result<(), ExchangeError> {
         let before = self.clock.now_millis();
-        let v = self.public(Method::Get, "/api/v3/time", &[]).await?;
+        let v = self.public(Method::Get, path, &[]).await?;
         let server = v["serverTime"]
             .as_i64()
             .ok_or_else(|| ExchangeError::Decode("serverTime".into()))?;

@@ -160,7 +160,7 @@ Cache (`backtest::perp`): `funding/<venue>/<SYM>.jsonl`, `perp/<venue>/<SYM>.jso
 (`PerpData { liquidation_fee, brackets: Option }`); `fetch_funding` head/tail
 like klines; `funding_events`: missing mark → bar open containing it (or
 last close after), none before → skipped, count noted. CLI: `Venue::
-BinanceUsdm` (`binance-usdm`): `run` paper only (live refused at load + flag);
+BinanceUsdm` (`binance-usdm`): `run` local paper or venue orders (`[perp] fills`);
 `fetch-data` + funding, fee, brackets (`--brackets-from demo|testnet|live`,
 key from env, failure keeps cached); `backtest --leverage N --margin
 isolated|cross [--clearance r]` (default = max cached liquidationFee), fees
@@ -176,6 +176,27 @@ its ts; no mark → skipped + warn; failure = warning. Config `[perp]
 { leverage, margin, brackets_from (default demo), clearance }` + `[paper]`
 required, no 1s, no URL overrides; brackets signed via env key at start;
 no db / API / resume (flat broker), like MAX paper.
+Orders (`binance::usdm_live`, `[perp] fills = "venue"`; default "local" =
+paper above): `UsdmProvider` on `exchange.network`'s futures host (live
+fapi / demo-fapi / testnet.binancefuture.com; ws `/market` path on each;
+testnet and demo = same book), gated like spot (`--paper` = testnet/demo,
+real money = all three locks). Startup: `prepare` (one-way mode required,
+never switched; marginType, `-4046` ok; leverage, Binance's echo must
+match), `reconcile` (journal rows: find, cancel, wait, record, close;
+`tb…` orphans refused / `--cancel-orphans`; `align` over 7 days). `UsdmBroker`:
+`POST /fapi/v1/order` MARKET/LIMIT only (stops refused: algo service),
+`Size::Quote` → base at last close (paper converts at fill: small diff);
+settle polls every working order (`order` + `userTrades?orderId`), funding
+→ in-memory position only (books = fills); each Candle `align`:
+`/fapi/v3/positionRisk` vs books, differ → `userTrades` since run start, trades
+not from a working order of ours adopted (`venue-<orderId>`, warn:
+liquidation/ADL/manual — bot needs its symbols to itself), still differ with
+nothing working → run stops. BNB fee → error (turn off fee burn). Futures
+rejections `-2019 -2027 -2028 -4164` = order rejections. Books: same schema
+(signed holding), own db `data/<network>-usdm.db`; exit cancels orders,
+positions stay open. No state resume yet. Checked on demo 2026-11-17
+(sma_long_short 1m, 2x isolated): short, flip, stop → books = Binance
+(position 0.0031, 3 trades, realized −0.59727811), no orders left.
 Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as

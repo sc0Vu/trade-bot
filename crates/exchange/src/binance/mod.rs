@@ -15,6 +15,7 @@ pub mod reconcile;
 pub mod signed;
 pub mod status;
 pub mod usdm;
+pub mod usdm_live;
 pub mod usdm_paper;
 pub mod user_stream;
 pub mod ws;

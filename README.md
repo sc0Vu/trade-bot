@@ -300,8 +300,21 @@ settlements, the local perp broker filling at the next bar's open with
 the `[paper]` costs and the `[perp]` leverage and margin mode. Nothing is
 sent to Binance but data requests; the margin brackets are read from your
 account (`[perp] brackets_from` names the network your key belongs to). The
-wallet lives in memory, so every run starts flat. Live perpetual orders are
-refused. See `config/examples/sma_long_short.toml`.
+wallet lives in memory, so every run starts flat. See
+`config/examples/sma_long_short.toml`.
+
+`[perp] fills = "venue"` sends the orders to `exchange.network`'s futures
+exchange instead: `--paper` on testnet or demo (fake money), real money only
+with the same three locks as spot. At start the bot checks the account is
+in one-way mode (it never switches it), sets each symbol's margin type and
+leverage, and reconciles its books (`data/<network>-usdm.db`). Binance is
+the truth for the position: every bar the bot compares it with its books,
+and adopts trades it didn't place (a liquidation, auto-deleverage or a
+manual trade) so the two agree; a difference no trade explains stops the
+run. Give the bot its symbols to itself. Market and limit orders only; turn
+off BNB fee burn (a BNB fee can't be valued exactly). On exit it cancels
+its open orders, but positions stay open on Binance, where they can still
+be liquidated.
 
 The report gives final equity, realized P&L, lowest cash, maximum drawdown,
 fill and closed-trade counts, win rate, Sharpe ratio and rejected signals,
@@ -508,9 +521,9 @@ deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and aler
 
 ## Known limitations
 
-- Live trading is Binance spot only. USDⓈ-M perpetuals can be backtested
-  and paper-traded (local fills on live data) but not traded live; MAX is
-  paper only; US equities and options are planned but not implemented.
+- Live trading: Binance spot, and Binance USDⓈ-M perpetuals (one-way mode,
+  market and limit orders; not yet run with real money). MAX is paper only;
+  US equities and options are planned but not implemented.
 - A market-data outage longer than `exchange.max_outage_secs` (default 10
   min) stops the run. Bars missed during a shorter one are backfilled as
   history; only the newest is traded on.
