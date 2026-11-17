@@ -24,6 +24,14 @@ capital = "1000"        # USDT the strategy manages (its starting cash)
 band = "0.05"           # trade back once a weight is 5 points off
 fee = "0.001"
 slippage_bps = "5"
+# Optional overlays (all off by default):
+# lookbacks = [7, 30, 60]      # instead of lookback: rank by the mean return
+# trend_period = 50            # hold only while above the 50-bar average; else that slot is cash
+# weighting = "inverse_vol"    # calmer coins get more of the held slots
+# vol_period = 20              #   returns the volatility is measured over
+# rebalance_every = "week"     # rank and trade only at the first bar of each week (UTC)
+# trail_pct = "0.15"           # between rebalances, sell a coin 15% below its peak since the last one
+# (history_len must cover the longest window and a whole rebalance period)
 
 [engine]
 history_len = 60

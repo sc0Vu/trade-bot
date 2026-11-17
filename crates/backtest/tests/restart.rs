@@ -355,6 +355,27 @@ async fn every_strategy_survives_a_restart() {
                 fee = "0.001"
                 slippage_bps = "10""#,
         },
+        // Every overlay: the saved rebalance time drives the schedule and
+        // the stop's window.
+        Case {
+            strategy: "top_k_momentum",
+            fixture: "top_k_momentum",
+            coins: BTC_ETH_SOL,
+            bars: 12,
+            params: r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"]
+                k = 2
+                lookbacks = [1, 2]
+                min_momentum = "-0.5"
+                trend_period = 2
+                weighting = "inverse_vol"
+                vol_period = 2
+                rebalance_every = "day"
+                trail_pct = "0.01"
+                capital = "9000"
+                band = "0.05"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
         Case {
             strategy: "stochastic",
             fixture: "indicators",

@@ -814,13 +814,13 @@ volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross,
 ichimoku,
 supertrend,
 stochastic,
-top_k_momentum,
 pair_reversion,
 tsmom,
 risk_parity) only
 version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
-`last_eval`; trailing_stop `started` + track (side, extreme, last close time); grid stage, gaps,
+`last_eval`; top_k_momentum `rebalanced_at` (null = never: old state rebalances
+at once); trailing_stop `started` + track (side, extreme, last close time); grid stage, gaps,
 dust. Pinned by
 `crates/backtest/tests/restart.rs`: every strategy, every idle cut point
 (no working order): run₁ + save → fresh strategy + restore + Backfill
@@ -983,7 +983,19 @@ machinery. ≥ 2 coins (one quote), 1 ≤ `k` < coins. Rank by close /
 close[`lookback` ago] − 1 (stable: tie → listed first); best k with return
 > `min_momentum` (default 0, > −1) get 1/k of `capital`, empty slot = cash.
 Once per close time all in, idle; any weight > `band` off → all back to
-target (rotation = sell + buy from est. proceeds, one eval). Stateless.
+target (rotation = sell + buy from est. proceeds, one eval). Overlays, all
+optional (defaults = the above): `lookbacks` (instead of `lookback`,
+exactly one) → momentum = mean of the windows' returns; `trend_period`
+(≥ 2) → chosen only if close > SMA(n incl. current), a failing top-k
+coin's slot = cash (not passed down); `weighting = "inverse_vol"` +
+`vol_period` (≥ 2) → chosen share (count/k) split by 1/`return_sd` (sd 0 →
+no decision; relative, not an exposure cut); `rebalance_every` (calendar
+`Period`) → rank + rebalance only at first eval of a new period
+(`rebalanced_at` = that eval's close, set when `portfolio::rebalance`
+answers), between them `trail_pct` (needs schedule) sells the whole
+sellable holding when close ≤ max close since `rebalanced_at` ·
+(1 − trail), slot cash until next period (window from history:
+`history_len` must span a period). Restart case with every overlay.
 
 `tsmom` — Moskowitz/Ooi/Pedersen time-series momentum, long-only,
 `portfolio` machinery, ≥ 1 coin (one quote). Per coin: close /
