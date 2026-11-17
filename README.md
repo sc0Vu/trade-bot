@@ -247,6 +247,12 @@ nobody announced, like LUNA's or FTT's in 2022), or a gap longer than
 at its last price, as it did for real holders. A symbol the venue later
 reused for another coin is never spliced onto the first.
 
+`--earn-ratio 0.1` holds 10% of the cash back, as a live run sweeping that
+share into Binance Simple Earn would (a strategy sees the same refusals);
+`--earn-apr 0.04` values its interest at an assumed 4% a year. Binance's
+rates change daily and their history isn't published, so the report
+labels the figure as an assumption.
+
 `--venue max` does the same against MAX (MaiCoin): `max:BTCUSDT`,
 `max:BTCTWD` and the other MAX markets, from 1m bars up (MAX has no 1s
 klines). Pass your MAX fee rate with `--fee` (the `0.0015` below is a

@@ -22,12 +22,13 @@ pub async fn run_backtest(
     interval: Interval,
 ) -> Result<Report, BacktestError> {
     let run = engine::run(provider, strategy, params, config).await?;
-    Ok(Report::compute(
+    Ok(Report::compute_with_earn(
         &run,
         provider.candles(),
         provider.instruments(),
         provider.initial_cash(),
         interval,
+        provider.earn(),
     ))
 }
 

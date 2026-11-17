@@ -343,6 +343,15 @@ struct BacktestArgs {
     /// nobody announced; also keeps a reused symbol's later bars out).
     #[arg(long, default_value_t = 48)]
     max_gap_hours: u64,
+    /// Share of cash kept in Simple Earn (`[earn] ratio` live): out of what
+    /// buys may spend. In [0, 1).
+    #[arg(long, value_parser = parse_decimal)]
+    earn_ratio: Option<Decimal>,
+    /// Annual rate assumed for that share (`0.05` = 5%), labelled in the
+    /// report as an assumption; needs `--earn-ratio`. Without it the share
+    /// is held back but earns nothing.
+    #[arg(long, value_parser = parse_decimal, requires = "earn_ratio")]
+    earn_apr: Option<Decimal>,
     /// Hours before an announced delisting at which the engine sells the
     /// holding, as `[engine] delist_exit_hours` live.
     #[arg(long, default_value_t = 24)]
@@ -404,10 +413,19 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
     } else {
         Vec::new()
     };
-    let provider = provider.with_delistings(&announced).cut_at_gaps(
+    let mut provider = provider.with_delistings(&announced).cut_at_gaps(
         Duration::from_secs(a.max_gap_hours.saturating_mul(3600)),
         a.to,
     );
+    if let Some(ratio) = a.earn_ratio {
+        let apr = a.earn_apr.unwrap_or(Decimal::ZERO);
+        anyhow::ensure!(
+            ratio >= Decimal::ZERO && ratio < Decimal::ONE,
+            "--earn-ratio must be in [0, 1)"
+        );
+        anyhow::ensure!(apr >= Decimal::ZERO, "--earn-apr must be >= 0");
+        provider = provider.with_earn(backtest::EarnModel { ratio, apr });
+    }
     for e in provider.events() {
         if let MarketEvent::Delisting {
             instrument,

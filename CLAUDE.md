@@ -462,7 +462,12 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    reused symbol); unannounced stops: any gap > `--max-gap-hours` (48) or
    early end → cut, `Delisting { at: last close + 1 ms }` at that close (no
    notice, holding stuck at last price; LUNA classic/2.0 splice, FTT halt,
-   SRM end). Never inferred early from where data ends. `--delist-exit-hours`
+   SRM end). Earn: `--earn-ratio r` → `PaperBroker::with_earn_ratio` keeps
+   r·balance unspendable (as live `[earn]` sweep holds it); `--earn-apr`
+   (needs ratio) → `Report::compute_with_earn` / `EarnModel`: simple interest
+   on r·ledger cash between close times, added to equity (not cash), line
+   "earn interest … assumed APR"; never measured (rates unpublished).
+   Never inferred early from where data ends. `--delist-exit-hours`
    = engine exit. PaperBroker on Delisting: from `at` cancels the coin's
    orders, refuses new (as venue). Pinned by `tests/delisting.rs`.
    `BacktestProvider` = cached feed + PaperBroker(NextOpenFillModel), through

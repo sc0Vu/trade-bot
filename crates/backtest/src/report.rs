@@ -48,7 +48,26 @@ pub struct Report {
     /// fewer than two returns or zero volatility.
     pub sharpe: Option<Decimal>,
     pub rejected_signals: usize,
+    /// The earn assumption the run was valued with, if any.
+    pub earn: Option<EarnModel>,
+    /// Interest from it, included in equity (simple, not reinvested).
+    pub earn_interest: Notional,
 }
+
+/// The share of cash a run keeps in Simple Earn (`[earn] ratio`) and the
+/// yearly rate assumed for it. Binance's rates move daily and their
+/// history isn't published, so the rate is an assumption the backtest
+/// states, never a measurement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EarnModel {
+    /// In [0, 1).
+    pub ratio: Decimal,
+    /// Annual rate as a fraction (`0.05` = 5%), simple interest.
+    pub apr: Decimal,
+}
+
+/// Milliseconds in a 365-day year: the APR's year.
+const YEAR_MS: i64 = 365 * 86_400_000;
 
 impl Report {
     /// Builds the report from a finished run and the candles it replayed.
@@ -58,6 +77,22 @@ impl Report {
         instruments: &[Instrument],
         initial_cash: Notional,
         interval: Interval,
+    ) -> Self {
+        Self::compute_with_earn(run, candles, instruments, initial_cash, interval, None)
+    }
+
+    /// [`compute`](Self::compute), plus interest on the share of cash kept
+    /// in Simple Earn: between two close times the earn share of the cash
+    /// the ledger held after the earlier one's fills earns `apr` for the
+    /// time between them. Simple interest, never reinvested or spent: it
+    /// adds to equity (and so to drawdown and Sharpe), not to cash.
+    pub fn compute_with_earn(
+        run: &RunReport,
+        candles: &[Candle],
+        instruments: &[Instrument],
+        initial_cash: Notional,
+        interval: Interval,
+        earn: Option<EarnModel>,
     ) -> Self {
         let by_id: HashMap<&InstrumentId, &Instrument> =
             instruments.iter().map(|i| (&i.id, i)).collect();
@@ -74,9 +109,16 @@ impl Report {
         };
         let mut fills = run.fills.iter().peekable();
         let mut equity = Vec::new();
+        let mut interest = Notional::ZERO;
+        let mut prev: Option<bot_core::Timestamp> = None;
         let mut i = 0;
         while i < sorted.len() {
             let t = sorted[i].close_time;
+            if let (Some(e), Some(p)) = (earn, prev) {
+                let years = Decimal::from(t.as_millis() - p.as_millis()) / Decimal::from(YEAR_MS);
+                interest += ledger.cash * (e.ratio * e.apr * years);
+            }
+            prev = Some(t);
             while let Some(f) = fills.next_if(|f| f.ts <= t) {
                 if let Some(inst) = by_id.get(&f.instrument) {
                     ledger.apply(f, inst);
@@ -91,7 +133,7 @@ impl Report {
                     .insert(sorted[i].instrument.clone(), sorted[i].close);
                 i += 1;
             }
-            equity.push(ledger.equity(&by_id));
+            equity.push(ledger.equity(&by_id) + interest);
         }
         // Fills after the last candle can't happen (fills need a candle),
         // but apply any so the ledger is complete.
@@ -103,7 +145,7 @@ impl Report {
         ledger.instant_done();
 
         let realized_pnl = ledger.positions.values().map(Position::realized_pnl).sum();
-        let final_equity = ledger.equity(&by_id);
+        let final_equity = ledger.equity(&by_id) + interest;
         let win_rate =
             (ledger.closed > 0).then(|| Decimal::from(ledger.wins) / Decimal::from(ledger.closed));
         Self {
@@ -117,6 +159,8 @@ impl Report {
             win_rate,
             sharpe: sharpe(&equity, interval),
             rejected_signals: run.rejections.len(),
+            earn,
+            earn_interest: interest,
         }
     }
 }
@@ -252,7 +296,17 @@ impl fmt::Display for Report {
             self.sharpe
                 .map_or("n/a".into(), |s| s.round_dp(4).to_string())
         )?;
-        write!(f, "rejected signals {}", self.rejected_signals)
+        write!(f, "rejected signals {}", self.rejected_signals)?;
+        if let Some(e) = self.earn {
+            write!(
+                f,
+                "\nearn interest    {} ({} of cash in Simple Earn at an assumed APR of {})",
+                self.earn_interest.get().round_dp(8),
+                pct(e.ratio),
+                pct(e.apr)
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -428,5 +482,40 @@ mod tests {
         assert_eq!(r.closed_trades, 2);
         assert_eq!(r.win_rate, Some(dec!(0.5)));
         assert_eq!(r.realized_pnl, Notional::ZERO);
+    }
+
+    /// Cash 1000, no trades, 10% in Earn at an assumed 8.76% APR: each
+    /// hour earns 1000 · 0.1 · 0.0876 / 8760 = 0.001. Three closes an hour
+    /// apart: two hours, 0.002, in final equity and the equity curve.
+    #[test]
+    fn earn_interest_accrues_on_the_cash_share() {
+        let id = btcusdt().id.clone();
+        let candles: Vec<Candle> = (0..3)
+            .map(|i| candle(&id, i, ["100", "100", "100", "100"]))
+            .collect();
+        let earn = EarnModel {
+            ratio: dec!(0.1),
+            apr: dec!(0.0876),
+        };
+        let r = Report::compute_with_earn(
+            &RunReport::default(),
+            &candles,
+            &[btcusdt()],
+            Notional::new(dec!(1000)),
+            Interval::H1,
+            Some(earn),
+        );
+        assert_eq!(r.earn_interest, Notional::new(dec!(0.002)));
+        assert_eq!(r.final_equity, Notional::new(dec!(1000.002)));
+        assert!(r.to_string().contains("assumed APR of 8.76%"));
+        let plain = Report::compute(
+            &RunReport::default(),
+            &candles,
+            &[btcusdt()],
+            Notional::new(dec!(1000)),
+            Interval::H1,
+        );
+        assert_eq!(plain.final_equity, Notional::new(dec!(1000)));
+        assert!(!plain.to_string().contains("earn"));
     }
 }

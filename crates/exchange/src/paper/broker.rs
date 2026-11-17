@@ -2,8 +2,8 @@ use super::{Decision, Execution, FeeModel, FillModel, OrderState, SlippageModel}
 use crate::{Broker, ExchangeError};
 use async_trait::async_trait;
 use bot_core::{
-    Asset, Candle, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent, Notional,
-    Order, OrderId, OrderKind, Position, Price, Qty, Side, Size, Timestamp,
+    Asset, Candle, Decimal, Fee, Fill, FillSpec, Instrument, InstrumentId, Liquidity, MarketEvent,
+    Notional, Order, OrderId, OrderKind, Position, Price, Qty, Side, Size, Timestamp,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,6 +48,9 @@ enum Outcome {
 struct Cash {
     asset: Asset,
     balance: Notional,
+    /// Share of the balance kept in an earn product (Binance Simple Earn),
+    /// out of what orders may spend; see [`PaperBroker::with_earn_ratio`].
+    earn_ratio: Decimal,
 }
 
 /// Simulated broker for backtest and paper trading.
@@ -162,7 +165,23 @@ impl PaperBroker {
     /// Trades from a balance of `balance` in `asset` (the quote of the
     /// universe), refusing buys it can't cover. See the type docs.
     pub fn with_cash(mut self, asset: Asset, balance: Notional) -> Self {
-        self.cash = Some(Cash { asset, balance });
+        self.cash = Some(Cash {
+            asset,
+            balance,
+            earn_ratio: Decimal::ZERO,
+        });
+        self
+    }
+
+    /// Keeps `ratio` (in [0, 1)) of the cash balance out of what buys may
+    /// spend, as a live run sweeping that share into Simple Earn holds it
+    /// there (`[earn] ratio`): a strategy sees the same refusals. Interest
+    /// on it is the report's business, not the broker's. No effect without
+    /// a balance.
+    pub fn with_earn_ratio(mut self, ratio: Decimal) -> Self {
+        if let Some(c) = &mut self.cash {
+            c.earn_ratio = ratio;
+        }
         self
     }
 
@@ -251,13 +270,15 @@ impl PaperBroker {
         let Some(cash) = &self.cash else {
             return Notional::ZERO;
         };
+        // The earn share is held elsewhere: not spendable.
+        let earning = cash.balance * cash.earn_ratio;
         let reserved: Notional = self
             .pending
             .iter()
             .chain(self.deferred.iter().map(|d| &d.pending))
             .map(|p| p.reserved)
             .sum();
-        cash.balance - reserved
+        cash.balance - earning - reserved
     }
 
     /// Expected proceeds of pending market sells that can still fill at
@@ -1424,6 +1445,17 @@ mod tests {
             assert_eq!(b.open_orders().len(), 1, "the resting order stays");
             b.settle(&status(true, 2)).await.unwrap();
             b.submit(limit_buy("o-2", dec!(1), dec!(50))).await.unwrap();
+        });
+    }
+
+    /// Cash 1000 with a 10% earn share: 900 spendable. A 900 budget buy is
+    /// accepted, a 900.01 one refused.
+    #[test]
+    fn the_earn_share_is_not_spendable() {
+        let mut b = cashed(dec!(1000), dec!(0)).with_earn_ratio(dec!(0.1));
+        futures_block(async {
+            assert!(rejected(b.submit(buy_with("o-1", dec!(900.01), 0)).await));
+            b.submit(buy_with("o-2", dec!(900), 0)).await.unwrap();
         });
     }
 }

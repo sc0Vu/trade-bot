@@ -1,4 +1,4 @@
-use crate::{DataDir, DataError, Delisting, KlineFeed, listing};
+use crate::{DataDir, DataError, Delisting, EarnModel, KlineFeed, listing};
 use async_trait::async_trait;
 use bot_core::{
     AssetClass, Candle, Instrument, InstrumentId, Interval, MarketEvent, Notional, Timestamp,
@@ -35,6 +35,7 @@ pub struct BacktestProvider {
     /// Non-candle events (delistings), merged in by time.
     events: Vec<MarketEvent>,
     paper: PaperConfig,
+    earn: Option<EarnModel>,
 }
 
 impl BacktestProvider {
@@ -45,7 +46,21 @@ impl BacktestProvider {
             warmup: Vec::new(),
             events: Vec::new(),
             paper,
+            earn: None,
         }
+    }
+
+    /// Keeps `earn.ratio` of the cash out of what buys may spend, as a live
+    /// run sweeping it into Simple Earn does, and values its interest at
+    /// the assumed `earn.apr` in the report (see [`EarnModel`]).
+    pub fn with_earn(mut self, earn: EarnModel) -> Self {
+        self.earn = Some(earn);
+        self
+    }
+
+    /// The earn model, if any.
+    pub fn earn(&self) -> Option<EarnModel> {
+        self.earn
     }
 
     /// Replays the announced delistings of `list` that concern this
@@ -194,7 +209,9 @@ impl Provider for BacktestProvider {
             Box::new(self.paper.fees),
         );
         Ok(Box::new(match self.instruments.first() {
-            Some(i) => broker.with_cash(i.quote.clone(), self.paper.initial_cash),
+            Some(i) => broker
+                .with_cash(i.quote.clone(), self.paper.initial_cash)
+                .with_earn_ratio(self.earn.map_or(bot_core::Decimal::ZERO, |e| e.ratio)),
             None => broker,
         }))
     }
