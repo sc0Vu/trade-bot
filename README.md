@@ -451,7 +451,10 @@ about 1% each way on crypto, and $1 per stock order (seen on the demo
 account: $2 round trip on a $20 trade). Bars are polled a few seconds
 after each interval boundary; a closed market simply produces none. Give
 the bot its symbols to itself: a sell closes the account's oldest
-positions on that symbol. eToro's own rules for a partial close apply: it
+positions on that symbol, so the bot refuses to start, and stops while
+running, when the account's units on a symbol differ from its books
+(positions opened or closed by hand, or a stock split changing the
+units). eToro's own rules for a partial close apply: it
 must take at least eToro's minimum (about $10; smaller is refused before
 sending) and leave at least $1 (a sell that would leave less closes the
 whole position). eToro publishes no unit step; the bot uses the 6 decimals
@@ -631,9 +634,10 @@ deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and aler
   approximation, because Binance doesn't report its conversion rate.
 - Stock splits and other corporate actions are not handled. eToro's price
   history is not split-adjusted (and mixes price scales around some
-  splits), so a backtest across a split is wrong; live, eToro would
-  adjust the position's units while the bot's books would not, so stop an
-  eToro run on a stock before its split.
+  splits), so a backtest across a split is wrong. Live, eToro adjusts the
+  position's units and the books can't follow: the run stops at the next
+  bar (the books no longer match the account), and the position must be
+  sorted out by hand before restarting.
 - MySQL is supported by the storage layer but untested.
 - Rate limits use Binance's published values with 20% headroom; another
   program on the same IP is only noticed through Binance's usage header.

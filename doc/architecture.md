@@ -465,7 +465,12 @@ are polled over REST (eToro's candle channel is refused); a closed market
 is reported as a halt (`TradingStatus`), so single-coin strategies wait
 and multi-coin ones trade what is open. Reconcile at start and exit
 cancels waiting orders, clears our take-profits, and refuses to start if
-the books hold more than the account. Real US stocks need a W-8BEN
+the books and the account hold different units of an instrument. During
+the run the same comparison runs once per close time while nothing of
+ours is working, and a difference stops the run: a stock split (eToro
+adjusts the units, the books can't) or a position opened or closed by
+hand would otherwise be sold in the wrong amount. This is the eToro
+counterpart of the perpetuals' per-bar position check. Real US stocks need a W-8BEN
 declared in config. Backtests use `TouchFillModel` (above).
 
 ## MAX (MaiCoin)

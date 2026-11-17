@@ -592,7 +592,12 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `open-<order>-<pos>` / `close-<order>-<pos>`. Reconcile (start + exit):
    rows without id closed (can't look up); opens waiting (11, 12) cancelled
    then polled to the end; TP rows cleared if the position is open, else
-   recorded from history; books > account real units → refuse start.
+   recorded from history; books ≠ account real units → refuse start
+   (more: closed outside; less: opened outside / split). During the run
+   (`with_account_check`, on in `EtoroProvider`): each new close time,
+   nothing working, no fill this settle → pnl read, any instrument's books
+   ≠ account units → run stops (`account_matches`; one Info call per close
+   time).
    Market sell plan (`close_plan`, checked before any leg is sent): units
    rounded down to the step; a partial close leaving < $1 (eToro: "remaining
    live position amount … < 1") closes the whole position; one deducting <
@@ -605,8 +610,8 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    History NOT split-adjusted, and mixes scales near splits (checked
    2026-11-18: NVDA 2024-06-06 1205 → 121; AAPL 2019-2020 single bars at
    1/4 price; NVDA.RTH 2024-06-06): backtests across a split are wrong;
-   live books don't follow a split (corporate actions unmodelled; README
-   limitation). Examples avoid split windows (AMZN.RTH, not NVDA.RTH).
+   live books don't follow a split (corporate actions unmodelled): the
+   account check stops the run at the first idle bar after one. Examples avoid split windows (AMZN.RTH, not NVDA.RTH).
    `limitIOC` not used: on demo a buy limited 3% below the ask filled at the
    ask (2026-11-18). Stock orders cost $1 each on demo. Demo 2026-11-18: hand
    round trip + sma_trend 1m run (buy, sell, stop) → books = account to the

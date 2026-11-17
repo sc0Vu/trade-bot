@@ -448,6 +448,10 @@ pub struct EtoroBroker {
     last_close: HashMap<InstrumentId, Price>,
     /// Orders already looked up while searching for triggered `mit`s.
     seen_orders: std::collections::HashSet<i64>,
+    /// Compare the books with the account each close time (`with_account_check`).
+    account_check: bool,
+    /// Close time last compared.
+    checked_at: Option<bot_core::Timestamp>,
 }
 
 /// Settles a triggered `mit` may go unmatched before it counts as ended
@@ -486,7 +490,20 @@ impl EtoroBroker {
             recovered: Vec::new(),
             last_close: HashMap::new(),
             seen_orders: std::collections::HashSet::new(),
+            account_check: false,
+            checked_at: None,
         })
+    }
+
+    /// Once per close time, while nothing of ours is working, compares
+    /// each instrument's books with the account's units and stops the run
+    /// (an error) when they differ: a stock split or other corporate action
+    /// (eToro adjusts the units, the books can't), or positions opened or
+    /// closed outside the bot. Trading on would sell the wrong amount. One
+    /// portfolio read per close time.
+    pub fn with_account_check(mut self) -> Self {
+        self.account_check = true;
+        self
     }
 
     pub fn with_recovered(mut self, fills: Vec<Fill>) -> Self {
@@ -1176,6 +1193,25 @@ impl Broker for EtoroBroker {
                 self.positions.insert(f.instrument.clone(), p);
             }
         }
+        if let MarketEvent::Candle(c) = event
+            && self.account_check
+            && self.open.is_empty()
+            && fills.is_empty()
+            && self.checked_at.is_none_or(|t| c.close_time > t)
+        {
+            self.checked_at = Some(c.close_time);
+            let body = self.api.get(Pool::Info, &self.paths().pnl()).await?;
+            let positions = parse_positions(&body)?;
+            let instruments: Vec<(InstrumentId, i64)> = self
+                .instruments
+                .iter()
+                .map(|(id, (_, etoro_id))| (id.clone(), *etoro_id))
+                .collect();
+            for (id, etoro_id) in instruments {
+                let held = self.position(&id).qty().get();
+                account_matches(&id, held, etoro_id, &positions)?;
+            }
+        }
         fills.sort_by_key(|f| f.ts);
         Ok(fills)
     }
@@ -1390,20 +1426,42 @@ pub async fn reconcile(
             .get_holding(&inst.id)
             .await?
             .map_or(Decimal::ZERO, |p| p.qty().get());
-        let venue: Decimal = positions
-            .iter()
-            .filter(|p| p.etoro_id == *etoro_id)
-            .map(|p| p.units)
-            .sum();
-        if held > venue {
-            return Err(decode(format!(
-                "{}: the books hold {held} but the eToro account only {venue}: \
-                 positions were closed outside the bot",
-                inst.id
-            )));
-        }
+        account_matches(&inst.id, held, *etoro_id, &positions)?;
     }
     Ok(recovered)
+}
+
+/// Errors unless the account's real units on `etoro_id` equal the books'
+/// `held`. The bot needs its symbols to itself: a sell closes the
+/// account's oldest positions, so a position it didn't open would be
+/// sold as its own; and after a split eToro changes the units while the
+/// books can't.
+pub(crate) fn account_matches(
+    id: &InstrumentId,
+    held: Decimal,
+    etoro_id: i64,
+    positions: &[EtoroPosition],
+) -> Result<(), ExchangeError> {
+    let venue: Decimal = positions
+        .iter()
+        .filter(|p| p.etoro_id == etoro_id)
+        .map(|p| p.units)
+        .sum();
+    if held > venue {
+        return Err(decode(format!(
+            "{id}: the books hold {held} but the eToro account only {venue}: \
+             positions were closed outside the bot"
+        )));
+    }
+    if held < venue {
+        return Err(decode(format!(
+            "{id}: the eToro account holds {venue} but the books only {held}: \
+             a stock split or other corporate action changed the units, or \
+             positions were opened outside the bot (it needs its symbols to \
+             itself); stopped rather than sell the wrong amount"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2066,5 +2124,78 @@ mod tests {
         let two = [position(dec!(0.01)), position(dec!(0.02))];
         let plan = close_plan(&two, dec!(0.018), &eth(), px).unwrap();
         assert_eq!((plan[0].1, plan[1].1), (None, Some(dec!(0.008))));
+    }
+
+    /// A BTC bar closing at the end of hour `h`.
+    fn bar_at(h: i64) -> MarketEvent {
+        let MarketEvent::Candle(c) = close_bar("63000") else {
+            unreachable!()
+        };
+        MarketEvent::Candle(
+            bot_core::Candle::new(bot_core::CandleSpec {
+                open_time: Timestamp::from_millis(h * 3_600_000),
+                close_time: Timestamp::from_millis(h * 3_600_000 + 3_599_999),
+                ..c.into()
+            })
+            .unwrap(),
+        )
+    }
+
+    /// The demo buy (0.000314 BTC) in the books, then one portfolio read
+    /// per close time while idle: equal units pass (the leveraged CFD in
+    /// `PNL` isn't ours and isn't counted), the same close time isn't read
+    /// twice, and units ×10 (what a 10-for-1 split does to the position)
+    /// stop the run.
+    #[tokio::test]
+    async fn the_account_check_stops_on_units_the_books_dont_have() {
+        let db = TempDb::new().await;
+        let fake = Fake::default();
+        let sent = fake.sent.clone();
+        fake.reply(200, OPEN_ACK);
+        fake.reply(200, LOOKUP_FILLED);
+        fake.reply(200, PNL);
+        fake.reply(200, &PNL.replace("\"units\":0.000314", "\"units\":0.00314"));
+        let mut b = EtoroBroker::open(
+            Box::new(fake),
+            vec![(btc(), 100000)],
+            "tbrun".into(),
+            db.store.clone(),
+        )
+        .await
+        .unwrap()
+        .with_account_check();
+        b.submit(order(
+            "o-1",
+            Side::Buy,
+            Size::Quote(Notional::new(dec!(20))),
+        ))
+        .await
+        .unwrap();
+        // The fill's own bar: no read (an order was working).
+        assert_eq!(b.settle(&bar_at(0)).await.unwrap().len(), 1);
+        assert_eq!(sent.lock().unwrap().len(), 2);
+        b.settle(&bar_at(1)).await.unwrap();
+        b.settle(&bar_at(1)).await.unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 3, "one read per close time");
+        let err = b.settle(&bar_at(2)).await.unwrap_err().to_string();
+        assert!(
+            err.contains("holds 0.00314 but the books only 0.000314") && err.contains("split"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_account_must_match_the_books_both_ways() {
+        let id = btc().id.clone();
+        let pos = parse_positions(PNL).unwrap();
+        assert!(account_matches(&id, dec!(0.000314), 100000, &pos).is_ok());
+        let more = account_matches(&id, dec!(0.0004), 100000, &pos).unwrap_err();
+        assert!(more.to_string().contains("closed outside the bot"));
+        let less = account_matches(&id, dec!(0.0001), 100000, &pos).unwrap_err();
+        assert!(less.to_string().contains("opened outside the bot"));
+        assert!(
+            account_matches(&id, dec!(0), 999, &pos).is_ok(),
+            "other instrument"
+        );
     }
 }

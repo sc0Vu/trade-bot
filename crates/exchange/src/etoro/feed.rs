@@ -368,7 +368,8 @@ impl Provider for EtoroProvider {
             )
             .await?
             .with_recovered(recovered)
-            .with_stream(stream),
+            .with_stream(stream)
+            .with_account_check(),
         ))
     }
 
