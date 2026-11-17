@@ -157,6 +157,96 @@ impl MarketData for FundingWatch {
     }
 }
 
+/// Where [`MarkWatch`] reads a bar's mark price from.
+#[async_trait]
+pub trait MarkSource: Send + Sync {
+    /// The mark-price bar of `symbol` opening at `open`, if published.
+    async fn bar(
+        &self,
+        symbol: &Symbol,
+        interval: Interval,
+        open: Timestamp,
+    ) -> Result<Option<bot_core::Candle>, ExchangeError>;
+}
+
+#[async_trait]
+impl MarkSource for PublicClient {
+    async fn bar(
+        &self,
+        symbol: &Symbol,
+        interval: Interval,
+        open: Timestamp,
+    ) -> Result<Option<bot_core::Candle>, ExchangeError> {
+        let end = Timestamp::from_millis(open.as_millis() + interval.as_millis());
+        Ok(self
+            .mark_klines(symbol, interval, open, end)
+            .await?
+            .into_iter()
+            .find(|c| c.open_time == open))
+    }
+}
+
+/// A feed that delivers each closed bar's mark-price bar
+/// (`MarketEvent::Mark`, fetched over REST, weight 1) just before the bar,
+/// so the paper broker checks liquidation on mark as the backtest does.
+/// Backfill bars get none (no liquidation check on history). A failed or
+/// missing fetch is a warning: that bar falls back to the trade range.
+pub struct MarkWatch {
+    inner: Box<dyn MarketData>,
+    source: Box<dyn MarkSource>,
+    queue: VecDeque<MarketEvent>,
+}
+
+impl MarkWatch {
+    pub fn new(inner: Box<dyn MarketData>, source: Box<dyn MarkSource>) -> Self {
+        Self {
+            inner,
+            source,
+            queue: VecDeque::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl MarketData for MarkWatch {
+    async fn next(&mut self) -> Result<Option<MarketEvent>, ExchangeError> {
+        if let Some(e) = self.queue.pop_front() {
+            return Ok(Some(e));
+        }
+        let Some(event) = self.inner.next().await? else {
+            return Ok(None);
+        };
+        if let MarketEvent::Candle(c) = &event {
+            match self
+                .source
+                .bar(c.instrument.symbol(), c.interval, c.open_time)
+                .await
+            {
+                Ok(Some(mut m)) => {
+                    // The REST bar carries the futures venue's id already
+                    // (same client); keep it on this instrument regardless.
+                    if m.instrument != c.instrument {
+                        m = bot_core::Candle::new(bot_core::CandleSpec {
+                            instrument: c.instrument.clone(),
+                            ..(*m).clone()
+                        })
+                        .map_err(|e| ExchangeError::Decode(e.to_string()))?;
+                    }
+                    self.queue.push_back(event);
+                    return Ok(Some(MarketEvent::Mark(m)));
+                }
+                Ok(None) => {
+                    tracing::warn!(instrument = %c.instrument, "no mark-price bar yet; liquidation checked on last price")
+                }
+                Err(e) => {
+                    tracing::warn!(instrument = %c.instrument, error = %e, "mark-price bar unavailable; liquidation checked on last price")
+                }
+            }
+        }
+        Ok(Some(event))
+    }
+}
+
 /// How a USDⓈ-M paper run trades.
 #[derive(Clone, Debug)]
 pub struct UsdmPaperConfig {
@@ -227,8 +317,9 @@ impl Provider for UsdmPaperProvider {
             self.config.warmup,
             self.config.max_outage,
         );
+        let marked = MarkWatch::new(Box::new(feed), Box::new(self.client()));
         Ok(Box::new(FundingWatch::new(
-            Box::new(feed),
+            Box::new(marked),
             Box::new(self.client()),
             self.universe.clone(),
             Timestamp::from_millis(now_millis()),
@@ -366,5 +457,66 @@ mod tests {
             ]
         );
         assert_eq!(*asked.lock().unwrap(), vec![1000, 3000]);
+    }
+
+    struct Marks;
+
+    #[async_trait]
+    impl MarkSource for Marks {
+        async fn bar(
+            &self,
+            _: &Symbol,
+            interval: Interval,
+            open: Timestamp,
+        ) -> Result<Option<bot_core::Candle>, ExchangeError> {
+            // Bar 0 has a mark; bar 1's isn't published.
+            if open.as_millis() != 0 {
+                return Ok(None);
+            }
+            Ok(Some(bar(0, interval, "99")))
+        }
+    }
+
+    fn bar(i: i64, interval: Interval, p: &str) -> bot_core::Candle {
+        let p: Price = p.parse().unwrap();
+        bot_core::Candle::new(bot_core::CandleSpec {
+            instrument: id(),
+            interval,
+            open_time: Timestamp::from_millis(i * 3_600_000),
+            close_time: Timestamp::from_millis(i * 3_600_000 + 3_599_999),
+            open: p,
+            high: p,
+            low: p,
+            close: p,
+            volume: bot_core::Qty::new(dec!(0)),
+            quote_volume: Notional::new(dec!(0)),
+        })
+        .unwrap()
+    }
+
+    /// A closed bar is preceded by its mark bar; a backfilled one isn't
+    /// (history), and one whose mark isn't published passes alone.
+    #[tokio::test]
+    async fn mark_bars_come_just_before_their_trade_bar() {
+        let h = Interval::H1;
+        let feed = Feed(VecDeque::from([
+            MarketEvent::Backfill(bar(0, h, "100")),
+            MarketEvent::Candle(bar(0, h, "100")),
+            MarketEvent::Candle(bar(1, h, "101")),
+        ]));
+        let mut w = MarkWatch::new(Box::new(feed), Box::new(Marks));
+        let mut out = Vec::new();
+        while let Some(e) = w.next().await.unwrap() {
+            out.push(e);
+        }
+        assert_eq!(
+            out,
+            vec![
+                MarketEvent::Backfill(bar(0, h, "100")),
+                MarketEvent::Mark(bar(0, h, "99")),
+                MarketEvent::Candle(bar(0, h, "100")),
+                MarketEvent::Candle(bar(1, h, "101")),
+            ]
+        );
     }
 }

@@ -778,6 +778,13 @@ fn with_perp(
             );
         }
         events.extend(ev);
+        let marks = dir.read_marks(id, a.interval)?;
+        if marks.is_empty() {
+            eprintln!(
+                "warning: {id}: no mark-price bars cached: liquidation checked on last price (fetch-data again)"
+            );
+        }
+        events.extend(backtest::mark_events(marks, a.from, a.to));
     }
     let clearance = a.clearance.unwrap_or(clearance);
     anyhow::ensure!(
@@ -863,7 +870,7 @@ async fn fetch_data(a: FetchArgs) -> anyhow::Result<()> {
             s.cached
         );
         if a.venue == Venue::BinanceUsdm {
-            fetch_perp_data(&base, &dir, &id, a.from, to, a.brackets_from).await?;
+            fetch_perp_data(&base, &dir, &id, a.interval, a.from, to, a.brackets_from).await?;
         }
     }
     Ok(())
@@ -878,6 +885,7 @@ async fn fetch_perp_data(
     base: &str,
     dir: &DataDir,
     id: &InstrumentId,
+    interval: Interval,
     from: Timestamp,
     to: Timestamp,
     brackets_from: BracketsHost,
@@ -890,6 +898,15 @@ async fn fetch_perp_data(
     println!(
         "{id} funding: {} downloaded, {} cached",
         f.downloaded, f.cached
+    );
+    let m = backtest::fetch_marks(&client, dir, id, interval, from, to)
+        .await
+        .with_context(|| format!("fetching {id} mark price"))?;
+    println!(
+        "{id} mark price {}: {} downloaded, {} cached",
+        interval.code(),
+        m.downloaded,
+        m.cached
     );
     let info = client.perp_instrument(id.symbol()).await?;
     let mut brackets = dir.read_perp(id).ok().and_then(|p| p.brackets);

@@ -17,7 +17,7 @@ use crate::DataError;
 use crate::FetchSummary;
 use crate::data::{DataDir, io, write_atomic};
 use bot_core::margin::Brackets;
-use bot_core::{Candle, Decimal, InstrumentId, MarketEvent, Timestamp};
+use bot_core::{Candle, Decimal, InstrumentId, Interval, MarketEvent, Timestamp};
 use exchange::binance::PublicClient;
 pub use exchange::binance::usdm::FundingRate;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,31 @@ impl DataDir {
             .join("funding")
             .join(id.venue().as_str())
             .join(format!("{}.jsonl", id.symbol()))
+    }
+
+    fn mark_path(&self, id: &InstrumentId, interval: Interval) -> PathBuf {
+        self.root
+            .join("mark")
+            .join(id.venue().as_str())
+            .join(format!("{}-{}.jsonl", id.symbol(), interval.code()))
+    }
+
+    /// `id`'s cached mark-price bars, oldest first; empty if none.
+    pub fn read_marks(
+        &self,
+        id: &InstrumentId,
+        interval: Interval,
+    ) -> Result<Vec<Candle>, DataError> {
+        self.read_series(self.mark_path(id, interval), id, interval)
+    }
+
+    pub fn write_marks(
+        &self,
+        id: &InstrumentId,
+        interval: Interval,
+        bars: &[Candle],
+    ) -> Result<(), DataError> {
+        self.write_series(self.mark_path(id, interval), bars)
     }
 
     fn perp_path(&self, id: &InstrumentId) -> PathBuf {
@@ -166,6 +191,66 @@ pub async fn fetch_funding(
         downloaded,
         cached: all.len(),
     })
+}
+
+/// Brings `id`'s mark-price bars up to `[from, to)` (head and tail only,
+/// as klines).
+pub async fn fetch_marks(
+    client: &PublicClient,
+    dir: &DataDir,
+    id: &InstrumentId,
+    interval: Interval,
+    from: Timestamp,
+    to: Timestamp,
+) -> Result<FetchSummary, DataError> {
+    let mut series: BTreeMap<Timestamp, Candle> = dir
+        .read_marks(id, interval)?
+        .into_iter()
+        .map(|c| (c.open_time, c))
+        .collect();
+    let ranges = match (
+        series.keys().next().copied(),
+        series.keys().next_back().copied(),
+    ) {
+        (Some(first), Some(last)) => {
+            let mut r = Vec::new();
+            if from < first {
+                r.push((from, first));
+            }
+            let after = Timestamp::from_millis(last.as_millis() + 1);
+            if after < to {
+                r.push((after, to));
+            }
+            r
+        }
+        _ => vec![(from, to)],
+    };
+    let mut downloaded = 0;
+    for (start, end) in ranges {
+        for c in client
+            .mark_klines(id.symbol(), interval, start, end)
+            .await?
+        {
+            downloaded += 1;
+            series.insert(c.open_time, c);
+        }
+    }
+    let all: Vec<Candle> = series.into_values().collect();
+    if downloaded > 0 {
+        dir.write_marks(id, interval, &all)?;
+    }
+    Ok(FetchSummary {
+        downloaded,
+        cached: all.len(),
+    })
+}
+
+/// Cached mark bars of `id` opening in `[from, to)` as `MarketEvent::Mark`.
+pub fn mark_events(bars: Vec<Candle>, from: Timestamp, to: Timestamp) -> Vec<MarketEvent> {
+    bars.into_iter()
+        .filter(|c| c.open_time >= from && c.open_time < to)
+        .map(MarketEvent::Mark)
+        .collect()
 }
 
 /// `rates` within `[from, to)` as `MarketEvent::Funding` of `id`, a

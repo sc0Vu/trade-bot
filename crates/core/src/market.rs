@@ -242,6 +242,12 @@ pub enum MarketEvent {
         trading: bool,
         ts: Timestamp,
     },
+    /// A perpetual's mark-price bar (the venue's index-based fair price,
+    /// what liquidation is checked against), delivered just before the
+    /// trade bar of the same close time. Strategies ignore it by default;
+    /// the perpetual paper broker checks liquidation against its range
+    /// instead of the trade bar's when it has one for that bar.
+    Mark(Candle),
     /// A perpetual's funding settlement at `ts`: every open position pays
     /// `qty × mark × rate` (a positive rate: longs pay shorts), booked to
     /// realized P&L (`Position::apply_funding`). The broker settles it and
@@ -263,7 +269,7 @@ impl MarketEvent {
     /// goes backwards.
     pub fn ts(&self) -> Timestamp {
         match self {
-            Self::Candle(c) | Self::Backfill(c) => c.close_time,
+            Self::Candle(c) | Self::Backfill(c) | Self::Mark(c) => c.close_time,
             Self::Quote(q) => q.ts,
             Self::SessionOpen { ts, .. }
             | Self::SessionClose { ts, .. }

@@ -22,8 +22,9 @@
 //! **Liquidation.** After each candle's fills, every position on the
 //! instrument is checked against its liquidation price
 //! ([`bot_core::margin::liquidation_price`]) at the bar's worst price for
-//! it (a long's low, a short's high): the backtest has last-price candles,
-//! not the venue's mark price, so this is the cautious reading. A breached
+//! it (a long's low, a short's high): the mark-price bar of the same open
+//! time (`MarketEvent::Mark`, as the venue liquidates on mark) when one
+//! was delivered, else the trade bar (the cautious stand-in). A breached
 //! position is closed at its liquidation price (rounded to tick against
 //! the trader) with a clearance fee of `clearance` × notional (an
 //! assumption the caller states: Binance's varies by symbol), taken from
@@ -74,6 +75,8 @@ pub struct PerpPaperBroker {
     positions: HashMap<InstrumentId, Position>,
     pending: Vec<Pending>,
     marks: HashMap<InstrumentId, Price>,
+    /// The latest mark-price bar per instrument (`MarketEvent::Mark`).
+    mark_bars: HashMap<InstrumentId, Candle>,
     next_liq: u64,
 }
 
@@ -116,6 +119,7 @@ impl PerpPaperBroker {
             positions: HashMap::new(),
             pending: Vec::new(),
             marks: HashMap::new(),
+            mark_bars: HashMap::new(),
             next_liq: 1,
         })
     }
@@ -362,7 +366,18 @@ impl PerpPaperBroker {
         }
         let lp = self.liquidation_price(id)?;
         let long = p.qty().is_positive();
-        let breached = if long { c.low <= lp } else { c.high >= lp };
+        // The venue liquidates on the mark price: its bar when there is
+        // one for this bar, else the trade bar (cautious stand-in).
+        let range = self
+            .mark_bars
+            .get(id)
+            .filter(|m| m.open_time == c.open_time)
+            .unwrap_or(c);
+        let breached = if long {
+            range.low <= lp
+        } else {
+            range.high >= lp
+        };
         if !breached {
             return None;
         }
@@ -490,6 +505,10 @@ impl Broker for PerpPaperBroker {
                     }
                 }
                 self.marks.insert(instrument.clone(), *mark);
+                Ok(Vec::new())
+            }
+            MarketEvent::Mark(m) => {
+                self.mark_bars.insert(m.instrument.clone(), m.clone());
                 Ok(Vec::new())
             }
             MarketEvent::Candle(c) => {
@@ -710,6 +729,42 @@ mod tests {
         assert_eq!(f[0].ts, candle(2, ["1", "1", "1", "1"]).close_time);
         assert!(b.position(&perp().id).is_flat());
         assert_eq!(b.wallet(), Notional::new(dec!(6985)));
+    }
+
+    /// Same long, LP 27,108.43. Bar 2's trade low 27,000 would breach,
+    /// but its mark bar's low is 27,500: no liquidation (the venue checks
+    /// mark). Bar 3: trade low 27,200 wouldn't, mark low 27,100 does →
+    /// liquidated. A mark bar of another bar time is ignored.
+    #[tokio::test]
+    async fn liquidation_follows_the_mark_price_bar() {
+        let mark = |i: i64, ohlc: [&str; 4]| MarketEvent::Mark(candle(i, ohlc));
+        let mut b = broker(dec!(10000), 10, MarginMode::Isolated);
+        bar(&mut b, 0, ["30000", "30000", "30000", "30000"]).await;
+        b.submit(market(1, Side::Buy, dec!(1), 0)).await.unwrap();
+        bar(&mut b, 1, ["30000", "30000", "29000", "29000"]).await;
+        b.settle(&mark(2, ["29000", "29000", "27500", "28000"]))
+            .await
+            .unwrap();
+        assert!(
+            bar(&mut b, 2, ["29000", "29000", "27000", "28000"])
+                .await
+                .is_empty()
+        );
+        b.settle(&mark(3, ["28000", "28000", "27100", "27900"]))
+            .await
+            .unwrap();
+        let f = bar(&mut b, 3, ["28000", "28000", "27200", "27900"]).await;
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].order_id.as_str(), "liq-1");
+        // Stale mark bar (bar 3) at bar 4: the trade bar decides again.
+        let mut b = broker(dec!(10000), 10, MarginMode::Isolated);
+        bar(&mut b, 0, ["30000", "30000", "30000", "30000"]).await;
+        b.submit(market(1, Side::Buy, dec!(1), 0)).await.unwrap();
+        b.settle(&mark(0, ["30000", "30000", "29900", "30000"]))
+            .await
+            .unwrap();
+        let f = bar(&mut b, 1, ["30000", "30000", "27000", "28000"]).await;
+        assert_eq!(f.len(), 2, "fill + liquidation on the trade bar");
     }
 
     /// Isolated 5x short 1 @ 30,000 (fee 15): margin 6,000, wallet 3,985.

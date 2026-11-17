@@ -139,15 +139,45 @@ impl PublicClient {
         start: Timestamp,
         end: Timestamp,
     ) -> Result<Vec<Candle>, ExchangeError> {
+        let path = format!("{}/klines", self.prefix);
+        self.klines_at(&path, symbol, interval, start, end).await
+    }
+
+    /// A perpetual's mark-price bars (`/fapi/v1/markPriceKlines`, same row
+    /// shape as klines; volumes are "0"), closed only, as
+    /// [`klines`](Self::klines). Futures clients only.
+    pub async fn mark_klines(
+        &self,
+        symbol: &Symbol,
+        interval: Interval,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> Result<Vec<Candle>, ExchangeError> {
+        if self.prefix != "/fapi/v1" {
+            return Err(ExchangeError::Decode(
+                "mark price bars are futures only".into(),
+            ));
+        }
+        self.klines_at("/fapi/v1/markPriceKlines", symbol, interval, start, end)
+            .await
+    }
+
+    async fn klines_at(
+        &self,
+        path: &str,
+        symbol: &Symbol,
+        interval: Interval,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> Result<Vec<Candle>, ExchangeError> {
         let id = InstrumentId::new(self.venue.clone(), symbol.clone());
         let now = now_millis();
         let mut out = Vec::new();
         let mut cursor = start.as_millis();
         while cursor < end.as_millis() {
-            let path = format!("{}/klines", self.prefix);
             let page = self
                 .get(
-                    &path,
+                    path,
                     &[
                         ("symbol", symbol.to_string()),
                         ("interval", interval.code().to_owned()),

@@ -289,9 +289,11 @@ spent: `--leverage` sets how much of the wallet a position ties up
 (refused above what the brackets allow at that size), funding is paid or
 received every settlement, and a position whose liquidation price the
 bar's low (long) or high (short) reaches is closed there, losing its
-margin. Two approximations: the bar's last-price range stands in for the
-venue's mark price (the cautious reading), and funding records from
-before about 2023 carry no mark, so the bar's price values those. A quote
+margin. Liquidation is checked on the venue's mark price, as Binance does:
+`fetch-data` caches the mark-price bars and the backtest replays them (a
+paper run fetches each bar's); without them the trade bar's range stands
+in, a cautious reading, with a warning. Funding records from before about
+2023 carry no mark, so the bar's price values those. A quote
 budget is the position's notional: at 1x, leave room for the fee.
 
 `run --paper` with `exchange.venue = "binance-usdm"` forward-tests the

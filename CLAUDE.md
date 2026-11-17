@@ -147,7 +147,15 @@ Backtest: `BacktestProvider::with_perp(PerpSetup { terms, clearance })`
 no fill). `Report::compute_full(.., events, ..)`: perp fills move cash by
 realized only, funding booked before fills settled at the first close ≥ it
 (broker order; Binance stamps funding ms after the hour), equity = cash + qty·close
-− basis, closed trade = fill against the position; `Report.funding`. Last price ≠ mark: cautious.
+− basis, closed trade = fill against the position; `Report.funding`.
+Mark price: `MarketEvent::Mark(Candle)` (mark-price bar, before the trade bar
+of the same close; strategies ignore it; ts = close). PerpPaperBroker checks
+liquidation on the mark bar of the same open time if delivered, else the
+trade bar. Backtest: `fetch-data` caches `/fapi/v1/markPriceKlines` under
+`mark/<venue>/<SYM>-<iv>.jsonl` (`fetch_marks`), CLI replays them
+(`mark_events`; none → warning). Paper: `usdm_paper::MarkWatch` fetches each
+closed bar's mark bar over REST (published at once, checked 2026-11-18; miss
+= warning, trade bar). Live: the venue liquidates itself.
 Data (`exchange::binance::usdm`): venue `binance-usdm` (own ids, cache,
 books); `PublicClient::usdm(host)` klines `/fapi/v1/klines`;
 `perp_instrument` from `/fapi/v1/exchangeInfo` (PERPETUAL + margin =

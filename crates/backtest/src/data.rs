@@ -79,7 +79,16 @@ impl DataDir {
         id: &InstrumentId,
         interval: Interval,
     ) -> Result<Vec<Candle>, DataError> {
-        let path = self.klines_path(id, interval);
+        self.read_series(self.klines_path(id, interval), id, interval)
+    }
+
+    /// A series file of `id`'s bars at `interval` (klines, mark bars).
+    pub(crate) fn read_series(
+        &self,
+        path: PathBuf,
+        id: &InstrumentId,
+        interval: Interval,
+    ) -> Result<Vec<Candle>, DataError> {
         let file = match fs::File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -113,7 +122,10 @@ impl DataDir {
         interval: Interval,
         candles: &[Candle],
     ) -> Result<(), DataError> {
-        let path = self.klines_path(id, interval);
+        self.write_series(self.klines_path(id, interval), candles)
+    }
+
+    pub(crate) fn write_series(&self, path: PathBuf, candles: &[Candle]) -> Result<(), DataError> {
         let mut buf = Vec::new();
         for c in candles {
             serde_json::to_writer(&mut buf, c).map_err(|e| DataError::Corrupt {
