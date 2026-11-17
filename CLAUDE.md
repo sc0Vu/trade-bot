@@ -194,7 +194,7 @@ liquidation/ADL/manual — bot needs its symbols to itself), still differ with
 nothing working → run stops. BNB fee → error (turn off fee burn). Futures
 rejections `-2019 -2027 -2028 -4164` = order rejections. Books: same schema
 (signed holding), own db `data/<network>-usdm.db`; exit cancels orders,
-positions stay open. No state resume yet. Checked on demo 2026-11-17
+positions stay open. Strategy state + `[api]` as spot (`cli::observe_run`, shared). Checked on demo 2026-11-17
 (sma_long_short 1m, 2x isolated): short, flip, stop → books = Binance
 (position 0.0031, 3 trades, realized −0.59727811), no orders left.
 Spot positions non-negative owned inventory. Quantity sign = value

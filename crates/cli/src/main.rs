@@ -128,7 +128,8 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     // Hard error in every mode: fake-money networks need their own keys too.
     let creds = Credentials::from_env()?;
     let books = open_books(&cfg.db, network).await?;
-    let api_token = config::api_token(&cfg.api, std::env::var(config::API_TOKEN_VAR).ok())?;
+    // Fail before connecting: a public API without a token is refused.
+    config::api_token(&cfg.api, std::env::var(config::API_TOKEN_VAR).ok())?;
     let provider = BinanceSpotProvider::new(
         BinanceConfig {
             network,
@@ -150,18 +151,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     } else {
         Orphans::Refuse
     });
-    let state_hash = state::params_hash(&cfg.strategy.name, &cfg.strategy.params);
-    let resume = state::load(&*books, &cfg.strategy.name, &state_hash).await?;
-    if resume.is_some() {
-        tracing::info!("resuming saved strategy state");
-    }
-    let saver = state::Saver::start(
-        books.clone(),
-        cfg.strategy.name.clone(),
-        state_hash,
-        resume.clone(),
-        now,
-    );
+    let (mut observer, resume) = observe_run(&cfg, books.clone(), network).await?;
     let params = Params::new(cfg.strategy.params);
     let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
     let engine_cfg = EngineConfig {
@@ -172,35 +162,6 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
     if network == Network::Live {
         eprintln!("LIVE: sending real orders to Binance mainnet");
     }
-    telemetry::start(&cfg.metrics);
-    let live = if cfg.api.enabled {
-        let (tx, rx) = tokio::sync::watch::channel(None);
-        let state = api::ApiState {
-            info: api::RunInfo {
-                network: config::network_name(network).to_owned(),
-                strategy: cfg.strategy.name.clone(),
-                started_at: now(),
-            },
-            live: rx,
-            books: books.clone(),
-            token: api_token,
-        };
-        // Like metrics, the API can never stop trading.
-        match api::serve(cfg.api.listen, state).await {
-            Ok(addr) => tracing::info!(%addr, "API listening"),
-            Err(e) => {
-                tracing::warn!(error = %e, listen = %cfg.api.listen, "API not started; trading continues");
-            }
-        }
-        Some(tx)
-    } else {
-        None
-    };
-    let mut observer = telemetry::RunObserver {
-        include_money: cfg.metrics.include_money,
-        live,
-        state: Some(saver),
-    };
     tracing::info!(provider = provider.id(), strategy = %cfg.strategy.name, run_tag = provider.run_tag(), "starting");
     let outcome = tokio::select! {
         r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, resume) => r.map(Some),
@@ -378,12 +339,67 @@ async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What a run with books observes: saved strategy state (loaded for
+/// resume under the same params, then written after every event), the
+/// metrics exporter, and the read-only API when `[api]` enables it (a
+/// bind failure is a warning; the API never stops trading).
+async fn observe_run(
+    cfg: &config::Config,
+    books: Arc<SqlStore>,
+    network: Network,
+) -> anyhow::Result<(telemetry::RunObserver, Option<serde_json::Value>)> {
+    let api_token = config::api_token(&cfg.api, std::env::var(config::API_TOKEN_VAR).ok())?;
+    let state_hash = state::params_hash(&cfg.strategy.name, &cfg.strategy.params);
+    let resume = state::load(&*books, &cfg.strategy.name, &state_hash).await?;
+    if resume.is_some() {
+        tracing::info!("resuming saved strategy state");
+    }
+    let saver = state::Saver::start(
+        books.clone(),
+        cfg.strategy.name.clone(),
+        state_hash,
+        resume.clone(),
+        now,
+    );
+    telemetry::start(&cfg.metrics);
+    let live = if cfg.api.enabled {
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let state = api::ApiState {
+            info: api::RunInfo {
+                network: config::network_name(network).to_owned(),
+                strategy: cfg.strategy.name.clone(),
+                started_at: now(),
+            },
+            live: rx,
+            books,
+            token: api_token,
+        };
+        match api::serve(cfg.api.listen, state).await {
+            Ok(addr) => tracing::info!(%addr, "API listening"),
+            Err(e) => {
+                tracing::warn!(error = %e, listen = %cfg.api.listen, "API not started; trading continues");
+            }
+        }
+        Some(tx)
+    } else {
+        None
+    };
+    Ok((
+        telemetry::RunObserver {
+            include_money: cfg.metrics.include_money,
+            live,
+            state: Some(saver),
+        },
+        resume,
+    ))
+}
+
 /// A USDⓈ-M run with orders on `network`'s futures exchange (gated by
 /// the caller): account set up to `[perp]`, reconciled at start, open
 /// orders cancelled at exit (positions stay open on Binance). Books in
 /// their own database (`data/<network>-usdm.db` unless `db.url`), so a
-/// spot run never meets a futures journal row. No strategy-state resume
-/// yet: a restart starts the strategy fresh on the books' position.
+/// spot run never meets a futures journal row. Strategy state and the
+/// API as a spot run ([`observe_run`]).
 async fn run_usdm_orders(
     cfg: config::Config,
     network: Network,
@@ -407,6 +423,7 @@ async fn run_usdm_orders(
     let books = SqlStore::open(&url).await.context("opening the database")?;
     books.bind_network(config::network_name(network)).await?;
     let books = Arc::new(books);
+    let books_ref = books.clone();
     let provider = UsdmProvider::new(
         UsdmConfig {
             network,
@@ -426,9 +443,7 @@ async fn run_usdm_orders(
     } else {
         Orphans::Refuse
     });
-    if cfg.api.enabled {
-        tracing::warn!("api is not available on a perpetual run yet; not started");
-    }
+    let (mut observer, resume) = observe_run(&cfg, books_ref.clone(), network).await?;
     let params = Params::new(cfg.strategy.params);
     let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
     let engine_cfg = EngineConfig {
@@ -439,12 +454,6 @@ async fn run_usdm_orders(
     if network == Network::Live {
         eprintln!("LIVE: sending real orders to Binance USDⓈ-M futures");
     }
-    telemetry::start(&cfg.metrics);
-    let mut observer = telemetry::RunObserver {
-        include_money: cfg.metrics.include_money,
-        live: None,
-        state: None,
-    };
     tracing::info!(
         provider = provider.id(),
         network = config::network_name(network),
@@ -454,7 +463,7 @@ async fn run_usdm_orders(
         "starting"
     );
     let outcome = tokio::select! {
-        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, None) => r.map(Some),
+        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, resume) => r.map(Some),
         s = shutdown::signal() => {
             eprintln!("{}: stopping; cancelling open orders (signal again to skip)", s?);
             Ok(None)
