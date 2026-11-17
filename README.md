@@ -350,7 +350,7 @@ after 120 hours without a bar. eToro publishes no tick or unit step and
 volume is often missing, so `avwap` has no data there.
 
 ```sh
-make etoro-stocks-data                                    # SPY, QQQ, AAPL, MSFT, NVDA daily
+make etoro-stocks-data                                    # SPY, QQQ, AAPL, MSFT, AMZN daily
 make etoro-stocks-backtest FROM=2024-01-01 TO=2026-11-01  # examples vs buy-and-hold SPY
 # or any symbol and strategy:
 make backtest VENUE=etoro STRATEGY=sma_trend SYMBOL=AAPL.RTH INTERVAL=1d \
@@ -581,7 +581,7 @@ Render's settings. It's never in the image (invariant 7).
 | `make check` | Format check, clippy with warnings as errors, docs, tests. Run before every commit. |
 | `make fetch-data` | Cache klines (`VENUE`, `SYMBOL`, `INTERVAL`, `FROM`) |
 | `make backtest` | Backtest (`VENUE`, `STRATEGY`, `SYMBOL`, `FROM`, `TO`, `PARAMS`, `FEE`, `INITIAL_CASH`, `HISTORY_LEN`; `SLIPPAGE_BPS` required) |
-| `make etoro-stocks-data` | Cache daily eToro history for SPY, QQQ, AAPL, MSFT, NVDA (`ETORO_STOCKS` to change; eToro keys needed) |
+| `make etoro-stocks-data` | Cache daily eToro history for SPY, QQQ, AAPL, MSFT, AMZN (`ETORO_STOCKS` to change; eToro keys needed) |
 | `make etoro-stocks-backtest` | Backtest the eToro stock examples against buy-and-hold SPY (`FROM`, `TO`) |
 | `make run-paper` | Paper trade on the configured fake-money network |
 | `make migrate-up` / `-down` / `-status` / `-fresh` | Database migrations (`DATABASE_URL`) |
@@ -629,6 +629,11 @@ deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and aler
   the buy costs, the buy is dropped unfilled (live: `-2010`).
 - BNB fees are valued at the BNB price in the trade's minute, an
   approximation, because Binance doesn't report its conversion rate.
+- Stock splits and other corporate actions are not handled. eToro's price
+  history is not split-adjusted (and mixes price scales around some
+  splits), so a backtest across a split is wrong; live, eToro would
+  adjust the position's units while the bot's books would not, so stop an
+  eToro run on a stock before its split.
 - MySQL is supported by the storage layer but untested.
 - Rate limits use Binance's published values with 20% headroom; another
   program on the same IP is only noticed through Binance's usage header.

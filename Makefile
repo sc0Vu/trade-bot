@@ -21,7 +21,7 @@ INITIAL_CASH ?=
 # history rarely has that many before FROM).
 HISTORY_LEN  ?=
 # eToro stock examples (config/examples/etoro/params): daily bars.
-ETORO_STOCKS ?= SPY.RTH,QQQ.RTH,AAPL.RTH,MSFT.RTH,NVDA.RTH
+ETORO_STOCKS ?= SPY.RTH,QQQ.RTH,AAPL.RTH,MSFT.RTH,AMZN.RTH
 
 CLI := cargo run -p cli --
 # Optional features `check` also covers, so code behind them can't rot.
@@ -92,7 +92,7 @@ etoro-stocks-data: ## Cache daily eToro stock history since 2022 (ETORO_PUBLIC_K
 # fee 0.0002 = eToro's $1 per stock order on ~$5,000-$9,000 orders.
 etoro-stocks-backtest: ## Backtest the eToro stock examples vs buy-and-hold SPY (FROM, TO; daily bars)
 	@for ex in "buy_and_hold SPY.RTH buy_and_hold-spy" "sma_trend AAPL.RTH sma_trend-aapl" \
-	           "top_k_momentum AAPL.RTH,MSFT.RTH,NVDA.RTH,QQQ.RTH top_k_momentum-stocks"; do \
+	           "top_k_momentum AAPL.RTH,MSFT.RTH,AMZN.RTH,QQQ.RTH top_k_momentum-stocks"; do \
 		set -- $$ex; echo "== $$1 on $$2 ($(FROM) to $(TO))"; \
 		$(CLI) backtest --venue etoro --strategy $$1 --symbol $$2 --interval 1d \
 			--from $(FROM) --to $(TO) --slippage-bps 5 --fee 0.0002 --initial-cash 10000 \

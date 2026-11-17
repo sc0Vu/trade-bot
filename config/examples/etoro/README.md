@@ -30,11 +30,20 @@ output, measured 2026-11-18, not a promise):
 |---|---|---|
 | `buy_and_hold-spy` (benchmark) | 15,943 | 18.8% |
 | `sma_trend-aapl` | 12,662 | 17.8% |
-| `top_k_momentum-stocks` | 10,898 | 45.7% |
+| `top_k_momentum-stocks` | 13,082 | 15.6% |
 
 Neither beat holding SPY over this window.
 
 Things to know:
+
+- **eToro's price history is not split-adjusted, and around some splits it
+  mixes both price scales.** NVDA closes at 1,205 on 2024-06-05 and 121
+  the next day (its 10-for-1 split); before AAPL's 2020 split, single days
+  sit at a quarter of the price and bounce back. A backtest reads such a
+  bar as a 75-90% crash, and the trades it causes are fiction. Check a
+  series before trusting it (a close-to-close move over 30% is the tell),
+  and pick a window without a split; that is why the stock examples use
+  AMZN.RTH (split in 2022, before `.RTH` history starts), not NVDA.RTH.
 
 - `.RTH` instruments trade regular US hours only and their history starts
   in mid-2023. The plain symbols (`AAPL`, `SPY`) trade eToro's extended

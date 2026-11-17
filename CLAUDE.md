@@ -602,6 +602,11 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    published (MARKET_LOT_SIZE not checked locally: oversize = -1013
    rejection); MAX per-market precision published; eToro none (unit 1e-6
    observed, price 1e-8 assumed).
+   History NOT split-adjusted, and mixes scales near splits (checked
+   2026-11-18: NVDA 2024-06-06 1205 → 121; AAPL 2019-2020 single bars at
+   1/4 price; NVDA.RTH 2024-06-06): backtests across a split are wrong;
+   live books don't follow a split (corporate actions unmodelled; README
+   limitation). Examples avoid split windows (AMZN.RTH, not NVDA.RTH).
    `limitIOC` not used: on demo a buy limited 3% below the ask filled at the
    ask (2026-11-18). Stock orders cost $1 each on demo. Demo 2026-11-18: hand
    round trip + sma_trend 1m run (buy, sell, stop) → books = account to the

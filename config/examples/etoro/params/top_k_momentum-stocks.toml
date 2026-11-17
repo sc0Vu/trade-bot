@@ -1,5 +1,5 @@
 # Hold the 2 strongest of 4 large US stocks over the last 60 days.
-coins = ["etoro:AAPL.RTH", "etoro:MSFT.RTH", "etoro:NVDA.RTH", "etoro:QQQ.RTH"]
+coins = ["etoro:AAPL.RTH", "etoro:MSFT.RTH", "etoro:AMZN.RTH", "etoro:QQQ.RTH"]
 k = 2
 lookback = 60
 # Below the backtest's $10,000 on purpose: a rotation buys with the sale's
