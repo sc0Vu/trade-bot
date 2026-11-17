@@ -15,6 +15,9 @@ that pins it is named.
 - [Backtest fill model](#backtest-fill-model)
 - [Backtest report](#backtest-report)
 - [Binance](#binance)
+- [Perpetual futures](#perpetual-futures)
+- [eToro](#etoro)
+- [MAX (MaiCoin)](#max-maicoin)
 - [Books: journal, ledger, holdings](#books-journal-ledger-holdings)
 - [Restarts](#restarts)
 - [Reconcile](#reconcile)
@@ -65,7 +68,7 @@ MarketData ──MarketEvent──> Engine loop ──> Strategy.on_event() ─�
 | `core` (package `bot-core`) | Money newtypes, ids, `Instrument`, `Candle`, `Order`, `Fill`, `Position`, `MarketEvent`, `Signal`. No I/O. | — |
 | `strategy` | `Strategy` trait, `Context`, registry, indicators (ATR, return volatility, EMA), built-in strategies | core |
 | `storage` | Repository traits and their SeaORM implementation | core, migration |
-| `exchange` | `Provider` / `MarketData` / `Broker` traits, the paper broker, the Binance client | core, storage |
+| `exchange` | `Provider` / `MarketData` / `Broker` traits, the paper brokers (spot, perpetual), Binance spot and USDⓈ-M, eToro, MAX | core, storage |
 | `engine` | The event loop and risk checks | core, strategy, exchange |
 | `backtest` | Kline cache, `BacktestProvider`, report | core, engine, exchange, strategy |
 | `api` | Read-only HTTP API over live state and the books | core, engine, storage |
@@ -108,11 +111,18 @@ its basis is the signed entry notional (so the average is the entry price
 the venue's liquidation maths uses), a fill against it closes first and
 flips with the rest, and fees and funding go to realized P&L.
 
-**MarketEvent.** `Candle`, `Quote`, `SessionOpen`, `SessionClose`,
-`CorporateAction`, marked `#[non_exhaustive]`. v1 emits only candles; the
-other variants exist so that adding equities' session boundaries and
-corporate actions is additive. A candle's timestamp is its close time,
-because that is when the bar is known.
+**MarketEvent.** `Candle`, `Backfill` (a late bar: history, never a
+decision), `Quote`, `SessionOpen`, `SessionClose`, `CorporateAction`,
+`Delisting`, `TradingStatus`, and for perpetuals `Funding` and `Mark` (a
+mark-price bar, used for liquidation; strategies ignore it); marked
+`#[non_exhaustive]`. Sessions and corporate actions are not emitted yet:
+they exist so adding them is additive. A candle's timestamp is its close
+time, because that is when the bar is known.
+
+**Signals.** `Submit` (market, limit, stop, stop-limit; sized in base or
+by a quote budget), `Cancel` by order id, and `Reduce`: reduce-only, sent
+to the venue as such (`reduceOnly`), refused by every broker if it exceeds
+the position it faces, and never refused as opening on a delisting coin.
 
 ## The engine loop
 
@@ -205,7 +215,7 @@ trait Broker {
 
 | | Backtest | Live |
 |---|---|---|
-| Provider | `BacktestProvider` | `BinanceSpotProvider` |
+| Provider | `BacktestProvider` | `BinanceSpotProvider` (also `UsdmProvider`, `EtoroProvider`; paper on live prices: `UsdmPaperProvider`, `MaxPaperProvider`) |
 | Feed | Cached klines, merged across instruments by (close time, id); the last `history_len` bars before the start replayed first as `Backfill` | `KlineStream`: Binance WebSocket, closed bars only; warms up with the last `history_len` bars as `Backfill` |
 | Broker | `PaperBroker` with a pluggable `FillModel`, `SlippageModel`, `FeeModel` | `BinanceBroker` over signed REST |
 
@@ -277,6 +287,13 @@ was cancelled) it is dropped unfilled, as Binance would refuse it
 (`-2010`), so cash never goes negative. A finer
 `VolumeFillModel` (capping fills at a share of bar volume) can be plugged in
 later; the engine and strategies never see which model is in use.
+
+eToro backtests use `TouchFillModel` instead, because eToro has no
+resting limit order: a limit buy is a market-if-touched order, which
+executes at market once the price touches it. So a touch (`low <= limit`)
+fills, at the limit as a taker, with slippage *not* capped at the limit.
+IOC limits and stops are refused at submit (`FillModel::accepts`), as the
+eToro broker refuses them, so a backtest can't use what live can't.
 
 ## Backtest report
 
@@ -394,6 +411,70 @@ close. `myTrades` doesn't report
 Binance's own rate, so this is an approximation of at most a minute's BNB
 price move on a fraction-of-a-percent fee. A missing pair or candle is an
 error, never a guess.
+
+## Perpetual futures
+
+Binance USDⓈ-M, venue `binance-usdm`, linear contracts, one-way mode. Perpetuals break the
+"owned inventory" assumption, so they change the position model rather
+than adding an asset class beside it:
+
+- **Positions** are signed: basis = signed entry notional, a fill against
+  the position closes first (realized = closed · (price − entry) · sign)
+  and flips with the rest. Fees (quote only) and funding go to realized.
+- **Funding** arrives as `MarketEvent::Funding { rate, mark }`; longs pay
+  qty · mark · rate when the rate is positive. Live, the amount comes from
+  Binance's income history, recorded once per transaction id.
+- **Margin** (`core::margin`): leverage brackets, initial and maintenance
+  margin, unrealized P&L, and the liquidation price by Binance's published
+  formula, pinned to its worked example.
+- **`PerpPaperBroker`**: the spot fill model, with fills moving margin
+  rather than cash (isolated or cross). It refuses leverage above the
+  bracket and orders the wallet can't margin, and liquidates at the
+  liquidation price when the mark-price bar (else the trade bar) crosses
+  it, charging the clearance fee up to the margin left.
+- **Backtest** replays cached funding and mark-price bars; the report
+  books realized P&L and funding as cash and values open positions at
+  qty · close − basis.
+- **Live** (`UsdmBroker`, `[perp] fills = "venue"`): checks one-way mode,
+  sets margin type and leverage at start, stops through the algo-order
+  service, and compares its books with Binance's position on every bar,
+  stopping the run if they disagree and nothing of ours explains it.
+  Real money passes the same three locks as spot. The venue liquidates.
+
+## eToro
+
+eToro is a broker, not an exchange: an order opens or closes *positions*,
+and there is no order book. The bot buys only the real asset (long, 1x,
+USD-priced), which makes it `AssetClass::Spot`. eToro publishes no tick or
+unit step: the bot uses 1e-8 for prices and 1e-6 for units, the precision
+every position eToro opened carried.
+
+| Strategy asks for | eToro does |
+|---|---|
+| market buy (base or quote budget) | open a position at market |
+| limit buy below the market | market-if-touched order, waits until touched |
+| limit buy at or above the market | market (eToro's MIT above the market waits for a rise, like a stop) |
+| market sell | close the oldest positions; a partial close only within eToro's rules (≥ minimum deducted, ≥ $1 left, else whole close or refusal) |
+| limit sell above the market | take-profit on whole positions summing to the quantity |
+| IOC limit, stops | refused (eToro's IOC ignored its limit on demo) |
+
+Fills are polled over REST. Close fees come from eToro's private
+WebSocket, the only place it reports them. A triggered MIT runs under a
+new order id, so its fill is found through the position it opened. Bars
+are polled over REST (eToro's candle channel is refused); a closed market
+is reported as a halt (`TradingStatus`), so single-coin strategies wait
+and multi-coin ones trade what is open. Reconcile at start and exit
+cancels waiting orders, clears our take-profits, and refuses to start if
+the books hold more than the account. Real US stocks need a W-8BEN
+declared in config. Backtests use `TouchFillModel` (above).
+
+## MAX (MaiCoin)
+
+MAX has no testnet, so the bot never sends it an order: a MAX run is
+MAX's live bars plus the local `PaperBroker`, the backtest model on live
+prices. Precision is per market, read from MAX's market list as exact
+text; MAX's REST bars carry no quote volume, so it is estimated there.
+
 
 ## Books: journal, ledger, holdings
 
@@ -619,18 +700,12 @@ frequency.
 The scope ladder is **v1:** crypto spot, then US equities. **v2:** options
 and perpetual futures.
 
-- **Equities** add a provider (e.g. Alpaca), `AssetClass::UsEquity`, T+1
-  settlement in `Instrument`, and the session and corporate-action events
+- **Equities** on eToro already trade as `Spot` (eToro settles positions
+  at once). A broker with real settlement (e.g. Alpaca) adds
+  `AssetClass::UsEquity`, T+1 settlement in `Instrument`, and the session and corporate-action events
   that already exist as `MarketEvent` variants.
-- **Perpetual futures** (USDⓈ-M, in progress) break the "owned inventory"
-  assumption: signed positions, funding payments, mark-to-market P&L and
-  broker-initiated liquidation. Built bottom-up, each layer tested before
-  the next: signed positions and funding in `core`; `core::margin`
-  (brackets, maintenance and initial margin, liquidation price, pinned to
-  Binance's worked example); `PerpPaperBroker` (isolated and cross margin,
-  leverage refusals, liquidation at the bar's extreme with the clearance
-  fee capped at the margin left); backtest replay of funding and a report
-  that counts P&L, not notional; venue `binance-usdm` data (filters,
-  funding history, the account's brackets). Next: strategy support for
-  shorts, then live trading, which stays refused until margin and
-  liquidation are handled against the venue.
+- **Perpetual futures** (USDⓈ-M) are built: backtest, paper and venue
+  orders, tested on Binance's demo exchange, not yet with real money (see
+  above). Coin-margined contracts and hedge mode are not supported.
+- **eToro stocks** are traded as the real asset (above); CFDs, shorts and
+  leverage are not supported.

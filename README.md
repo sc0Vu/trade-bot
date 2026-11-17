@@ -48,8 +48,9 @@ These rules are invariants in the code, not just conventions:
   one. A test rewrites every candle after time *t* and requires that nothing
   up to *t* changes.
 - **Secrets come from the environment only.** API keys are read from
-  `BINANCE_API_KEY` and `BINANCE_API_SECRET`. No config field can hold them:
-  `api_key = …` in a file is an unknown-field error.
+  `BINANCE_API_KEY` and `BINANCE_API_SECRET` (Binance spot and futures) or
+  `ETORO_PUBLIC_KEY` and `ETORO_PRIVATE_KEY` (eToro). No config field can
+  hold them: `api_key = …` in a file is an unknown-field error.
 - **Safe by default.** The default is paper trading on testnet. Real money
   needs all three of `mode = "live"` in config, `exchange.network = "live"`,
   and `run --live --i-understand` typed on the command line. There is
@@ -116,12 +117,20 @@ are errors, so a typo fails loudly instead of falling back to a default.
 |---|---|---|
 | top level | `mode` | `"paper"` (default) or `"live"` |
 | top level | `whitelist` | The only instruments the bot may trade, e.g. `["binance:BTCUSDT"]` |
+| `[exchange]` | `venue` | `"binance"` (default, spot), `"binance-usdm"` (perpetuals), `"etoro"` or `"max"`; the whitelist must use the same venue |
 | `[exchange]` | `network` | `"testnet"` (default), `"demo"` or `"live"` |
 | `[exchange]` | `interval` | Candle width: `1s`, `1m`, `5m`, `15m`, `1h`, `4h`, `1d` |
 | `[exchange]` | `http_timeout_secs` | Longest one REST request may take (default 10) |
 | `[exchange]` | `rest_url`, `ws_url` | Host overrides; a paper run refuses real-money hosts |
+| `[exchange]` | `max_outage_secs` | Longest market-data outage before the run stops (default 600) |
+| `[exchange]` | `user_stream` | Binance spot: learn of fills over the user-data WebSocket, REST still authoritative (default `true`) |
+| `[paper]` | `initial_cash`, `fee`, `slippage_bps` | Local paper broker for MAX and for `binance-usdm` with `fills = "local"` |
+| `[perp]` | `fills`, `leverage`, `margin`, `brackets_from`, `clearance` | Perpetuals (`binance-usdm`): local paper fills or venue orders, leverage, isolated or cross margin |
+| `[etoro]` | `w8ben_signed` | Set `true` once your W-8BEN is on file; a real account refuses US stocks without it |
+| `[earn]` | `enabled`, `ratio`, `band`, `product`, `locked_days`, `interval_minutes` | Binance live only: keep a share of idle quote cash in Simple Earn |
 | `[strategy]` | `name`, `params` | A registered strategy and its own parameter table |
 | `[engine]` | `history_len` | Candles of history kept per instrument (default 500) |
+| `[engine]` | `delist_exit_hours` | Hours before a scheduled delisting when the engine closes the position (default 24) |
 | `[db]` | `url` | Where a run keeps its books; default `data/<network>.db` |
 | `[metrics]` | `enabled`, `listen`, `include_money`, `allow_public` | Prometheus `/metrics` during `run`; off, loopback-only and money-free by default |
 | `[api]` | `enabled`, `listen`, `allow_public` | Read-only JSON API during `run` (default `127.0.0.1:9185`); a public address needs a token in `TRADEBOT_API_TOKEN` |
@@ -571,7 +580,9 @@ Render's settings. It's never in the image (invariant 7).
 |---|---|
 | `make check` | Format check, clippy with warnings as errors, docs, tests. Run before every commit. |
 | `make fetch-data` | Cache klines (`VENUE`, `SYMBOL`, `INTERVAL`, `FROM`) |
-| `make backtest` | Backtest (`VENUE`, `STRATEGY`, `SYMBOL`, `FROM`, `TO`, `PARAMS`, `FEE`, `INITIAL_CASH`; `SLIPPAGE_BPS` required) |
+| `make backtest` | Backtest (`VENUE`, `STRATEGY`, `SYMBOL`, `FROM`, `TO`, `PARAMS`, `FEE`, `INITIAL_CASH`, `HISTORY_LEN`; `SLIPPAGE_BPS` required) |
+| `make etoro-stocks-data` | Cache daily eToro history for SPY, QQQ, AAPL, MSFT, NVDA (`ETORO_STOCKS` to change; eToro keys needed) |
+| `make etoro-stocks-backtest` | Backtest the eToro stock examples against buy-and-hold SPY (`FROM`, `TO`) |
 | `make run-paper` | Paper trade on the configured fake-money network |
 | `make migrate-up` / `-down` / `-status` / `-fresh` | Database migrations (`DATABASE_URL`) |
 
@@ -583,7 +594,8 @@ Render's settings. It's never in the image (invariant 7).
 crates/
   core/       money types, ids, Instrument, Candle, Order, Fill, Position
   strategy/   Strategy trait, Context, registry, built-in strategies
-  exchange/   Provider / MarketData / Broker traits, paper broker, Binance
+  exchange/   Provider / MarketData / Broker traits, paper brokers (spot, perpetual),
+              Binance spot + USDⓈ-M, eToro, MAX
   engine/     the event loop shared by backtest and live, risk checks
   backtest/   kline cache, BacktestProvider, report
   storage/    SeaORM repositories: trades, holdings, order journal
@@ -591,7 +603,8 @@ crates/
   cli/        the `cli` binary: fetch-data, backtest, run
 migration/    SeaORM schema migrations
 strategies/   script strategies (Rhai), e.g. sma_trend.rhai
-config/       config.example.toml and examples/ (committed); real configs are gitignored
+config/       config.example.toml, examples/ (one per strategy; etoro/ for stocks),
+              delistings/ (announced delistings for backtests); real configs gitignored
 doc/          architecture notes
 deploy/       Prometheus, Alertmanager, Loki + Alloy, Grafana (compose) and alert rules
 ```
