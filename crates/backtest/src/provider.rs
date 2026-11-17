@@ -3,8 +3,11 @@ use async_trait::async_trait;
 use bot_core::{
     AssetClass, Candle, Instrument, InstrumentId, Interval, MarketEvent, Notional, Timestamp,
 };
-use exchange::paper::{BpsSlippage, NextOpenFillModel, PaperBroker, RateFee};
+use exchange::paper::{
+    BpsSlippage, NextOpenFillModel, PaperBroker, PerpPaperBroker, PerpTerms, RateFee,
+};
 use exchange::{Broker, ExchangeError, InstrumentQuery, MarketData, Provider};
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// How the backtest's paper broker trades: its fee and slippage models and
@@ -36,6 +39,17 @@ pub struct BacktestProvider {
     events: Vec<MarketEvent>,
     paper: PaperConfig,
     earn: Option<EarnModel>,
+    perp: Option<PerpSetup>,
+}
+
+/// Margin settings for a perpetual backtest.
+#[derive(Clone, Debug)]
+pub struct PerpSetup {
+    /// Leverage, margin mode and brackets per instrument.
+    pub terms: HashMap<InstrumentId, PerpTerms>,
+    /// Liquidation clearance fee rate assumed (`0.0125`): Binance's varies
+    /// by symbol and isn't published per trade.
+    pub clearance: bot_core::Decimal,
 }
 
 impl BacktestProvider {
@@ -47,7 +61,24 @@ impl BacktestProvider {
             events: Vec::new(),
             paper,
             earn: None,
+            perp: None,
         }
+    }
+
+    /// Trades the (perpetual) instruments on a [`PerpPaperBroker`]: margin
+    /// from `initial_cash` as the wallet, with `setup`'s terms. Funding
+    /// comes in as `MarketEvent::Funding` (see [`with_events`](Self::with_events)).
+    pub fn with_perp(mut self, setup: PerpSetup) -> Self {
+        self.perp = Some(setup);
+        self
+    }
+
+    /// Merges extra market events (funding settlements, …) into the replay
+    /// by time; at equal times they come before the bars.
+    pub fn with_events(mut self, events: Vec<MarketEvent>) -> Self {
+        self.events.extend(events);
+        self.events.sort_by_key(MarketEvent::ts);
+        self
     }
 
     /// Keeps `earn.ratio` of the cash out of what buys may spend, as a live
@@ -190,7 +221,11 @@ impl Provider for BacktestProvider {
     }
 
     fn asset_classes(&self) -> &[AssetClass] {
-        &[AssetClass::Spot]
+        if self.perp.is_some() {
+            &[AssetClass::Perpetual]
+        } else {
+            &[AssetClass::Spot]
+        }
     }
 
     async fn market_data(&self) -> Result<Box<dyn MarketData>, ExchangeError> {
@@ -202,6 +237,17 @@ impl Provider for BacktestProvider {
     }
 
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
+        if let Some(perp) = &self.perp {
+            return Ok(Box::new(PerpPaperBroker::new(
+                self.instruments.clone(),
+                perp.terms.clone(),
+                Box::new(NextOpenFillModel),
+                Box::new(self.paper.slippage),
+                Box::new(self.paper.fees),
+                self.paper.initial_cash,
+                perp.clearance,
+            )?));
+        }
         let broker = PaperBroker::new(
             self.instruments.clone(),
             Box::new(NextOpenFillModel),

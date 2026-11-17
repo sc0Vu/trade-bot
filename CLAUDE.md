@@ -139,7 +139,13 @@ Refuses leverage above the bracket at the resulting size and margin + fee
 > available (submit at last close; fill at real price → dropped unfilled).
 After each candle: low (long) / high (short) ≤/≥ liquidation price →
 closed at LP (tick against trader) + clearance fee capped at margin left
-there (isolated: its margin, cross: wallet), id `liq-N`; never loses past it. Last price ≠ mark: cautious.
+there (isolated: its margin, cross: wallet), id `liq-N`; never loses past it.
+Backtest: `BacktestProvider::with_perp(PerpSetup { terms, clearance })`
+→ PerpPaperBroker (wallet = initial cash; asset classes = Perpetual only),
+`with_events` merges `Funding` (engine: Funding → ctx position refreshed,
+no fill). `Report::compute_full(.., events, ..)`: perp fills move cash by
+realized only, funding booked before same-ts fills, equity = cash + qty·close
+− basis, closed trade = fill against the position; `Report.funding`. Last price ≠ mark: cautious.
 Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as

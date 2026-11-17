@@ -6,9 +6,17 @@
 //! a broker that let an overspend through still shows up here.
 //! Equity (cash plus holdings marked at each instrument's latest close) is
 //! taken once per close time, after every candle and fill up to it.
+//!
+//! A perpetual buys nothing outright: its fills move "cash" (the wallet)
+//! only by realized P&L and fees, funding settlements (`MarketEvent::
+//! Funding`, replayed before same-time fills, as the engine sees them)
+//! by what they pay, and equity counts its unrealized P&L at the latest
+//! close (qty × close − entry notional), not its notional. A closed trade
+//! is any fill that shrinks the position, liquidations included.
 
 use bot_core::{
-    Candle, Decimal, Fee, Fill, Instrument, InstrumentId, Interval, Notional, Position, Price, Side,
+    AssetClass, Candle, Decimal, Fee, Fill, Instrument, InstrumentId, Interval, MarketEvent,
+    Notional, Position, Price, Side,
 };
 use engine::RunReport;
 use rust_decimal::MathematicalOps;
@@ -52,6 +60,8 @@ pub struct Report {
     pub earn: Option<EarnModel>,
     /// Interest from it, included in equity (simple, not reinvested).
     pub earn_interest: Notional,
+    /// Perpetual funding received (negative: paid), in realized P&L.
+    pub funding: Notional,
 }
 
 /// The share of cash a run keeps in Simple Earn (`[earn] ratio`) and the
@@ -94,6 +104,21 @@ impl Report {
         interval: Interval,
         earn: Option<EarnModel>,
     ) -> Self {
+        Self::compute_full(run, candles, &[], instruments, initial_cash, interval, earn)
+    }
+
+    /// [`compute_with_earn`](Self::compute_with_earn) with the run's other
+    /// market events: funding settlements among them are booked (module
+    /// docs); the rest are ignored.
+    pub fn compute_full(
+        run: &RunReport,
+        candles: &[Candle],
+        events: &[MarketEvent],
+        instruments: &[Instrument],
+        initial_cash: Notional,
+        interval: Interval,
+        earn: Option<EarnModel>,
+    ) -> Self {
         let by_id: HashMap<&InstrumentId, &Instrument> =
             instruments.iter().map(|i| (&i.id, i)).collect();
         let mut sorted: Vec<&Candle> = candles.iter().collect();
@@ -106,7 +131,22 @@ impl Report {
             marks: HashMap::new(),
             closed: 0,
             wins: 0,
+            funding: Notional::ZERO,
         };
+        let mut funding: Vec<(bot_core::Timestamp, &InstrumentId, Decimal, Price)> = events
+            .iter()
+            .filter_map(|e| match e {
+                MarketEvent::Funding {
+                    instrument,
+                    rate,
+                    mark,
+                    ts,
+                } => Some((*ts, instrument, *rate, *mark)),
+                _ => None,
+            })
+            .collect();
+        funding.sort_by_key(|f| f.0);
+        let mut funding = funding.into_iter().peekable();
         let mut fills = run.fills.iter().peekable();
         let mut equity = Vec::new();
         let mut interest = Notional::ZERO;
@@ -119,7 +159,21 @@ impl Report {
                 interest += ledger.cash * (e.ratio * e.apr * years);
             }
             prev = Some(t);
-            while let Some(f) = fills.next_if(|f| f.ts <= t) {
+            loop {
+                // Funding at ts settles before fills at ts (feed order).
+                let next_fill = fills.peek().map(|f| f.ts).filter(|ts| *ts <= t);
+                match funding.peek() {
+                    Some(&(ts, id, rate, mark)) if ts <= t && next_fill.is_none_or(|f| ts <= f) => {
+                        ledger.fund(id, rate, mark);
+                        funding.next();
+                        ledger.instant_done();
+                        continue;
+                    }
+                    _ => {}
+                }
+                let Some(f) = fills.next_if(|f| f.ts <= t) else {
+                    break;
+                };
                 if let Some(inst) = by_id.get(&f.instrument) {
                     ledger.apply(f, inst);
                 }
@@ -161,6 +215,7 @@ impl Report {
             rejected_signals: run.rejections.len(),
             earn,
             earn_interest: interest,
+            funding: ledger.funding,
         }
     }
 }
@@ -172,10 +227,40 @@ struct Ledger {
     marks: HashMap<InstrumentId, Price>,
     closed: usize,
     wins: usize,
+    funding: Notional,
 }
 
 impl Ledger {
+    fn fund(&mut self, id: &InstrumentId, rate: Decimal, mark: Price) {
+        if let Some(p) = self.positions.get_mut(id) {
+            let paid = p.apply_funding(rate, mark);
+            self.cash += paid;
+            self.funding += paid;
+        }
+    }
+
     fn apply(&mut self, f: &Fill, inst: &Instrument) {
+        if inst.class == AssetClass::Perpetual {
+            let pos = self
+                .positions
+                .entry(f.instrument.clone())
+                .or_insert_with(|| Position::flat(f.instrument.clone()));
+            let (before, held) = (pos.realized_pnl(), pos.qty().get());
+            if pos.apply(f, inst).is_err() {
+                return;
+            }
+            let realized = pos.realized_pnl() - before;
+            self.cash += realized;
+            // Against an open position: closes (part of) it.
+            let closes = !held.is_zero() && held.is_sign_positive() == (f.side == Side::Sell);
+            if closes {
+                self.closed += 1;
+                if realized.is_positive() {
+                    self.wins += 1;
+                }
+            }
+            return;
+        }
         let notional = inst.notional(f.qty, f.price);
         let quote_fee = match &f.fee {
             Fee::Quote(n) => *n,
@@ -214,7 +299,13 @@ impl Ledger {
             .iter()
             .filter_map(|(id, p)| {
                 let mark = self.marks.get(id)?;
-                Some(by_id.get(id)?.notional(p.qty(), *mark))
+                let inst = by_id.get(id)?;
+                let value = inst.notional(p.qty(), *mark);
+                Some(if inst.class == AssetClass::Perpetual {
+                    value - p.cost_basis()
+                } else {
+                    value
+                })
             })
             .sum();
         self.cash + held
@@ -297,6 +388,9 @@ impl fmt::Display for Report {
                 .map_or("n/a".into(), |s| s.round_dp(4).to_string())
         )?;
         write!(f, "rejected signals {}", self.rejected_signals)?;
+        if !self.funding.is_zero() {
+            write!(f, "\nfunding          {}", self.funding.get().round_dp(8))?;
+        }
         if let Some(e) = self.earn {
             write!(
                 f,
@@ -517,5 +611,57 @@ mod tests {
         );
         assert_eq!(plain.final_equity, Notional::new(dec!(1000)));
         assert!(!plain.to_string().contains("earn"));
+    }
+
+    /// Perpetual short, wallet 10,000: sell 1 @ 30,000 (fee 15) at t1's
+    /// open; funding 0.01% at mark 29,500 at t3's open, before t3's buy
+    /// back @ 29,000 (fee 14.5) at that same instant: the short receives
+    /// 2.95. Cash: 9,985 → 9,987.95 → +1,000 − 14.5 = 10,973.45.
+    /// Equity per close: t0 10,000; t1 (31,000) 9,985 − 1,000 = 8,985;
+    /// t2 (29,000) 9,985 + 1,000 = 10,985; t3 10,973.45 → max drawdown
+    /// 1,015 / 10,000. Realized −15 + 2.95 + 985.5 = 973.45; one closed
+    /// trade, a win. Funding after the buy would pay nothing (10,970.5).
+    #[test]
+    fn perpetuals_count_pnl_not_notional_and_book_funding_first() {
+        let perp = Instrument::new(bot_core::InstrumentSpec {
+            class: AssetClass::Perpetual,
+            ..(*btcusdt()).clone()
+        })
+        .unwrap();
+        let id = perp.id.clone();
+        let candles = vec![
+            candle(&id, 0, ["30000", "30000", "30000", "30000"]),
+            candle(&id, 1, ["30000", "31000", "30000", "31000"]),
+            candle(&id, 2, ["31000", "31000", "29000", "29000"]),
+            candle(&id, 3, ["29000", "29000", "29000", "29000"]),
+        ];
+        let run = RunReport {
+            fills: vec![
+                fill(Side::Sell, dec!(1), dec!(30000), dec!(15), HOUR),
+                fill(Side::Buy, dec!(1), dec!(29000), dec!(14.5), 3 * HOUR),
+            ],
+            ..Default::default()
+        };
+        let events = vec![MarketEvent::Funding {
+            instrument: id.clone(),
+            rate: dec!(0.0001),
+            mark: Price::new(dec!(29500)),
+            ts: Timestamp::from_millis(3 * HOUR),
+        }];
+        let r = Report::compute_full(
+            &run,
+            &candles,
+            &events,
+            &[perp],
+            Notional::new(dec!(10000)),
+            Interval::H1,
+            None,
+        );
+        assert_eq!(r.final_equity, Notional::new(dec!(10973.45)));
+        assert_eq!(r.realized_pnl, Notional::new(dec!(973.45)));
+        assert_eq!(r.funding, Notional::new(dec!(2.95)));
+        assert_eq!(r.min_cash, Notional::new(dec!(9985)));
+        assert_eq!(r.max_drawdown, dec!(0.1015));
+        assert_eq!((r.closed_trades, r.win_rate), (1, Some(Decimal::ONE)));
     }
 }

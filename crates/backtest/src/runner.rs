@@ -22,9 +22,10 @@ pub async fn run_backtest(
     interval: Interval,
 ) -> Result<Report, BacktestError> {
     let run = engine::run(provider, strategy, params, config).await?;
-    Ok(Report::compute_with_earn(
+    Ok(Report::compute_full(
         &run,
         provider.candles(),
+        provider.events(),
         provider.instruments(),
         provider.initial_cash(),
         interval,
@@ -81,5 +82,108 @@ mod tests {
         assert_eq!(r.final_equity, Notional::new(dec!(1018.78217803)));
         // 1000 budget, 999.99999 spent: never below zero.
         assert_eq!(r.min_cash, Notional::new(dec!(0.00001)));
+    }
+
+    /// Records the strategy's view of realized P&L at each funding event,
+    /// after the engine settled it.
+    struct Watch {
+        inner: Box<dyn Strategy>,
+        seen: Vec<Notional>,
+    }
+
+    impl Strategy for Watch {
+        fn name(&self) -> &str {
+            "watch"
+        }
+        fn on_event(
+            &mut self,
+            ctx: &mut strategy::Context,
+            e: &bot_core::MarketEvent,
+        ) -> Vec<bot_core::Signal> {
+            if let bot_core::MarketEvent::Funding { instrument, .. } = e {
+                self.seen.push(ctx.position(instrument).realized_pnl());
+            }
+            self.inner.on_event(ctx, e)
+        }
+        fn on_fill(&mut self, ctx: &mut strategy::Context, f: &bot_core::Fill) {
+            self.inner.on_fill(ctx, f)
+        }
+    }
+
+    /// buy_and_hold on a perpetual, isolated 2x, wallet 1,000, taker 0.1%
+    /// in quote: the 1,000 budget buys 10 @ 100 at t1's open (fee 1,
+    /// margin 500). Funding 0.1% at mark 110 at t2's open: the long pays
+    /// 1.1, and the strategy sees realized −2.1 at that event. Equity at
+    /// t2's close 120: 1,000 − 1 − 1.1 + 10 × (120 − 100) = 1,197.9.
+    #[tokio::test]
+    async fn a_perpetual_backtest_runs_through_the_engine_with_funding() {
+        use bot_core::margin::{Bracket, Brackets, MarginMode};
+        use bot_core::{AssetClass, Instrument, InstrumentSpec, MarketEvent, Price, Timestamp};
+        use exchange::paper::PerpTerms;
+        use std::collections::HashMap;
+        let perp = Instrument::new(InstrumentSpec {
+            class: AssetClass::Perpetual,
+            ..(*btcusdt()).clone()
+        })
+        .unwrap();
+        let id = perp.id.clone();
+        let brackets = Brackets::new(vec![Bracket {
+            floor: Notional::ZERO,
+            cap: Notional::new(dec!(1000000)),
+            max_leverage: 20,
+            rate: dec!(0.004),
+            cum: dec!(0),
+        }])
+        .unwrap();
+        let provider = BacktestProvider::new(
+            vec![perp],
+            vec![
+                candle(&id, 0, ["100", "100", "100", "100"]),
+                candle(&id, 1, ["100", "110", "100", "110"]),
+                candle(&id, 2, ["110", "120", "110", "120"]),
+            ],
+            PaperConfig {
+                fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Quote).unwrap(),
+                slippage: BpsSlippage::zero(),
+                initial_cash: Notional::new(dec!(1000)),
+            },
+        )
+        .with_perp(crate::PerpSetup {
+            terms: HashMap::from([(
+                id.clone(),
+                PerpTerms {
+                    leverage: 2,
+                    mode: MarginMode::Isolated,
+                    brackets,
+                },
+            )]),
+            clearance: dec!(0.0125),
+        })
+        .with_events(vec![MarketEvent::Funding {
+            instrument: id.clone(),
+            rate: dec!(0.001),
+            mark: Price::new(dec!(110)),
+            ts: Timestamp::from_millis(2 * crate::test_support::HOUR),
+        }]);
+        let params = Params::from_toml(
+            "coin = \"binance:BTCUSDT\"\nquote_amount = \"1000\"\nfee = \"0.001\"\nslippage_bps = \"0\"",
+        )
+        .unwrap();
+        let mut s = Watch {
+            inner: strategy::build("buy_and_hold", &params).unwrap(),
+            seen: Vec::new(),
+        };
+        let config = EngineConfig {
+            whitelist: vec![id],
+            history_len: 10,
+            ..Default::default()
+        };
+        let r = run_backtest(&provider, &mut s, params, &config, Interval::H1)
+            .await
+            .unwrap();
+        assert_eq!(r.fills, 1);
+        assert_eq!(s.seen, vec![Notional::new(dec!(-2.1))]);
+        assert_eq!(r.funding, Notional::new(dec!(-1.1)));
+        assert_eq!(r.final_equity, Notional::new(dec!(1197.9)));
     }
 }

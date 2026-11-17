@@ -15,7 +15,7 @@ mod runner;
 pub use data::{DataDir, DataError, FetchSummary, HistorySource, fetch};
 pub use feed::KlineFeed;
 pub use listing::{Delisting, cut_at_gaps, read_delistings};
-pub use provider::{BacktestProvider, PaperConfig};
+pub use provider::{BacktestProvider, PaperConfig, PerpSetup};
 pub use report::{EarnModel, Report};
 pub use runner::{BacktestError, run_backtest};
 

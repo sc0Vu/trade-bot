@@ -234,6 +234,10 @@ async fn run_inner<P: Provider + ?Sized>(
             }
             driver::set_delisting(&mut ctx, instrument.clone(), *at);
         }
+        if let MarketEvent::Funding { instrument, .. } = &event {
+            // Funding moved realized P&L without a fill.
+            driver::set_position(&mut ctx, run.broker.position(instrument));
+        }
         if let MarketEvent::TradingStatus {
             instrument,
             trading,
