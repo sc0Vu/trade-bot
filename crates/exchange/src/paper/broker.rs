@@ -499,7 +499,7 @@ fn quote_part(fee: &Fee) -> Notional {
     }
 }
 
-fn cap_at_limit(order: &Order, price: Price) -> Price {
+pub(super) fn cap_at_limit(order: &Order, price: Price) -> Price {
     let limit = match order.kind {
         OrderKind::Limit { price, .. } => price,
         OrderKind::StopLimit { limit, .. } => limit,

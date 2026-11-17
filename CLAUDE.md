@@ -129,6 +129,17 @@ max_leverage, rate, cum; = `/fapi/v1/leverageBracket`), maintenance =
 (WB − TMM₁ + UPNL₁ + cum − side·size·EP)/(size·MMR − side·size), bracket
 chosen where the LP notional falls; isolated: WB = isolated wallet, others
 0. Pinned by the FAQ's worked example (1,153.26 / 26,316.89).
+`paper::PerpPaperBroker` (`PerpTerms { leverage, mode, brackets }` per
+symbol, wallet in quote, assumed `clearance` fee rate): same FillModel /
+slippage / fees (quote) as PaperBroker; fills move margin not cash
+(isolated: opened·px/leverage wallet → position, closed share back,
+realized + fees → wallet, funding → position margin; cross: shared
+wallet, available = wallet + cross UPNL − cross IM − reservations).
+Refuses leverage above the bracket at the resulting size and margin + fee
+> available (submit at last close; fill at real price → dropped unfilled).
+After each candle: low (long) / high (short) ≤/≥ liquidation price →
+closed at LP (tick against trader) + clearance fee, id `liq-N`; isolated
+loses ≤ its margin, cross wallet floors at 0. Last price ≠ mark: cautious.
 Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as
