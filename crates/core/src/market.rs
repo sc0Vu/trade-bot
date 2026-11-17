@@ -242,6 +242,18 @@ pub enum MarketEvent {
         trading: bool,
         ts: Timestamp,
     },
+    /// A perpetual's funding settlement at `ts`: every open position pays
+    /// `qty × mark × rate` (a positive rate: longs pay shorts), booked to
+    /// realized P&L (`Position::apply_funding`). The broker settles it and
+    /// the strategy sees the result in its position.
+    Funding {
+        instrument: InstrumentId,
+        /// The funding rate for the period, as a fraction (`0.0001`).
+        rate: rust_decimal::Decimal,
+        /// The mark price the payment is valued at.
+        mark: Price,
+        ts: Timestamp,
+    },
     // Expiry(InstrumentId): deferred with options
 }
 
@@ -256,7 +268,8 @@ impl MarketEvent {
             Self::SessionOpen { ts, .. }
             | Self::SessionClose { ts, .. }
             | Self::Delisting { ts, .. }
-            | Self::TradingStatus { ts, .. } => *ts,
+            | Self::TradingStatus { ts, .. }
+            | Self::Funding { ts, .. } => *ts,
             Self::CorporateAction(a) => match *a {},
         }
     }

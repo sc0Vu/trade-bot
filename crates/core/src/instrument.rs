@@ -7,14 +7,19 @@ use std::ops::Deref;
 
 /// Asset class. Decides which math `Instrument` applies.
 ///
-/// v1 trades `Spot` only. `UsEquity` exists now so adding equities is
-/// additive and never reshapes callers; options are deferred.
+/// `Spot` is owned inventory. `Perpetual` is a linear (quote-margined)
+/// perpetual future, Binance USDⓈ-M: quantity in base units, P&L and
+/// margin in the quote, signed positions (shorts allowed), funding every
+/// few hours, liquidation by the venue. `UsEquity` exists so adding
+/// equities is additive; options are deferred.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AssetClass {
     Spot,
     UsEquity,
+    /// Linear perpetual future (Binance USDⓈ-M).
+    Perpetual,
     // UsOption (deferred)
 }
 
@@ -162,7 +167,10 @@ impl Instrument {
     /// size; that is why this lives here and `Qty * Price` does not exist.
     pub fn notional(&self, qty: Qty, price: Price) -> Notional {
         match self.class {
-            AssetClass::Spot | AssetClass::UsEquity => Notional::new(qty.get() * price.get()),
+            // A linear perpetual's quantity is in base units: the same.
+            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual => {
+                Notional::new(qty.get() * price.get())
+            }
         }
     }
 
@@ -174,7 +182,9 @@ impl Instrument {
             return Err(FilterError::NonPositivePrice);
         }
         match self.class {
-            AssetClass::Spot | AssetClass::UsEquity => Ok(Qty::new(notional.get() / price.get())),
+            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual => {
+                Ok(Qty::new(notional.get() / price.get()))
+            }
         }
     }
 
@@ -186,7 +196,9 @@ impl Instrument {
             return Err(FilterError::NonPositiveQty);
         }
         match self.class {
-            AssetClass::Spot | AssetClass::UsEquity => Ok(Price::new(notional.get() / qty.get())),
+            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual => {
+                Ok(Price::new(notional.get() / qty.get()))
+            }
         }
     }
 
@@ -195,18 +207,19 @@ impl Instrument {
     /// Asset-class policy, checked at runtime by
     /// [`Position::check_against`](crate::Position::check_against), not
     /// encoded in `Qty` or `Position`, so a signed (short, perp) position can
-    /// reuse the same types in v2. False for every v1 class: spot can't
-    /// short, and equity shorting needs margin, which v1 doesn't model.
+    /// reuse the same types. True for perpetuals only: spot can't short,
+    /// and equity shorting needs margin, which isn't modelled.
     pub fn allows_short(&self) -> bool {
         match self.class {
             AssetClass::Spot | AssetClass::UsEquity => false,
+            AssetClass::Perpetual => true,
         }
     }
 
     /// Spot settles instantly; US equities at T+1.
     pub fn settlement(&self) -> Settlement {
         match self.class {
-            AssetClass::Spot => Settlement::Instant,
+            AssetClass::Spot | AssetClass::Perpetual => Settlement::Instant,
             AssetClass::UsEquity => Settlement::TPlus(1),
         }
     }

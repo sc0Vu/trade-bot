@@ -7,13 +7,15 @@ orders gated behind explicit config.
 
 Scope ladder (build in order, don't foreclose later rungs):
 **v1: crypto spot now → US equities next. v2: options & perpetual futures.**
-Domain split so equities/options/perps *can* slot in; implement only crypto spot now.
-Perps (v2) break "owned inventory" assumption — signed positions, funding
-payments (recurring cash flow), mark-to-market unrealized PnL,
-broker-initiated liquidation. `Position`-model change, not just new
-`AssetClass` variant — dedicated effort like options, not flag. Don't
-half-build in v1: partial margin accounting that looks working worse
-than none.
+Domain split so equities/options/perps *can* slot in.
+**USDⓈ-M perpetuals in progress (owner, 2026-11-17)**, spot unchanged. Perps
+break "owned inventory" — signed positions, funding payments (recurring cash
+flow), mark-to-market unrealized PnL, broker-initiated liquidation.
+`Position`-model change, not just new `AssetClass` variant — built bottom-up
+(core → margin → paper/backtest → data → strategy API → live), each step
+correct and tested before the next; no live perp orders until margin and
+liquidation are modelled. Partial margin accounting that looks working is
+worse than none. Plan + status: PROGRESS.md.
 
 Built with Claude Code. Owner reasons from first principles: on design choice, name governing constraint (fees, latency, lookahead,
 precision, settlement), don't copy other bot. Don't take strategy's stated edge at face value — derive why it holds or not after costs.
@@ -113,11 +115,18 @@ accounting counts `Other { value: Some(v) }` like quote fee `v` (third-asset
 fee valued in quote at fill time by venue broker), rejects `value: None`.
 Positions average cost, fees included;
 store total `cost_basis`, derive average (no accumulated rounding).
-v1 positions non-negative owned inventory (spot). Quantity sign = value
+`AssetClass::Perpetual` (linear USDⓈ-M; notional = qty·price like spot;
+`allows_short` true): `Position::apply` → `apply_perp`: signed qty, basis =
+signed entry notional (no fees: avg_cost = entry price, long or short), fill
+against the position closes first (realized = closed·(px − entry)·sign), rest
+flips at fill px; fees (quote only, base refused) and funding
+(`apply_funding(rate, mark)`: −qty·mark·rate, longs pay at rate > 0) →
+realized. `MarketEvent::Funding { instrument, rate, mark, ts }`.
+Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as
 type-level law (no unsigned/`NonZero` qty, no `try_from` rejecting negatives).
-Sign = runtime policy: `Instrument::allows_short()` (false all v1 classes),
+Sign = runtime policy: `Instrument::allows_short()` (true for Perpetual only),
 checked by `Position::check_against(&Instrument)`; `from_parts` checks only
 sign-agnostic consistency (basis sign = qty sign, flat ⇒ zero basis).
 

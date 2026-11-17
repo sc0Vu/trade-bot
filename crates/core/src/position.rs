@@ -1,4 +1,5 @@
-use crate::{Error, Fee, Fill, Instrument, InstrumentId, Notional, Price, Qty, Side};
+use crate::{AssetClass, Error, Fee, Fill, Instrument, InstrumentId, Notional, Price, Qty, Side};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 /// Holding in one instrument, valued by average cost.
@@ -11,9 +12,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// Quantity is signed in the type: whether it may go negative is asset-class
 /// policy ([`Instrument::allows_short`]), checked at runtime by
-/// [`check_against`](Self::check_against), so v2 short and perp positions
-/// reuse this type. In v1 no class allows shorts and `apply` handles long
-/// positions only. Changes only through [`apply`](Self::apply); restored
+/// [`check_against`](Self::check_against). Spot positions are long only.
+///
+/// A perpetual position ([`AssetClass::Perpetual`]) is accounted the way
+/// the venue does: `cost_basis` is the signed entry notional (entry price ×
+/// signed qty, no fees), so `avg_cost` is the entry price the venue's
+/// liquidation maths uses; fees and funding go straight to `realized_pnl`.
+/// A fill against the position closes it first (P&L = units closed × the
+/// move from entry, signed), and what's left opens the other way at the
+/// fill price. Changes only through [`apply`](Self::apply); restored
 /// from storage only through [`from_parts`](Self::from_parts), which
 /// deserializing also goes through.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,9 +107,16 @@ impl Position {
         self.cost_basis
     }
 
-    /// Quote paid per unit held, fees included; `None` when flat.
+    /// Quote paid per unit held, fees included; for a perpetual, the entry
+    /// price (long or short). `None` when flat. Basis and qty share a sign,
+    /// so their magnitudes give the price either way.
     pub fn avg_cost(&self, instrument: &Instrument) -> Option<Price> {
-        instrument.price_for(self.cost_basis, self.qty).ok()
+        instrument
+            .price_for(
+                Notional::new(self.cost_basis.get().abs()),
+                Qty::new(self.qty.get().abs()),
+            )
+            .ok()
     }
 
     /// Profit closed out so far, after fees.
@@ -112,6 +126,68 @@ impl Position {
 
     pub fn is_flat(&self) -> bool {
         self.qty.is_zero()
+    }
+
+    /// [`apply`](Self::apply) for a perpetual; see the type docs.
+    fn apply_perp(&mut self, fill: &Fill) -> Result<(), Error> {
+        let fee = match &fill.fee {
+            Fee::Quote(f) | Fee::Other { value: Some(f), .. } => *f,
+            Fee::Base(_) => {
+                return Err(Error::PositionUpdate(
+                    "a perpetual's fee is paid in the quote, not the base",
+                ));
+            }
+            Fee::Other { value: None, .. } => {
+                return Err(Error::PositionUpdate("fee in another asset has no value"));
+            }
+        };
+        let signed = match fill.side {
+            Side::Buy => fill.qty.get(),
+            Side::Sell => -fill.qty.get(),
+        };
+        let held = self.qty.get();
+        let price = fill.price.get();
+        let mut realized = -fee.get();
+        let mut qty = held;
+        let mut basis = self.cost_basis.get();
+        if held.is_zero() || held.is_sign_positive() == signed.is_sign_positive() {
+            // Opening or adding: entry notional grows at the fill price.
+            qty += signed;
+            basis += signed * price;
+        } else {
+            // Against the position: close up to all of it first.
+            let closing = signed.abs().min(held.abs());
+            let entry = basis / held;
+            // Long: gain when price > entry; short: when price < entry.
+            realized += closing * (price - entry) * sign(held);
+            if closing == held.abs() {
+                qty = Decimal::ZERO;
+                basis = Decimal::ZERO;
+            } else {
+                qty = held - closing * sign(held);
+                basis = entry * qty;
+            }
+            let rest = signed.abs() - closing;
+            if rest.is_sign_positive() && !rest.is_zero() {
+                // Flip: what's left opens the other way at the fill price.
+                qty = rest * sign(signed);
+                basis = qty * price;
+            }
+        }
+        self.qty = Qty::new(qty);
+        self.cost_basis = Notional::new(basis);
+        self.realized_pnl += Notional::new(realized);
+        Ok(())
+    }
+
+    /// Settles one funding payment on a perpetual position: the venue
+    /// charges `qty × mark × rate` (a positive rate: longs pay shorts),
+    /// added to realized P&L. Returns the amount received (negative: paid).
+    /// Flat: nothing.
+    pub fn apply_funding(&mut self, rate: Decimal, mark: Price) -> Notional {
+        let paid = Notional::new(-(self.qty.get() * mark.get() * rate));
+        self.realized_pnl += paid;
+        paid
     }
 
     /// Applies one fill at average cost.
@@ -137,6 +213,9 @@ impl Position {
     pub fn apply(&mut self, fill: &Fill, instrument: &Instrument) -> Result<(), Error> {
         if fill.instrument != self.instrument || instrument.id != self.instrument {
             return Err(Error::PositionUpdate("fill is for a different instrument"));
+        }
+        if instrument.class == AssetClass::Perpetual {
+            return self.apply_perp(fill);
         }
         if self.qty.is_negative() {
             return Err(Error::PositionUpdate(
@@ -181,6 +260,15 @@ impl Position {
             }
         }
         Ok(())
+    }
+}
+
+/// +1 or −1: the direction of a non-zero quantity.
+fn sign(d: Decimal) -> Decimal {
+    if d.is_sign_negative() {
+        -Decimal::ONE
+    } else {
+        Decimal::ONE
     }
 }
 
@@ -602,5 +690,173 @@ mod tests {
             .into()
         };
         assert!(Fill::new(spec).is_err());
+    }
+
+    fn perp() -> Instrument {
+        Instrument::new(InstrumentSpec {
+            id: "binance:BTCUSDT".parse().unwrap(),
+            class: AssetClass::Perpetual,
+            base: crate::Asset::new("BTC").unwrap(),
+            quote: crate::Asset::new("USDT").unwrap(),
+            tick_size: Price::new(dec!(0.1)),
+            lot_size: Qty::new(dec!(0.001)),
+            min_qty: Qty::new(dec!(0.001)),
+            min_notional: Notional::new(dec!(5)),
+            price_band: None,
+            max_open_orders: None,
+            max_open_stops: None,
+        })
+        .unwrap()
+    }
+
+    fn perp_fill(side: Side, qty: Decimal, price: Decimal, fee: Decimal) -> Fill {
+        Fill::new(FillSpec {
+            order_id: OrderId::new("o-1").unwrap(),
+            instrument: perp().id.clone(),
+            side,
+            qty: Qty::new(qty),
+            price: Price::new(price),
+            fee: Fee::Quote(Notional::new(fee)),
+            liquidity: Liquidity::Taker,
+            ts: Timestamp::from_millis(0),
+        })
+        .unwrap()
+    }
+
+    /// Worked by hand:
+    /// 1. Buy 2 @ 100, fee 0.2: long 2, entry notional 200, realized −0.2.
+    /// 2. Buy 1 @ 130: long 3, 330 (entry 110).
+    /// 3. Sell 1 @ 120, fee 0.12: closes 1 at +10 → realized −0.2 + 10 −
+    ///    0.12 = 9.68; long 2, 220 (entry still 110).
+    /// 4. Sell 5 @ 90: closes 2 at −20 each → realized 9.68 − 40 = −30.32;
+    ///    flips: short 3 at 90, −270.
+    /// 5. Buy 3 @ 80: the short gains 10 each → realized −0.32; flat.
+    #[test]
+    fn a_perpetual_opens_adds_reduces_flips_and_closes() {
+        let p = perp();
+        let mut pos = Position::flat(p.id.clone());
+        let step =
+            |pos: &mut Position, side, q, px, fee, qty: Decimal, basis: Decimal, real: Decimal| {
+                pos.apply(&perp_fill(side, q, px, fee), &p).unwrap();
+                assert_eq!(
+                    (
+                        pos.qty().get(),
+                        pos.cost_basis().get(),
+                        pos.realized_pnl().get()
+                    ),
+                    (qty, basis, real)
+                );
+            };
+        step(
+            &mut pos,
+            Side::Buy,
+            dec!(2),
+            dec!(100),
+            dec!(0.2),
+            dec!(2),
+            dec!(200),
+            dec!(-0.2),
+        );
+        step(
+            &mut pos,
+            Side::Buy,
+            dec!(1),
+            dec!(130),
+            dec!(0),
+            dec!(3),
+            dec!(330),
+            dec!(-0.2),
+        );
+        assert_eq!(pos.avg_cost(&p), Some(Price::new(dec!(110))));
+        step(
+            &mut pos,
+            Side::Sell,
+            dec!(1),
+            dec!(120),
+            dec!(0.12),
+            dec!(2),
+            dec!(220),
+            dec!(9.68),
+        );
+        step(
+            &mut pos,
+            Side::Sell,
+            dec!(5),
+            dec!(90),
+            dec!(0),
+            dec!(-3),
+            dec!(-270),
+            dec!(-30.32),
+        );
+        assert_eq!(pos.avg_cost(&p), Some(Price::new(dec!(90))));
+        pos.check_against(&p).unwrap();
+        step(
+            &mut pos,
+            Side::Buy,
+            dec!(3),
+            dec!(80),
+            dec!(0),
+            dec!(0),
+            dec!(0),
+            dec!(-0.32),
+        );
+        assert!(pos.is_flat());
+    }
+
+    /// Long 2 at mark 100, rate 0.0001: pays 0.02. Short 3, same: receives
+    /// 0.03. A negative rate reverses both.
+    #[test]
+    fn funding_is_paid_by_longs_when_the_rate_is_positive() {
+        let p = perp();
+        let mut long = Position::flat(p.id.clone());
+        long.apply(&perp_fill(Side::Buy, dec!(2), dec!(100), dec!(0)), &p)
+            .unwrap();
+        assert_eq!(
+            long.apply_funding(dec!(0.0001), Price::new(dec!(100))),
+            Notional::new(dec!(-0.02))
+        );
+        assert_eq!(long.realized_pnl(), Notional::new(dec!(-0.02)));
+        let mut short = Position::flat(p.id.clone());
+        short
+            .apply(&perp_fill(Side::Sell, dec!(3), dec!(100), dec!(0)), &p)
+            .unwrap();
+        assert_eq!(
+            short.apply_funding(dec!(0.0001), Price::new(dec!(100))),
+            Notional::new(dec!(0.03))
+        );
+        assert_eq!(
+            short.apply_funding(dec!(-0.0001), Price::new(dec!(100))),
+            Notional::new(dec!(-0.03))
+        );
+    }
+
+    /// A perpetual pays fees in the quote: a base-asset fee is refused, and
+    /// spot accounting is untouched by all this (a spot short is still
+    /// refused by `check_against`).
+    #[test]
+    fn perpetual_fees_are_quote_and_spot_stays_long_only() {
+        let p = perp();
+        let mut pos = Position::flat(p.id.clone());
+        let mut base_fee = perp_fill(Side::Buy, dec!(1), dec!(100), dec!(0));
+        base_fee = Fill::new(FillSpec {
+            fee: Fee::Base(Qty::new(dec!(0.001))),
+            ..base_fee.into()
+        })
+        .unwrap();
+        assert!(pos.apply(&base_fee, &p).is_err());
+        assert!(p.allows_short());
+        let spot = Instrument::new(InstrumentSpec {
+            class: AssetClass::Spot,
+            ..p.into()
+        })
+        .unwrap();
+        let short = Position::from_parts(
+            spot.id.clone(),
+            Qty::new(dec!(-1)),
+            Notional::new(dec!(-100)),
+            Notional::ZERO,
+        )
+        .unwrap();
+        assert!(short.check_against(&spot).is_err());
     }
 }
