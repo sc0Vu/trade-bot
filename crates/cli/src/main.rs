@@ -110,6 +110,11 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
         }
         return run_usdm_paper(cfg).await;
     }
+    if cfg.exchange.venue == Venue::Etoro {
+        // The same three locks: --paper = demo account only.
+        let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
+        return run_etoro(cfg, network).await;
+    }
     if cfg.exchange.venue == Venue::Max {
         gate::decide_max(cfg.mode, a.live)?;
         if a.cancel_orphans {
@@ -483,6 +488,90 @@ async fn run_usdm_orders(
             "closed out open orders; positions stay open on Binance"
         ),
         Err(e) => eprintln!("could not close out open orders: {e}; check the account"),
+    }
+    if let Some(r) = outcome? {
+        print_summary(&r);
+    }
+    closed.map(|_| ())
+}
+
+/// An eToro run: the demo account for a fake-money network, the real one
+/// for `live` (gated by the caller). Books in `data/<network>-etoro.db`
+/// unless `db.url`; strategy state and the API as a spot run. At exit,
+/// orders still in flight are settled and recorded; positions stay.
+async fn run_etoro(cfg: config::Config, network: Network) -> anyhow::Result<()> {
+    use exchange::etoro::feed::{EtoroConfig, EtoroProvider};
+    use exchange::etoro::{Account, EtoroClient, EtoroKeys, REST_URL};
+    let account = if network == Network::Live {
+        Account::Real
+    } else {
+        Account::Demo
+    };
+    let client = EtoroClient::new(
+        REST_URL,
+        EtoroKeys::from_env()?,
+        account,
+        Duration::from_secs(cfg.exchange.http_timeout_secs),
+    );
+    let url = cfg.db.url.clone().unwrap_or_else(|| {
+        format!(
+            "sqlite://data/{}-etoro.db?mode=rwc",
+            config::network_name(network)
+        )
+    });
+    if cfg.db.url.is_none() {
+        std::fs::create_dir_all("data").context("creating data/")?;
+    }
+    let books = SqlStore::open(&url).await.context("opening the database")?;
+    books.bind_network(config::network_name(network)).await?;
+    let books = Arc::new(books);
+    let provider = EtoroProvider::new(
+        client,
+        EtoroConfig {
+            interval: cfg.exchange.interval,
+            warmup: cfg.engine.history_len,
+            max_outage: Duration::from_secs(cfg.exchange.max_outage_secs),
+        },
+        cfg.whitelist.clone(),
+        books.clone(),
+    );
+    let (mut observer, resume) = observe_run(&cfg, books, network).await?;
+    let params = Params::new(cfg.strategy.params);
+    let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
+    let engine_cfg = EngineConfig {
+        whitelist: cfg.whitelist,
+        history_len: cfg.engine.history_len,
+        delist_exit: cfg.engine.delist_exit(),
+    };
+    if account == Account::Real {
+        eprintln!("LIVE: sending real orders to eToro");
+    }
+    tracing::info!(
+        provider = provider.id(),
+        account = ?account,
+        strategy = %cfg.strategy.name,
+        run_tag = provider.run_tag(),
+        "starting"
+    );
+    let outcome = tokio::select! {
+        r = engine::run_observed(&provider, strategy.as_mut(), params, &engine_cfg, &mut observer, resume) => r.map(Some),
+        s = shutdown::signal() => {
+            eprintln!("{}: stopping; settling orders in flight (signal again to skip)", s?);
+            Ok(None)
+        }
+    };
+    let closed = match shutdown::close_out_unless(provider.close_out(), shutdown::signal()).await {
+        shutdown::CloseOut::Done(r) => r.map_err(anyhow::Error::from),
+        shutdown::CloseOut::Abandoned(s) => Err(anyhow::anyhow!(
+            "{s} during close-out: abandoned; the next start settles orders in flight"
+        )),
+    };
+    match &closed {
+        Ok(n) => tracing::info!(
+            fills_recovered = n,
+            "settled orders in flight; positions stay on eToro"
+        ),
+        Err(e) => eprintln!("could not settle orders in flight: {e}; check the account"),
     }
     if let Some(r) = outcome? {
         print_summary(&r);

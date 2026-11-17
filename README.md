@@ -329,6 +329,23 @@ slightly worse: SOL at about 1.84 in 2021 with a 0.01 tick costs up to
 about 0.5% per fill), and a whitelist chosen today carries survivorship
 bias.
 
+### eToro
+
+`--venue etoro` backtests eToro instruments (`etoro:AAPL`, `etoro:BTC`, any
+symbol eToro lists) as the real asset: long only, no leverage, fees in
+USD. eToro serves data only to a keyed account, so `ETORO_PUBLIC_KEY`
+(your application's API key) and `ETORO_PRIVATE_KEY` (your account's user
+key; a demo key works) must be set even for `fetch-data`. Stock markets
+close over weekends and holidays, so a series is cut as delisted only
+after 120 hours without a bar. eToro publishes no tick or unit step and
+volume is often missing, so `avwap` has no data there.
+
+```sh
+cargo run -p cli -- fetch-data --venue etoro --symbol AAPL,BTC --from 2026-01-01
+cargo run -p cli -- backtest --venue etoro --strategy sma_trend --params p.toml \
+    --symbol AAPL --from 2026-02-01 --to 2026-08-01 --fee 0 --slippage-bps 5
+```
+
 ## Paper and live trading
 
 Paper trading uses fake balances on one of two Binance environments. Keys
@@ -403,6 +420,19 @@ Live trading:
 # config: mode = "live", [exchange] network = "live"
 cargo run -p cli -- run --live --i-understand
 ```
+
+### eToro
+
+`exchange.venue = "etoro"` trades through eToro's API: `run --paper` on
+your **demo** account (`exchange.network = "demo"`), real money only with
+the same three locks as Binance. eToro is a broker, not an exchange: a
+buy opens a position (by amount or units), a sell closes positions, and
+every order is accepted first and executed later, so the bot polls each
+to its outcome; a late refusal (eToro's ~$10 minimum, a closed market)
+drops the order unfilled. Market orders only. eToro charges its fee on
+top of a buy's amount. Bars are polled a few seconds after each interval
+boundary; a closed market simply produces none. Give the bot its symbols
+to itself: a sell closes the account's oldest positions on that symbol.
 
 ### MAX (MaiCoin)
 

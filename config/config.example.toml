@@ -30,6 +30,9 @@ whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
 # venue = "max" only paper runs are allowed, on MAX's live prices with the
 # local paper broker below ([paper] required, no API key read), and the
 # whitelist must be max: instruments (max:BTCTWD, max:BTCUSDT).
+# "etoro": eToro's demo account under --paper (network "demo"), real money
+# through the live gate; whitelist etoro: instruments (etoro:AAPL); keys
+# ETORO_PUBLIC_KEY / ETORO_PRIVATE_KEY from env (README, "eToro").
 # "binance-usdm" (USDⓈ-M perpetuals): whitelist binance-usdm: instruments,
 # [perp] required. [perp] fills = "local" (default): paper on live futures
 # prices with local fills ([paper] required); "venue": orders on

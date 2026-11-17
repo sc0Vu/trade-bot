@@ -23,7 +23,9 @@
 //! - **Rate limits** (per user key, 60 s rolling): market data 120,
 //!   trading execution 20, portfolio info 60, else 60; 80% budgeted.
 
+pub mod broker;
 pub mod client;
+pub mod feed;
 pub mod market;
 
 pub use client::{Account, EtoroClient, EtoroKeys};

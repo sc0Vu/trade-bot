@@ -90,7 +90,9 @@ fn limiter(per_minute: u64) -> Arc<RateLimiter> {
     )]))
 }
 
-/// See the module docs.
+/// See the module docs. Cloning shares the rate limiters (eToro counts
+/// per user key).
+#[derive(Clone)]
 pub struct EtoroClient {
     http: reqwest::Client,
     base: String,

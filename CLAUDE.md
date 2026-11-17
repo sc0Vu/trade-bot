@@ -537,7 +537,29 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `/api/v1/market-data/.../history/candles/desc/{iv}/{n}` (numbers read
    raw, forming bar dropped). Volume often null → 0, quote volume 0 (no
    avwap). CLI `fetch-data`/`backtest --venue etoro` (fees in quote; gap
-   cut default 120 h: markets close). `run` refused until its broker.
+   cut default 120 h: markets close; warm-up = last N bars, not N×interval).
+   Run (`etoro::{broker,feed}`): `run --paper` = demo account (network
+   testnet/demo), real = live gate's three locks; books
+   `data/<network>-etoro.db`, state + API as spot. `EtoroFeed` polls
+   (warm-up `recent(history_len)` as Backfill; then `LAG` 5 s after each
+   boundary, newest 5 closed bars, new ones as Candle; closed market = no
+   bar, not a stall; late bar older than delivered = dropped; failing >
+   max_outage = error). `EtoroBroker` (via `EtoroApi`, testable): market
+   only; buy = open position (real, 1x) by amount (quote budget; eToro's
+   fee on top: budget overshoot ≤ fee) or units, poll `orders:lookup` by
+   orderId (lookup by request id = 404 on demo) → fill per
+   `positionExecutions` (units, avgPrice, fees); sell = close the account's
+   real positions oldest first (whole when selling all; else
+   `UnitsToDeduct`; eToro refuses < ~$10 deducted, error 776, async),
+   poll `close-orders/{id}` → fill per closed position at `rate`, fee =
+   units·rate − proceeds (cent-rounded), split by gross share; terminal
+   unfilled = order dropped (warn). Journal: each venue order a row (`<tag>-
+   o-N`, closes `.c<k>`), fills by `open-<order>-<pos>` / `close-<order>-
+   <pos>`. Reconcile (start + exit): rows without id closed (can't look up),
+   others polled to the end and recorded; books > account real units →
+   refuse start. Cancel refused (market orders). Demo 2026-11-18: hand
+   round trip + sma_trend 1m run (buy, sell, stop) → books = account to the
+   cent (realized −0.41540728 vs credit −0.42).
 2. **Coin whitelist** — `config.whitelist: Vec<InstrumentId>` only universe
    bot trades. Plus `filters.min_24h_quote_volume` drops illiquid
    instruments: thin alts slip badly, may not fill — filter = safety

@@ -118,10 +118,10 @@ pub enum Venue {
     #[serde(rename = "binance-usdm")]
     #[value(name = "binance-usdm")]
     BinanceUsdm,
-    /// eToro (`etoro:AAPL`, `etoro:BTC`): the real asset, long only.
-    /// `fetch-data` and backtest; keys `ETORO_PUBLIC_KEY` /
-    /// `ETORO_PRIVATE_KEY` even for data. `run` refuses it until its broker
-    /// exists.
+    /// eToro (`etoro:AAPL`, `etoro:BTC`): the real asset, long only, market
+    /// orders. Keys `ETORO_PUBLIC_KEY` / `ETORO_PRIVATE_KEY` (data too).
+    /// `run --paper` = the demo account (`exchange.network` testnet or
+    /// demo), real money through the live gate's three locks.
     Etoro,
 }
 
@@ -538,9 +538,12 @@ impl Config {
             bail!("whitelist has {other}, but exchange.venue is {venue}");
         }
         if self.exchange.venue == Venue::Etoro {
-            bail!(
-                "exchange.venue = \"etoro\": fetch-data and backtest only so far; runs come with its broker"
-            );
+            if self.exchange.interval == Interval::S1 {
+                bail!("eToro serves no 1s candles; set exchange.interval to 1m or longer");
+            }
+            if self.exchange.rest_url.is_some() || self.exchange.ws_url.is_some() {
+                bail!("exchange.rest_url and ws_url are Binance overrides; remove them for eToro");
+            }
         }
         if self.exchange.venue == Venue::BinanceUsdm {
             let Some(perp) = &self.perp else {
@@ -741,6 +744,29 @@ mod tests {
                     .to_string()
                     .contains("[perp] is for")
             );
+            Ok(())
+        });
+    }
+
+    /// An eToro demo config loads (the run gate then decides the account);
+    /// 1s bars are refused.
+    #[test]
+    fn etoro_config_loads_and_refuses_1s() {
+        Jail::expect_with(|_| {
+            let toml = r#"
+                whitelist = ["etoro:BTC"]
+                [exchange]
+                venue = "etoro"
+                network = "demo"
+                interval = "1m"
+                [strategy]
+                name = "buy_and_hold"
+                params = { coin = "etoro:BTC", quote_amount = "20", fee = "0.01", slippage_bps = "5" }
+            "#;
+            let c = parse(toml).unwrap();
+            assert_eq!(c.exchange.venue, Venue::Etoro);
+            assert_eq!(Venue::Etoro.id().as_str(), "etoro");
+            assert!(parse(&toml.replace("\"1m\"", "\"1s\"")).is_err());
             Ok(())
         });
     }
