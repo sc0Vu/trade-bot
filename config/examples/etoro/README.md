@@ -30,7 +30,7 @@ output, measured 2026-11-18, not a promise):
 |---|---|---|
 | `buy_and_hold-spy` (benchmark) | 15,943 | 18.8% |
 | `sma_trend-aapl` | 12,662 | 17.8% |
-| `top_k_momentum-stocks` | 11,375 | 46.3% |
+| `top_k_momentum-stocks` | 10,898 | 45.7% |
 
 Neither beat holding SPY over this window.
 
@@ -46,6 +46,11 @@ Things to know:
   expensive.
 - Sharpe is annualized as if markets never closed (365 days a year), which
   overstates it for stocks by about √(365/252) ≈ 1.2.
+- Multi-stock strategies (`top_k_momentum`, `rebalance`, …) buy with a
+  sale's proceeds estimated at the close; an overnight gap down raises
+  less, and the buy is refused ("insufficient balance at fill; order
+  dropped"). Keep `capital` a little below the account's cash (the example
+  leaves 2%).
 - A series is cut as delisted only after 120 hours without a bar, so
   weekends and holidays don't end it.
 

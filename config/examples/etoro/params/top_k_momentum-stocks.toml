@@ -2,7 +2,11 @@
 coins = ["etoro:AAPL.RTH", "etoro:MSFT.RTH", "etoro:NVDA.RTH", "etoro:QQQ.RTH"]
 k = 2
 lookback = 60
-capital = "10000"
+# Below the backtest's $10,000 on purpose: a rotation buys with the sale's
+# proceeds estimated at the close, and a stock that gaps down overnight
+# raises less at the open. With no slack the buy is then refused (37 times
+# in 2024-2026); $200 covers the gaps seen.
+capital = "9800"
 band = "0.05"
 fee = "0.0002"        # $1 per order on ~$5,000 slots
 slippage_bps = "5"
