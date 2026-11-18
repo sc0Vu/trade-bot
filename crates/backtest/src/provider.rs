@@ -43,6 +43,19 @@ pub struct BacktestProvider {
     /// eToro's order model ([`TouchFillModel`]) instead of the default.
     touch_fills: bool,
     perp: Option<PerpSetup>,
+    /// Spot and perpetuals together (`with_hedge`).
+    hedge: Option<HedgeSetup>,
+}
+
+/// The futures side of a spot + perpetual backtest (see
+/// [`BacktestProvider::with_hedge`]).
+#[derive(Clone, Debug)]
+pub struct HedgeSetup {
+    pub perp: PerpSetup,
+    /// The USDⓈ-M wallet, apart from the spot cash (`PaperConfig::initial_cash`).
+    pub wallet: Notional,
+    /// Futures fees (quote), apart from spot's.
+    pub fees: RateFee,
 }
 
 /// Margin settings for a perpetual backtest.
@@ -66,7 +79,17 @@ impl BacktestProvider {
             earn: None,
             touch_fills: false,
             perp: None,
+            hedge: None,
         }
+    }
+
+    /// Trades the spot instruments on a [`PaperBroker`] from
+    /// `initial_cash` and the perpetuals on a [`PerpPaperBroker`] from
+    /// `setup.wallet`, in one run: two wallets, as Binance keeps them,
+    /// never transferred between. The report starts from both together.
+    pub fn with_hedge(mut self, setup: HedgeSetup) -> Self {
+        self.hedge = Some(setup);
+        self
     }
 
     /// Trades the (perpetual) instruments on a [`PerpPaperBroker`]: margin
@@ -224,9 +247,10 @@ impl BacktestProvider {
         &self.instruments
     }
 
-    /// Quote the broker starts with; the report's starting equity.
+    /// Quote the broker starts with (spot cash plus the futures wallet in
+    /// a hedge); the report's starting equity.
     pub fn initial_cash(&self) -> Notional {
-        self.paper.initial_cash
+        self.paper.initial_cash + self.hedge.as_ref().map_or(Notional::ZERO, |h| h.wallet)
     }
 }
 
@@ -237,7 +261,9 @@ impl Provider for BacktestProvider {
     }
 
     fn asset_classes(&self) -> &[AssetClass] {
-        if self.perp.is_some() {
+        if self.hedge.is_some() {
+            &[AssetClass::Spot, AssetClass::Perpetual]
+        } else if self.perp.is_some() {
             &[AssetClass::Perpetual]
         } else {
             &[AssetClass::Spot]
@@ -253,6 +279,37 @@ impl Provider for BacktestProvider {
     }
 
     async fn broker(&self) -> Result<Box<dyn Broker>, ExchangeError> {
+        if let Some(h) = &self.hedge {
+            let (perps, spots): (Vec<Instrument>, Vec<Instrument>) = self
+                .instruments
+                .iter()
+                .cloned()
+                .partition(|i| i.class == AssetClass::Perpetual);
+            let perp = PerpPaperBroker::new(
+                perps.clone(),
+                h.perp.terms.clone(),
+                Box::new(NextOpenFillModel),
+                Box::new(self.paper.slippage),
+                Box::new(h.fees),
+                h.wallet,
+                h.perp.clearance,
+            )?;
+            let spot = PaperBroker::new(
+                spots.clone(),
+                Box::new(NextOpenFillModel),
+                Box::new(self.paper.slippage),
+                Box::new(self.paper.fees),
+            );
+            let spot = match spots.first() {
+                Some(i) => spot.with_cash(i.quote.clone(), self.paper.initial_cash),
+                None => spot,
+            };
+            return Ok(Box::new(crate::split::SplitBroker {
+                spot,
+                perp,
+                perps: perps.iter().map(|i| i.id.clone()).collect(),
+            }));
+        }
         if let Some(perp) = &self.perp {
             return Ok(Box::new(PerpPaperBroker::new(
                 self.instruments.clone(),

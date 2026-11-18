@@ -477,4 +477,143 @@ mod tests {
             run.rejections[0].reason
         );
     }
+
+    /// Spot and perp together, two wallets of 1,000, no fees, 1x
+    /// isolated. Bar 0 (closes 100) buys 1 spot and shorts 1 perp → both
+    /// fill at bar 1's open 100 (spot cash 900; margin 100). Funding 1% at
+    /// mark 100 just after bar 2 opens: the short receives 1 · 100 · 0.01
+    /// = 1. Bar 2 closes 110 → both closed at bar 3's open 110: spot
+    /// +110 → cash 1,010; the short loses 10 → wallet 1,000 + 1 − 10 = 991.
+    /// Final equity 2,001 = 2,000 + the funding; both flat.
+    #[tokio::test]
+    async fn a_hedge_trades_spot_and_perp_from_two_wallets() {
+        use bot_core::margin::{Bracket, Brackets, MarginMode};
+        use bot_core::{
+            AssetClass, Instrument, InstrumentSpec, OrderKind, Price, Qty, Side, Signal, Size,
+        };
+        use exchange::paper::PerpTerms;
+        use std::collections::HashMap;
+        use strategy::{Context, Strategy};
+        let spot = btcusdt();
+        let perp = Instrument::new(InstrumentSpec {
+            id: "binance-usdm:BTCUSDT".parse().unwrap(),
+            class: AssetClass::Perpetual,
+            ..(*btcusdt()).clone()
+        })
+        .unwrap();
+        let mut bars = Vec::new();
+        for (i, (o, c)) in [
+            ("100", "100"),
+            ("100", "100"),
+            ("100", "110"),
+            ("110", "110"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let h = if c > o { *c } else { *o };
+            for id in [&spot.id, &perp.id] {
+                bars.push(candle(id, i as i64, [o, h, o, c]));
+            }
+        }
+        let funding = bot_core::MarketEvent::Funding {
+            instrument: perp.id.clone(),
+            rate: dec!(0.01),
+            mark: Price::new(dec!(100)),
+            ts: bot_core::Timestamp::from_millis(2 * crate::test_support::HOUR + 1),
+        };
+        let brackets = Brackets::new(vec![Bracket {
+            floor: Notional::ZERO,
+            cap: Notional::new(dec!(1000000)),
+            max_leverage: 20,
+            rate: dec!(0.004),
+            cum: dec!(0),
+        }])
+        .unwrap();
+        let zero = RateFee::new(dec!(0), dec!(0), FeeAsset::Quote).unwrap();
+        let provider = BacktestProvider::new(
+            vec![spot.clone(), perp.clone()],
+            bars,
+            PaperConfig {
+                fees: zero,
+                slippage: BpsSlippage::zero(),
+                initial_cash: Notional::new(dec!(1000)),
+            },
+        )
+        .with_hedge(crate::HedgeSetup {
+            perp: crate::PerpSetup {
+                terms: HashMap::from([(
+                    perp.id.clone(),
+                    PerpTerms {
+                        leverage: 1,
+                        mode: MarginMode::Isolated,
+                        brackets,
+                    },
+                )]),
+                clearance: dec!(0.0125),
+            },
+            wallet: Notional::new(dec!(1000)),
+            fees: zero,
+        })
+        .with_events(vec![funding]);
+
+        /// Opens the hedge on bar 0's perp candle, closes it on bar 2's.
+        struct Hedger(bot_core::InstrumentId, bot_core::InstrumentId);
+        impl Strategy for Hedger {
+            fn name(&self) -> &str {
+                "hedger"
+            }
+            fn on_candle(&mut self, _: &mut Context, c: &bot_core::Candle) -> Vec<Signal> {
+                if c.instrument != self.1 {
+                    return vec![];
+                }
+                let one = Qty::new(dec!(1));
+                match c.open_time.as_millis() / crate::test_support::HOUR {
+                    0 => vec![
+                        Signal::Submit {
+                            instrument: self.0.clone(),
+                            side: Side::Buy,
+                            size: Size::Base(one),
+                            kind: OrderKind::Market,
+                        },
+                        Signal::Submit {
+                            instrument: self.1.clone(),
+                            side: Side::Sell,
+                            size: Size::Base(one),
+                            kind: OrderKind::Market,
+                        },
+                    ],
+                    2 => vec![
+                        Signal::Submit {
+                            instrument: self.0.clone(),
+                            side: Side::Sell,
+                            size: Size::Base(one),
+                            kind: OrderKind::Market,
+                        },
+                        Signal::Reduce {
+                            instrument: self.1.clone(),
+                            side: Side::Buy,
+                            qty: one,
+                            kind: OrderKind::Market,
+                        },
+                    ],
+                    _ => vec![],
+                }
+            }
+        }
+        let mut s = Hedger(spot.id.clone(), perp.id.clone());
+        let config = EngineConfig {
+            whitelist: vec![spot.id.clone(), perp.id.clone()],
+            history_len: 10,
+            ..Default::default()
+        };
+        let report = run_backtest(&provider, &mut s, Params::default(), &config, Interval::H1)
+            .await
+            .unwrap();
+        assert_eq!(report.initial_cash, Notional::new(dec!(2000)));
+        assert_eq!(report.fills, 4);
+        assert_eq!(report.funding, Notional::new(dec!(1)));
+        assert_eq!(report.final_equity, Notional::new(dec!(2001)));
+        assert_eq!(report.rejected_signals, 0);
+    }
 }
