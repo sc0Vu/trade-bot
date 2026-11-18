@@ -33,8 +33,9 @@ that would be a bug.
 - [Development](#development)
 - [License](#license)
 
-More depth: [doc/architecture.md](doc/architecture.md); writing script
-strategies: [doc/scripting.md](doc/scripting.md). Project page:
+More depth: [doc/architecture.md](doc/architecture.md); writing strategies:
+[doc/scripting.md](doc/scripting.md) (scripts),
+[doc/builtin-strategies.md](doc/builtin-strategies.md) (Rust). Project page:
 <https://sc0vu.github.io/trade-bot/>.
 
 ## Safety model
@@ -184,10 +185,18 @@ is deserialized into that strategy's own typed struct.
 | `volatility_breakout` | Larry Williams' volatility breakout, one coin. After each closed bar a buy stop sits `k` times that bar's high-low range above its close; if the next bar trades through it the coin is bought there and sold at that bar's close. The first built-in to use stop orders. Bets a move bigger than a fraction of the last range keeps going within the bar; pays two taker fees and two slippages per one-bar trade. |
 
 Each strategy's module docs and parameter fields document its parameters.
-To add one, create a file under `crates/strategy/src/builtin/`, implement
-`Strategy`, and register it with `inventory::submit!`. It then runs in
-backtests and live with no other changes. Add an example config under
-`config/examples/` too: a test requires one per registered strategy.
+
+**Adding your own strategy.** Two ways:
+
+- **A script** (no Rust, no rebuild): write a Rhai file and point a config
+  at it, below. The console edits, checks and backtests scripts.
+  Guide: [doc/scripting.md](doc/scripting.md).
+- **A built-in** (Rust, compiled in): a file under
+  `crates/strategy/src/builtin/` that implements `Strategy` and registers
+  itself with `inventory::submit!`, plus an example config, tests and docs.
+  Guide: [doc/builtin-strategies.md](doc/builtin-strategies.md).
+
+Either way it runs in backtests, paper and live with no other changes.
 
 A strategy's only window to the world is its `Context`: positions, recent
 candles, open orders, params, and a way to submit signals. It never touches
@@ -216,9 +225,9 @@ slippage_bps = "5"
 
 ```rhai
 fn on_candle(ctx, c) {
-    let hist = ctx.history(c.instrument);
+    let hist = ctx.history(c.instrument, 2);   // only the newest 2 bars
     if hist.len() < 2 { return; }
-    let rising = c.close > hist[hist.len() - 2].close;
+    let rising = c.close > hist[0].close;
     if rising && ctx.position(c.instrument).is_flat {
         return market_buy_quote(c.instrument, 100.0);
     }

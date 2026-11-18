@@ -1215,7 +1215,8 @@ deploy/        service/ (systemd + launchd templates for `trade-bot service`);
                keep in sync with metric names and log keys (cli test pins alloy keys)
 doc/           architecture.md (human-facing; update with design changes),
                scripting.md (Rhai API for script writers; its example
-               is run, keep in sync with script/rhai.rs)
+               is run, keep in sync with script/rhai.rs), builtin-strategies.md
+               (adding a Rust built-in: rules, state, tests, docs checklist)
 README.md      user-facing overview, quick start, config, limitations
 ```
 
