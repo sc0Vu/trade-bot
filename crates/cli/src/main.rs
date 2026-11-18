@@ -102,6 +102,13 @@ async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<
 }
 
 async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
+    // Spot and futures in one run aren't built: started, it would see one
+    // leg's instrument and quietly do nothing.
+    anyhow::ensure!(
+        cfg.strategy.name != "funding_carry",
+        "funding_carry trades Binance spot and USDⓈ-M together; a run trades one venue, \
+         so it is backtest only for now (backtest --perp-symbol)"
+    );
     if cfg.exchange.venue == Venue::BinanceUsdm {
         let venue_fills = cfg
             .perp
@@ -763,6 +770,20 @@ struct BacktestArgs {
     /// is stopped and everything closed (`0.25` = 25%).
     #[arg(long, value_parser = parse_decimal)]
     kill_drawdown: Option<Decimal>,
+    /// Hedge: USDⓈ-M perpetuals traded beside the spot `--symbol`s
+    /// (`--venue binance`), in their own wallet (`--perp-cash`), with
+    /// `--leverage`, `--margin` and `--perp-fee`; funding and mark prices
+    /// from the `binance-usdm` cache.
+    #[arg(long, value_delimiter = ',')]
+    perp_symbol: Vec<Symbol>,
+    /// The futures wallet of a hedge, in USDT, apart from `--initial-cash`
+    /// (spot): Binance keeps them apart and the bot never transfers.
+    #[arg(long, value_parser = parse_decimal)]
+    perp_cash: Option<Decimal>,
+    /// A hedge's futures fee rate, in the quote (default Binance's 0.05%
+    /// taker).
+    #[arg(long, default_value = "0.0005", value_parser = parse_decimal)]
+    perp_fee: Decimal,
     /// Candles of history kept per instrument for the strategy. As many
     /// cached bars before `--from` are replayed first as warm-up (history,
     /// no decisions), as `run` does before trading.
@@ -822,12 +843,31 @@ async fn backtest_report(
 ) -> anyhow::Result<(backtest::Report, Vec<String>)> {
     let mut notes = Vec::new();
     let venue = a.venue.id();
-    let ids: Vec<InstrumentId> = a
+    let mut ids: Vec<InstrumentId> = a
         .symbol
         .iter()
         .map(|s| InstrumentId::new(venue.clone(), s.clone()))
         .collect();
     let perp = a.venue == Venue::BinanceUsdm;
+    // A hedge: Binance spot symbols plus USDⓈ-M ones, two wallets.
+    let hedged: Vec<InstrumentId> = a
+        .perp_symbol
+        .iter()
+        .map(|s| InstrumentId::new(Venue::BinanceUsdm.id(), s.clone()))
+        .collect();
+    if !hedged.is_empty() {
+        anyhow::ensure!(
+            a.venue == Venue::Binance,
+            "--perp-symbol hedges Binance spot: use --venue binance"
+        );
+        anyhow::ensure!(
+            a.perp_cash.is_some(),
+            "--perp-symbol needs --perp-cash (the futures wallet, apart from --initial-cash)"
+        );
+        ids.extend(hedged.iter().cloned());
+    } else if a.perp_cash.is_some() {
+        anyhow::bail!("--perp-cash is for --perp-symbol");
+    }
     // Futures charge every fee in the quote (margin) asset.
     // Futures and eToro charge in the quote (USD).
     let fee_asset = if perp || a.venue == Venue::Etoro {
@@ -876,9 +916,21 @@ async fn backtest_report(
         provider = provider.with_touch_fills();
     }
     if perp {
-        provider = with_perp(provider, &dir, &ids, a, &mut notes)?;
+        let (setup, events) = perp_setup(&provider, &dir, &ids, a, &mut notes)?;
+        provider = provider.with_perp(setup).with_events(events);
+    } else if !hedged.is_empty() {
+        let (setup, events) = perp_setup(&provider, &dir, &hedged, a, &mut notes)?;
+        let fees = RateFee::new(a.perp_fee, a.perp_fee, FeeAsset::Quote)
+            .context("--perp-fee must be in [0, 1)")?;
+        provider = provider
+            .with_hedge(backtest::HedgeSetup {
+                perp: setup,
+                wallet: Notional::new(a.perp_cash.unwrap_or(Decimal::ZERO)),
+                fees,
+            })
+            .with_events(events);
     } else if a.leverage.is_some() || a.clearance.is_some() {
-        anyhow::bail!("--leverage and --clearance are for --venue binance-usdm");
+        anyhow::bail!("--leverage and --clearance are for --venue binance-usdm or --perp-symbol");
     }
     if let Some(ratio) = a.earn_ratio {
         anyhow::ensure!(
@@ -967,15 +1019,15 @@ fn suspect_notes(provider: &BacktestProvider) -> Vec<String> {
 }
 
 /// A perpetual backtest's margin terms (cached brackets, `--leverage`,
-/// `--margin`) and funding replay (cached history; missing marks stood in
-/// by last price, noted).
-fn with_perp(
-    provider: BacktestProvider,
+/// `--margin`) and the funding and mark-price events to replay (cached
+/// history; missing marks stood in by last price, noted), for `ids`.
+fn perp_setup(
+    provider: &BacktestProvider,
     dir: &DataDir,
     ids: &[InstrumentId],
     a: &BacktestArgs,
     notes: &mut Vec<String>,
-) -> anyhow::Result<BacktestProvider> {
+) -> anyhow::Result<(backtest::PerpSetup, Vec<MarketEvent>)> {
     use bot_core::margin::MarginMode;
     let leverage = a
         .leverage
@@ -1031,9 +1083,7 @@ fn with_perp(
         clearance >= Decimal::ZERO && clearance < Decimal::ONE,
         "--clearance must be in [0, 1)"
     );
-    Ok(provider
-        .with_perp(backtest::PerpSetup { terms, clearance })
-        .with_events(events))
+    Ok((backtest::PerpSetup { terms, clearance }, events))
 }
 
 #[derive(Args)]
@@ -1373,8 +1423,8 @@ mod tests {
                 },
             )
         };
-        let err = with_perp(
-            provider(),
+        let err = perp_setup(
+            &provider(),
             &data,
             std::slice::from_ref(&id),
             &a,
@@ -1394,8 +1444,8 @@ mod tests {
             },
         )
         .unwrap();
-        let err = with_perp(
-            provider(),
+        let err = perp_setup(
+            &provider(),
             &data,
             std::slice::from_ref(&id),
             &a,
@@ -1427,5 +1477,54 @@ mod tests {
         let e = tripped(Some("why".into())).unwrap_err();
         assert!(e.downcast_ref::<KillSwitchTripped>().is_some());
         assert!(tripped(None).is_ok());
+    }
+
+    /// A hedge is Binance spot plus USDⓈ-M, with its own wallet: another
+    /// venue, or no --perp-cash, is refused before any data is read.
+    #[tokio::test]
+    async fn hedge_flags_are_checked_first() {
+        let args = |extra: &[&str]| {
+            let mut v = vec![
+                "cli",
+                "backtest",
+                "--strategy",
+                "funding_carry",
+                "--symbol",
+                "BTCUSDT",
+                "--from",
+                "2024-01-01",
+                "--to",
+                "2024-02-01",
+                "--slippage-bps",
+                "2",
+                "--data-dir",
+                "/nonexistent",
+            ];
+            v.extend_from_slice(extra);
+            let Command::Backtest(a) = Cli::parse_from(v).command else {
+                panic!("not backtest");
+            };
+            a
+        };
+        let err = |a: Box<BacktestArgs>| async move {
+            format!(
+                "{:#}",
+                backtest_report(&a, Params::default()).await.unwrap_err()
+            )
+        };
+        let e = err(args(&[
+            "--venue",
+            "max",
+            "--perp-symbol",
+            "BTCUSDT",
+            "--perp-cash",
+            "500",
+        ]))
+        .await;
+        assert!(e.contains("--venue binance"), "{e}");
+        let e = err(args(&["--perp-symbol", "BTCUSDT"])).await;
+        assert!(e.contains("--perp-cash"), "{e}");
+        let e = err(args(&["--perp-cash", "500"])).await;
+        assert!(e.contains("--perp-cash is for --perp-symbol"), "{e}");
     }
 }

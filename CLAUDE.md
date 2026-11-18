@@ -847,7 +847,7 @@ tsmom,
 tsmom_long_short,
 risk_parity) only
 version;
-buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
+buy_and_hold `decided`; dca `last_period` + `buys`; funding_carry `rates`; momentum_rotation
 `last_eval`; top_k_momentum `rebalanced_at` (null = never: old state rebalances
 at once); trailing_stop `started` + track (side, extreme, last close time); grid stage, gaps,
 dust. Pinned by
@@ -1062,6 +1062,29 @@ max(lookback, vol_period) + 1 closes for every coin. Once per close time
 all in, idle. Trend + vol targeting = the two drawdown cutters our
 backtests found. Chop, lag, trades as vol moves.
 
+`funding_carry` — cash-and-carry, BACKTEST ONLY (`run` refuses it: a run
+is one venue). Spot `spot` long + `perp` short, equal q. Funding window =
+last `window` (2–500) `MarketEvent::Funding` rates of `perp` (state:
+`rates` [[ms, "rate"]], restored; live funding isn't replayed); apr =
+mean · (365 d · (n−1) / span). Decides on perp's candle, both in
+(`completes`), idle (`portfolio::idle`). Flat, apr ≥ `enter_apr`, not
+backing off → q = perp lot(min(`notional`, spot cash·(1−fee)·0.99,
+futures wallet·`leverage`·0.9) / close); spot cash = `spot_capital` −
+(basis − realized), wallet = `perp_capital` + perp realized (own books:
+invariant 5; sizing only, broker decides). Hedged: apr < `exit_apr` or
+close ≥ entry (|basis|/|qty|)·(1+`max_rise`) → perp Reduce buy + spot
+sell. Lone leg / perp long → closed. Refusal → `portfolio::Backoff`
+(unsized loop seen: 190 spot round trips 2023–26). Measured BTC 4h
+2022–Nov 2026, 1000 spot + 500 futures 2x, enter 8% / exit 2% / rise 30%:
+1601 (dd 1.09%), always-on variant 1624; funding paid 7.2%/yr of notional
+but rally exits strand gains in spot, losses in futures (no transfer) →
+hedge shrinks. Backtest: `BacktestProvider::with_hedge(HedgeSetup { perp,
+wallet, fees })` → `split::SplitBroker` (spot PaperBroker + PerpPaperBroker,
+routed by instrument; report starts from both wallets); CLI `backtest
+--venue binance --perp-symbol S --perp-cash N --perp-fee r --leverage L`
+(`perp_setup` shared with `--venue binance-usdm`). Restart property: unit
+test (window saved/restored); the generic restart harness has no funding.
+
 `dual_ma_cross` — `sma_trend` skeleton, two averages: flat and SMA(fast) >
 SMA(slow) → buy; long and fast < slow → sell; equal → nothing. Level rule, not
 cross event: first bar with `slow_period` closes buys at once if fast on top.
@@ -1126,7 +1149,7 @@ crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, `script` (feature `rhai`:
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
-               buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, ichimoku, macd_cross,
+               buy_and_hold, dca, donchian_breakout, dual_ma_cross, funding_carry, grid, ichimoku, macd_cross,
                momentum_rotation, pair_reversion, ratio_hop, rebalance, risk_parity, rsi_reversion,
                sma_long_short, sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, tsmom_long_short, turn_of_month, vol_target,
                volatility_breakout)

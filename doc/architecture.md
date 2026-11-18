@@ -454,6 +454,18 @@ than adding an asset class beside it:
   stopping the run if they disagree and nothing of ours explains it.
   Real money passes the same three locks as spot. The venue liquidates.
 
+### Hedges
+
+A backtest can trade spot and perpetuals together
+(`BacktestProvider::with_hedge`): a routing broker sends each order to a
+spot paper broker or a perpetual one by instrument, each with its own
+wallet and fees, as Binance keeps the spot and futures wallets apart. The
+report values both in one ledger and starts from both wallets. Nothing
+transfers between them, because the bot can't live; that is what limits
+`funding_carry`: the rally exit that protects its short leaves the loss in
+the futures wallet and the matching gain in the spot one, and later
+entries shrink. Live runs trade one venue, so hedges are backtest only.
+
 ## eToro
 
 eToro is a broker, not an exchange: an order opens or closes *positions*,

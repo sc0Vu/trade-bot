@@ -1,0 +1,40 @@
+# funding_carry: long Binance spot BTC, short the same quantity of its
+# USDⓈ-M perpetual while funding pays shorts enough; closed when it fades
+# or before a rally can liquidate the short. A carry, not a forecast:
+# BTC funding paid shorts 7.2% a year of notional from mid-2021 to 2026
+# (positive every year), against ~0.4% per round trip in fees.
+#
+# BACKTEST ONLY for now: a run trades one venue, and this needs spot and
+# futures together, so `run` refuses it. Backtest:
+#
+#   cargo run -p cli -- fetch-data --symbol BTCUSDT --interval 4h --from 2021-06-01
+#   cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT --interval 4h --from 2021-06-01
+#   cargo run -p cli -- backtest --venue binance --symbol BTCUSDT --perp-symbol BTCUSDT \
+#       --strategy funding_carry --params p.toml --interval 4h --from 2022-01-01 --to 2026-11-01 \
+#       --initial-cash 1000 --perp-cash 500 --leverage 2 --fee 0.001 --perp-fee 0.0005 --slippage-bps 2
+#
+# (p.toml = the [strategy.params] table below.)
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "4h"
+
+[strategy]
+name = "funding_carry"
+
+[strategy.params]
+spot = "binance:BTCUSDT"
+perp = "binance-usdm:BTCUSDT"
+notional = "950"        # USDT per leg at most: spot cash pays it in full, the short needs notional / leverage
+spot_capital = "1000"   # the spot cash it trades with (= --initial-cash)
+perp_capital = "500"    # the futures wallet it trades with (= --perp-cash)
+leverage = 2            # = --leverage / [perp] leverage; sizing only
+window = 21             # settlements averaged: 7 days at 8 h
+enter_apr = "0.08"      # open when the week's funding annualizes to 8% or more
+exit_apr = "0.02"       # close below 2%
+max_rise = "0.3"        # close if the perp rises 30% over the short's entry (2x isolated liquidates near +50%)
+fee = "0.001"
+slippage_bps = "2"

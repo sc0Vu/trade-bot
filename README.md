@@ -161,6 +161,7 @@ is deserialized into that strategy's own typed struct.
 | `risk_parity` | Several coins, each weighted by the inverse of its recent volatility (`exposure` of a stated capital; the rest cash), traded back when a weight drifts past `band`. Each coin carries about the same share of the swings, so the portfolio isn't just a bet on its wildest coin. Predicts no returns; ignores correlation (high between coins); holds less of a volatile coin in its rallies and trails holding the winner. |
 | `ratio_hop` | Holds one coin of a set and rotates `A → USDT → B` only when the post-fee estimate of B's units beats the units of B last held, so unit counts only ratchet up. Includes a freefall guard against rotating into a collapsing coin. Maximizes units, not value. |
 | `donchian_breakout` | One coin. Buys when the close breaks above the highest high of the previous `channel_period` candles, sells when it breaks below their lowest low. Bets breakouts continue; whipsaws in ranges. |
+| `funding_carry` | Cash-and-carry on perpetual funding: long Binance spot, short the same quantity of its USDⓈ-M perpetual while the week's funding annualizes above `enter_apr`; closed below `exit_apr`, or when the price rises `max_rise` over the short's entry (before liquidation). Market-neutral; earns funding, pays four fees a round trip. **Backtest only** (`backtest --perp-symbol`): a run trades one venue. BTC 4h, 2022 to Nov 2026, 1,000 spot + 500 futures at 2x: 1,500 → 1,601 (max drawdown 1.1%). The funding itself paid 7.2% a year of notional, but every rally exit leaves the short's loss in the futures wallet and the spot gain in the spot wallet; with no transfer between them the hedge shrinks, so it captured far less. |
 | `dual_ma_cross` | One coin, long or flat. Holds while the fast moving average is above the slow one, cash otherwise. A quicker variant of `sma_trend`; whipsaws in ranges. |
 | `grid` | One coin, spot grid. Splits a price range into levels, buys a fixed quote amount at each level and sells that lot one level up, so each round trip earns one step minus two fees (a grid whose step doesn't cover them is refused). Bets on prices oscillating in the range; falling, it ends holding every level below cost (optional `stop_price` sells all and stops), rising, it sells out. |
 | `macd_cross` | One coin, long or flat. Holds while the MACD line (fast EMA minus slow EMA) is above its signal line, cash otherwise. Turns earlier than `dual_ma_cross`, so it whipsaws more in ranges and still lags turns. |
@@ -351,6 +352,23 @@ historical (on old, low prices today's coarser tick makes taker fills
 slightly worse: SOL at about 1.84 in 2021 with a 0.01 tick costs up to
 about 0.5% per fill), and a whitelist chosen today carries survivorship
 bias.
+
+### Hedges: spot and perpetual together
+
+`--perp-symbol` adds USDⓈ-M perpetuals to a Binance spot backtest
+(`--venue binance`), each side in its own wallet as on Binance: spot
+trades from `--initial-cash`, the perpetuals from `--perp-cash`, with
+`--leverage`, `--margin` and `--perp-fee` (quote, default 0.0005). Nothing
+moves money between the two wallets, as the bot can't live. Fetch both
+caches first; `funding_carry` is the strategy built for it.
+
+```sh
+cargo run -p cli -- fetch-data --symbol BTCUSDT --interval 4h --from 2021-06-01
+cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT --interval 4h --from 2021-06-01
+cargo run -p cli -- backtest --venue binance --symbol BTCUSDT --perp-symbol BTCUSDT \
+    --strategy funding_carry --params p.toml --interval 4h --from 2022-01-01 --to 2026-11-01 \
+    --initial-cash 1000 --perp-cash 500 --leverage 2 --fee 0.001 --slippage-bps 2
+```
 
 ### eToro
 

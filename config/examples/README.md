@@ -6,6 +6,7 @@ One complete, runnable config per built-in strategy:
 |---|---|
 | `avwap.toml` | one coin, long above its anchored VWAP |
 | `buy_and_hold.toml` | the benchmark: buy once, hold |
+| `funding_carry.toml` | spot long + perpetual short for the funding (backtest only) |
 | `dca.toml` | one coin, a fixed buy every period, hold |
 | `sma_long_short.toml` | one coin, long above its moving average, short below on a perpetual (flat on spot) |
 | `sma_trend.toml` | one coin, long above its moving average |

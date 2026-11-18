@@ -45,6 +45,7 @@ mod calendar;
 pub mod dca;
 pub mod donchian_breakout;
 pub mod dual_ma_cross;
+pub mod funding_carry;
 pub mod grid;
 pub mod ichimoku;
 mod long_flat;
