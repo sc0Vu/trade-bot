@@ -612,6 +612,15 @@ A crash or `kill -9` can't be handled in-process. The orders stay live until
 the next start, so a long-running bot belongs under a supervisor that
 restarts it.
 
+
+**Supervision.** `trade-bot service install` runs a config as an OS
+service (systemd user unit, launchd agent) from the templates in
+`deploy/service/`: started at boot or login, restarted after a failure,
+each start reconciling first. Keys come from an env file only the user
+can read; a live config is installed only with the live flags typed at
+install. A run the kill switch stopped exits with code 3, which systemd
+does not restart.
+
 ## Observability
 
 The engine and the Binance client record metrics through the `metrics`

@@ -438,6 +438,13 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    Reconcile (`binance::reconcile`, Binance = truth, books = which are ours):
    startup (in `provider.broker()`) and every exit incl. error and signal
    (`close_out`). SIGINT/SIGTERM/SIGHUP all = stop + close out (`cli::shutdown`);
+   supervisor: `trade-bot service install|remove|status` (`cli::service`;
+   templates `deploy/service/trade-bot.{service,plist}`, embedded; user-level
+   systemd unit / launchd agent; keys only via `--env-file`, refused unless
+   mode 600; live config only with `--live --i-understand` typed at
+   install; restart on failure only; exit code 3 = `NEEDS_A_PERSON` (kill
+   switch tripped / marker set): systemd `RestartPreventExitStatus=3`,
+   launchd retries per minute, refused);
    second signal abandons close-out (process never held hostage), next start
    reconciles. kill -9/crash: only next start; run under supervisor
    (`Restart=always`) so orders aren't unwatched long. Each unfinished journal order: find (venue id, else client
@@ -1202,7 +1209,8 @@ Dockerfile     debian + rustup (toolchain pin), system libssl, `--features rhai`
                books in volume /app/data; live only via typed command (invariant 7)
 render.yaml    worker, frankfurt (Binance 451s US IPs), disk /app/data (books survive;
                no overlapping instances), maxShutdownDelaySeconds 120 (close-out)
-deploy/        Prometheus + Alertmanager + Loki/Alloy (tails `[log] file`) + Grafana
+deploy/        service/ (systemd + launchd templates for `trade-bot service`);
+               Prometheus + Alertmanager + Loki/Alloy (tails `[log] file`) + Grafana
                compose, alerts.yml (+ promtool unit tests alerts_test.yml), dashboard;
                keep in sync with metric names and log keys (cli test pins alloy keys)
 doc/           architecture.md (human-facing; update with design changes),

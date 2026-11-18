@@ -1,0 +1,35 @@
+# systemd user unit for one trade-bot run. `trade-bot service install`
+# fills this in; to use it by hand, replace each {{...}} and copy it to
+# ~/.config/systemd/user/<name>.service, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now <name>
+#   loginctl enable-linger "$USER"   # start at boot, not only at login
+#
+# Keys never go in this file: EnvironmentFile names a file only you can
+# read (chmod 600) with BINANCE_API_KEY=... / ETORO_PRIVATE_KEY=... lines.
+
+[Unit]
+Description=trade-bot ({{NAME}})
+Wants=network-online.target
+After=network-online.target
+# A run that keeps failing stops being restarted after 5 tries in 10 min.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory={{WORKDIR}}
+EnvironmentFile={{ENV_FILE}}
+ExecStart={{EXEC}}
+# Restarted after a failure (a stalled feed, a crash); after a restart it
+# reconciles with the venue before trading.
+Restart=on-failure
+RestartSec=30
+# Exit 3: refused to start until a person acts (the kill switch tripped).
+# Restarting would only be refused again.
+RestartPreventExitStatus=3
+# SIGTERM = close out: cancel open orders, record fills; allow it time.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

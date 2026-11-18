@@ -1,5 +1,8 @@
 # Monitoring stack
 
+(`service/` holds the systemd and launchd templates `trade-bot service
+install` fills in; see the README, "Running as a service".)
+
 Prometheus (metrics), Alertmanager (alerts), Loki with Grafana Alloy (logs)
 and Grafana for a running bot.
 

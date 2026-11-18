@@ -25,6 +25,7 @@ that would be a bug.
 - [Backtesting](#backtesting)
 - [Console (web)](#console-web)
 - [Paper and live trading](#paper-and-live-trading)
+- [Running as a service](#running-as-a-service)
 - [Containers and Render](#containers-and-render)
 - [Commands](#commands)
 - [Project layout](#project-layout)
@@ -581,6 +582,36 @@ slippage_bps = "20"
 ```
 
 `mode = "live"` or `--live` with MAX is refused.
+
+## Running as a service
+
+To start a run at boot (or login) and restart it after a failure, install
+its config as a service, run as your user: a launchd agent on macOS, a
+systemd user unit on Linux.
+
+```sh
+# Keys go in a file only you can read, never in the config or service file:
+printf 'ETORO_PUBLIC_KEY=...\nETORO_PRIVATE_KEY=...\n' > ~/.trade-bot.env && chmod 600 ~/.trade-bot.env
+
+trade-bot service install --config config/etoro-demo.local.toml --env-file ~/.trade-bot.env
+trade-bot service status trade-bot-etoro-demo
+trade-bot service remove trade-bot-etoro-demo     # stops it (closes out) and deletes the file
+```
+
+- Run it from the directory the bot's `data/` should live in, with an
+  installed or release binary (`--bin`): `cargo clean` deletes the ones
+  under `target/`. `--dry-run` prints the file without installing.
+- Restarted after a failure (a stalled feed, a crash), not after a clean
+  stop; each start reconciles with the venue first. A tripped kill switch
+  exits with code 3: systemd doesn't restart it; launchd retries once a
+  minute and is refused until you clear the switch.
+- An env file others can read is refused. A live config installs only with
+  `--live --i-understand` typed on the install command, and then trades
+  real money at every start without asking again.
+- Linux: the unit starts at login; `loginctl enable-linger $USER` makes it
+  start at boot. macOS: the agent starts at login. Windows: use the
+  container.
+- The templates are in `deploy/service/` for setting it up by hand.
 
 ## Containers and Render
 

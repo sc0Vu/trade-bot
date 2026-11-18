@@ -8,6 +8,7 @@ mod console;
 mod date;
 mod gate;
 mod logging;
+mod service;
 mod shutdown;
 mod state;
 mod telemetry;
@@ -56,6 +57,12 @@ enum Command {
     /// Local web console: edit script strategies, backtest them against
     /// buy-and-hold. Loopback only; places no orders.
     Console(console::ConsoleArgs),
+    /// Run a config as an OS service (systemd user unit / launchd agent):
+    /// started at boot or login, restarted after a failure.
+    Service {
+        #[command(subcommand)]
+        cmd: service::ServiceCommand,
+    },
 }
 
 #[derive(Args)]
@@ -669,13 +676,26 @@ fn check_kill_marker(marker: &std::path::Path, clear: bool) -> anyhow::Result<()
         tracing::warn!(marker = %marker.display(), "kill switch cleared by --clear-kill-switch");
         return Ok(());
     }
-    anyhow::bail!(
+    Err(KillSwitchSet(format!(
         "the kill switch stopped this strategy earlier ({}); review it, then start with \
          --clear-kill-switch (or delete {})",
         text.trim(),
         marker.display()
-    )
+    ))
+    .into())
 }
+
+/// A start refused because an earlier run's kill switch is still set.
+#[derive(Debug)]
+struct KillSwitchSet(String);
+
+impl std::fmt::Display for KillSwitchSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for KillSwitchSet {}
 
 /// The end-of-run summary `run` prints.
 fn print_summary(r: &engine::RunReport) {
@@ -1240,11 +1260,38 @@ async fn fetch_perp_data(
     Ok(())
 }
 
+/// Exit code of a run refused until a person acts: the kill switch tripped
+/// (now or earlier). A service manager mustn't just restart it.
+pub(crate) const NEEDS_A_PERSON: i32 = 3;
+
+/// The kill switch said stop (this run, or a marker from an earlier one).
+fn needs_a_person(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<KillSwitchTripped>().is_some() || e.downcast_ref::<KillSwitchSet>().is_some()
+}
+
+fn main() -> std::process::ExitCode {
+    match real_main() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            std::process::ExitCode::from(if needs_a_person(&e) {
+                NEEDS_A_PERSON as u8
+            } else {
+                1
+            })
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn real_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let rust_log = std::env::var("RUST_LOG").ok();
     match cli.command {
+        Command::Service { cmd } => {
+            init_logging(&config::log_filter(rust_log, None, "warn"));
+            service::run(cmd)
+        }
         Command::Console(a) => {
             init_logging(&config::log_filter(rust_log, None, "info,sqlx=warn"));
             console::run(a).await

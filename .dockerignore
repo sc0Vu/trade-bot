@@ -15,4 +15,6 @@ IMPORTANT
 !/Cargo.toml
 !/rust-toolchain.toml
 deploy
+# ...except the service templates, which the binary embeds.
+!deploy/service
 doc

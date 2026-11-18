@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for one trade-bot run (macOS). `trade-bot service install`
+  fills this in; to use it by hand, replace each {{...}}, save it as
+  ~/Library/LaunchAgents/{{NAME}}.plist, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{{NAME}}.plist
+  It starts at login and after a failure (not after a clean exit).
+
+  Keys never go in this file: the shell line loads the env file (chmod 600,
+  BINANCE_API_KEY=... / ETORO_PRIVATE_KEY=... lines) and runs the bot.
+  launchd can't skip restarting on exit code 3 (kill switch tripped): it
+  retries once a minute and is refused each time until the switch is
+  cleared.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{NAME}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; . "$1"; set +a; shift; exec "$@"</string>
+    <string>sh</string>
+    <string>{{ENV_FILE}}</string>
+{{ARGS}}
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{{WORKDIR}}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>ExitTimeOut</key>
+  <integer>120</integer>
+  <key>StandardOutPath</key>
+  <string>{{LOG}}</string>
+  <key>StandardErrorPath</key>
+  <string>{{LOG}}</string>
+</dict>
+</plist>
