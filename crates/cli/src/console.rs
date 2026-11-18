@@ -50,6 +50,10 @@ pub(crate) struct ConsoleArgs {
     /// Example configs, for each strategy's starting params.
     #[arg(long, default_value = "config/examples")]
     examples_dir: PathBuf,
+    /// Claude model that drafts scripts (*Draft with AI*; needs
+    /// `ANTHROPIC_API_KEY`, billed to it).
+    #[arg(long, default_value = crate::draft::DEFAULT_MODEL)]
+    ai_model: String,
 }
 
 /// Shared by every request.
@@ -62,6 +66,8 @@ pub(crate) struct Console {
     hosts: Arc<Vec<String>>,
     /// One backtest at a time: they are CPU-bound.
     busy: Arc<Mutex<()>>,
+    /// Model for AI drafts.
+    ai_model: Arc<String>,
 }
 
 /// Serves the console until the process ends.
@@ -91,6 +97,7 @@ impl Console {
                 format!("[::1]:{port}"),
             ]),
             busy: Arc::new(Mutex::new(())),
+            ai_model: Arc::new(a.ai_model.clone()),
         }
     }
 }
@@ -105,6 +112,7 @@ fn router(console: Console) -> Router {
         .route("/api/backtest", post(run_backtest))
         .route("/api/lookahead", post(lookahead))
         .route("/api/restart", post(restart))
+        .route("/api/draft", post(draft))
         .layer(middleware::from_fn_with_state(console.clone(), guard))
         .with_state(console)
 }
@@ -180,6 +188,10 @@ struct Catalog {
     rhai: bool,
     /// Cached series a backtest can use.
     data: Vec<Series>,
+    /// Whether `ANTHROPIC_API_KEY` is set (AI drafts); never the key.
+    ai: bool,
+    /// The model drafts use.
+    ai_model: String,
 }
 
 #[derive(Serialize, PartialEq, Debug)]
@@ -205,6 +217,8 @@ async fn catalog(State(c): State<Console>) -> Json<Catalog> {
         scripts,
         rhai: names.contains(&"rhai"),
         data: cached_series(&c.data_dir),
+        ai: std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.is_empty()),
+        ai_model: c.ai_model.to_string(),
     })
 }
 
@@ -484,6 +498,31 @@ async fn run_backtest(
     }))
 }
 
+/// A Rhai draft from Claude ([`crate::draft`]); the page saves it and runs
+/// the checks. Billed to `ANTHROPIC_API_KEY`.
+async fn draft(
+    State(c): State<Console>,
+    Json(r): Json<crate::draft::DraftRequest>,
+) -> Result<Json<crate::draft::Draft>, Failure> {
+    use crate::draft::DraftError;
+    if r.description.trim().is_empty() {
+        return Err(bad("describe the strategy first"));
+    }
+    tracing::info!(model = %c.ai_model, "drafting a script with Claude");
+    crate::draft::draft(&r, &c.ai_model)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            let status = match e {
+                DraftError::NoKey | DraftError::Refused(_) | DraftError::Truncated => {
+                    StatusCode::BAD_REQUEST
+                }
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            Failure(status, e.to_string())
+        })
+}
+
 /// Cut points the console's property checks try (a backtest or two each).
 const CHECK_CUTS: usize = 10;
 
@@ -713,6 +752,7 @@ mod tests {
                 data_dir: dir.join("data"),
                 scripts_dir: dir.join("strategies"),
                 examples_dir: dir.join("examples"),
+                ai_model: crate::draft::DEFAULT_MODEL.into(),
             },
             9186,
         )

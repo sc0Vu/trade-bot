@@ -84,6 +84,15 @@
       <textarea id="script" spellcheck="false"></textarea>
       <div class="bar"><button id="save">Save</button><span id="savestatus" class="status"></span></div>
     </div>
+    <details id="aibox">
+      <summary>Draft with AI</summary>
+      <p class="fine" id="ainote"></p>
+      <textarea id="describe" rows="4" placeholder="e.g. Buy when the 20-bar average crosses above the 50-bar one, sell on the reverse cross; skip entries when volatility is twice its usual level."></textarea>
+      <label style="display:flex;gap:6px;align-items:center;margin-top:6px"><input type="checkbox" id="revise" style="width:auto">
+        revise the open script instead of starting fresh</label>
+      <div class="bar"><button id="draft" class="primary">Draft</button><span id="draftstatus" class="status"></span></div>
+      <p class="fine" id="explain"></p>
+    </details>
     <label for="params">Params (TOML; money as strings, <code>fee = "0.001"</code>)</label>
     <textarea id="params" spellcheck="false"></textarea>
     <div class="bar"><button id="check">Check</button><span id="checkstatus" class="status"></span></div>
@@ -203,6 +212,10 @@ async function loadCatalog(select) {
   for (const s of catalog.strategies) option(g2, s);
   pick.append(g1, g2);
   $("norhai").classList.toggle("hidden", catalog.rhai);
+  $("ainote").textContent = catalog.ai
+    ? `Sends your description and the script reference to Anthropic (${catalog.ai_model}); billed to your ANTHROPIC_API_KEY. The draft is saved as a draft_ script, then checked and backtested here: a draft's claims count for nothing until those pass.`
+    : "Set ANTHROPIC_API_KEY before starting the console to draft scripts with Claude.";
+  $("draft").disabled = !catalog.ai || !catalog.rhai;
   pick.value = select || (catalog.scripts.length ? "script:" + catalog.scripts[0] : catalog.strategies[0]);
   await onPick();
   fillData();
@@ -341,6 +354,36 @@ const peek = () => property($("peek"), "/api/lookahead", "lookahead",
 const restartCheck = () => property($("restart"), "/api/restart", "restart",
   "never while holding a position: restoring state wasn't really tested");
 
+async function draftScript() {
+  const description = $("describe").value.trim();
+  if (!description) { setStatus($("draftstatus"), "describe the strategy first", "err"); return; }
+  const v = $("pick").value;
+  const body = {
+    description,
+    instruments: [...$("symbols").selectedOptions].map((o) => $("venue").value + ":" + o.value),
+    interval: $("interval").value,
+    revise: $("revise").checked && v.startsWith("script:") ? $("script").value : null,
+  };
+  $("draft").disabled = true;
+  setStatus($("draftstatus"), "drafting (thinking can take a minute or two)…");
+  try {
+    const d = await api("/api/draft", { method: "POST", body });
+    let name = d.name, n = 2;
+    while (catalog.scripts.includes(name)) name = `${d.name}_${n++}`;
+    await api("/api/scripts/" + name, { method: "PUT", body: { text: d.script } });
+    localStorageSet("params:script:" + name, d.params_toml);
+    await loadCatalog("script:" + name);
+    $("explain").textContent = d.explanation;
+    setStatus($("draftstatus"), `saved as ${name}; checking…`, "ok");
+    if (!(await check())) { setStatus($("draftstatus"), `${name}: does not build — see below; edit or redraft`, "err"); return; }
+    await peek();
+    await restartCheck();
+    if ($("slip").value.trim()) await run();
+    setStatus($("draftstatus"), `${name}: drafted and checked — read the results before trusting it`, "ok");
+  } catch (e) { setStatus($("draftstatus"), e.message, "err"); }
+  finally { $("draft").disabled = !catalog.ai; }
+}
+
 function show(r) {
   const s = r.strategy, b = r.benchmark;
   const rows = [
@@ -396,6 +439,7 @@ $("save").addEventListener("click", save);
 $("check").addEventListener("click", check);
 $("run").addEventListener("click", run);
 $("peek").addEventListener("click", peek);
+$("draft").addEventListener("click", draftScript);
 $("restart").addEventListener("click", restartCheck);
 $("params").addEventListener("change", () => localStorageSet("params:" + $("pick").value, $("params").value));
 $("script").addEventListener("keydown", (e) => {

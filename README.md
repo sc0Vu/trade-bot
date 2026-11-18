@@ -431,8 +431,19 @@ cargo run -p cli --features rhai -- console   # release binaries: trade-bot cons
   (wrong `Host` or `Origin`, or a write that isn't JSON), and writes only
   `strategies/*.rhai`. One backtest runs at a time.
 
-Not yet: starting and watching paper runs from the page, AI-drafted
-strategies.
+- **Draft with AI** (optional): describe a strategy in plain words and
+  Claude writes a Rhai script for it against
+  [doc/scripting.md](doc/scripting.md). The console saves it as
+  `strategies/draft_<name>.rhai` and runs *Check*, *Check lookahead*,
+  *Check restart* and the buy-and-hold backtest on it. Needs
+  `ANTHROPIC_API_KEY` in the environment (read per request, never stored or
+  shown); each draft is billed to it. Model `claude-opus-5-5` unless
+  `console --ai-model` names another. Your description and the reference
+  are sent to Anthropic; nothing else (no keys, data or books). A draft is
+  a starting point: its explanation is the model's claim, the checks and
+  the backtest are the evidence.
+
+Not yet: starting and watching paper runs from the page.
 
 ## Paper and live trading
 

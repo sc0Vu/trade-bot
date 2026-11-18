@@ -1179,7 +1179,15 @@ crates/
                `backtest_report` (= `backtest` command) + buy_and_hold benchmark;
                guard: Host = own loopback addr, Origin same, writes JSON only;
                writes only `<scripts_dir>/<[a-z0-9_]{1,64}>.rhai`; one backtest at
-               a time; no keys, no orders; `Report.equity_curve` for the chart)
+               a time; no keys, no orders; `Report.equity_curve` for the chart;
+               `/api/draft` → `cli::draft`: raw HTTPS Messages API (no Rust SDK),
+               `--ai-model` default `claude-opus-5-5`, adaptive thinking, effort
+               high, `output_config.format` json_schema {name, script,
+               params_toml, explanation}, `fallbacks: "default"` + beta
+               `server-side-fallback-2026-07-01`, system = rules +
+               `doc/scripting.md` (include_str!); key `ANTHROPIC_API_KEY` per
+               request; refusal / max_tokens / API errors surfaced; page saves
+               `draft_<name>` then runs check, lookahead, restart, backtest)
 migration/     SeaORM migrations
 strategies/    script strategies (`sma_trend.rhai`: reference port, tested vs built-in)
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.

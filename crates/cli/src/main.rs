@@ -6,6 +6,7 @@
 mod config;
 mod console;
 mod date;
+mod draft;
 mod gate;
 mod logging;
 mod shutdown;
