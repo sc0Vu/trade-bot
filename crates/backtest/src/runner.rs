@@ -301,16 +301,19 @@ mod tests {
     /// wallet 1,000, no fees or slippage; each bar opens at the previous
     /// close. Closes 100 100 100 110 90 80 120 120:
     /// - t3 (110 > SMA 103.33): buy 9.0909 → t4's open 110, margin 499.9995.
-    /// - t4 (90 < SMA 100): flip, sell 20.20201 → t5's open 90: the long
-    ///   loses 9.0909 × 20 = 181.818, short 11.11111 @ 90 (margin
-    ///   499.99995); wallet 500.0005 + 499.9995 − 181.818 − 499.99995 =
-    ///   318.18205.
-    /// - t5 (80 < SMA 93.33): stays short. Equity 818.182 + 11.11111 × 10
-    ///   = 929.2931.
-    /// - t6 (120 > SMA 96.67): flip back needs 8.33333 × 120 / 2 = 499.9998
-    ///   new margin less 499.99995 − 333.3333 returned = 333.33315 >
-    ///   318.18205 free → refused; t7 (SMA 106.67) the same.
-    /// Final equity: 818.182 − 11.11111 × 30 = 484.8487.
+    /// - t4 (90 < SMA 100): flip, first half: close the 9.0909 reduce-only
+    ///   → t5's open 90: realized −9.0909 × 20 = −181.818, wallet 818.182.
+    /// - t5 (80 < SMA 93.33), flat: short 1000/80 = 12.5 → t6's open 80,
+    ///   margin 500.
+    /// - t6's high 120 crosses the short's liquidation price (500 + 12.5 ·
+    ///   80) / (12.5 · 1.004) = 119.5219 → closed at 119.53 (tick against
+    ///   the trader): loss 12.5 · 39.53 = 494.125, clearance fee 18.68
+    ///   capped at the 5.875 left: the whole 500 margin. Wallet 318.182.
+    /// - t6 and t7 (120 > SMA): long 8.33333 needs 499.9998 margin >
+    ///   318.182 → refused twice.
+    /// Final equity 318.182, realized −681.818. The old one-order flip was
+    /// refused here and left a losing short open (ended 484.8487): lucky
+    /// in this path, but a refused exit is the failure the change removes.
     #[tokio::test]
     async fn sma_long_short_trades_both_sides_of_a_perpetual() {
         use bot_core::margin::{Bracket, Brackets, MarginMode};
@@ -382,7 +385,9 @@ mod tests {
             fills,
             vec![
                 (Side::Buy, dec!(9.0909), dec!(110)),
-                (Side::Sell, dec!(20.20201), dec!(90)),
+                (Side::Sell, dec!(9.0909), dec!(90)),
+                (Side::Sell, dec!(12.5), dec!(80)),
+                (Side::Buy, dec!(12.5), dec!(119.53)),
             ]
         );
         assert_eq!(run.rejections.len(), 2);
@@ -396,10 +401,10 @@ mod tests {
             Interval::H1,
             None,
         );
-        assert_eq!(r.final_equity, Notional::new(dec!(484.8487)));
-        assert_eq!(r.realized_pnl, Notional::new(dec!(-181.818)));
-        // Peak 1,000 → trough 484.8487.
-        assert_eq!(r.max_drawdown, dec!(0.5151513));
+        assert_eq!(r.final_equity, Notional::new(dec!(318.182)));
+        assert_eq!(r.realized_pnl, Notional::new(dec!(-681.818)));
+        // Peak 1,000 → trough 318.182.
+        assert_eq!(r.max_drawdown, dec!(0.681818));
     }
 
     /// GTC limit buy 1 @ 100 and an IOC limit buy at t0's close.

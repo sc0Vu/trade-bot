@@ -3,8 +3,11 @@
 //! One coin, a fixed position size `notional` (quote) re-derived at each
 //! entry: long while the close is above the simple moving average of the
 //! last `sma_period` closes by more than `band_pct`, short while below it
-//! by more than `band_pct`, unchanged in the dead zone. A flip is one
-//! market order: the units held plus the new position's.
+//! by more than `band_pct`, unchanged in the dead zone. A flip closes the
+//! position reduce-only and opens the other side at the next decision:
+//! one order for both needs margin for both, and after a loss the broker
+//! refuses it, leaving the losing position open bar after bar. A
+//! reduce-only close needs no margin.
 //!
 //! Short only on an instrument that allows it ([`Instrument::allows_short`]:
 //! perpetuals). On spot the short side is "flat" — the same rule as
@@ -164,22 +167,32 @@ impl Strategy for SmaLongShort {
                 .map(|q| inst.round_qty(q))
                 .unwrap_or(Qty::ZERO)
         };
-        let (side, units) = match (self.held(ctx, c), up, down) {
-            (Held::Flat, true, _) => (Side::Buy, fresh()),
-            (Held::Short(s), true, _) => (Side::Buy, s + fresh()),
-            (Held::Long(l), _, true) if inst.allows_short() => (Side::Sell, l + fresh()),
-            (Held::Long(l), _, true) => (Side::Sell, l),
-            (Held::Flat, _, true) if inst.allows_short() => (Side::Sell, fresh()),
+        // Closing (a flip's first half, or long → flat on spot) is
+        // reduce-only; opening comes from flat.
+        let (side, units, reduce) = match (self.held(ctx, c), up, down) {
+            (Held::Flat, true, _) => (Side::Buy, fresh(), false),
+            (Held::Short(s), true, _) => (Side::Buy, s, true),
+            (Held::Long(l), _, true) => (Side::Sell, l, true),
+            (Held::Flat, _, true) if inst.allows_short() => (Side::Sell, fresh(), false),
             _ => return Vec::new(),
         };
         if inst.check_market(units, c.close, side).is_err() {
             return Vec::new();
         }
-        vec![Signal::Submit {
-            instrument: coin.clone(),
-            side,
-            size: Size::Base(units),
-            kind: OrderKind::Market,
+        vec![if reduce {
+            Signal::Reduce {
+                instrument: coin.clone(),
+                side,
+                qty: units,
+                kind: OrderKind::Market,
+            }
+        } else {
+            Signal::Submit {
+                instrument: coin.clone(),
+                side,
+                size: Size::Base(units),
+                kind: OrderKind::Market,
+            }
         }]
     }
 }
@@ -247,6 +260,15 @@ mod tests {
         }]
     }
 
+    fn close(side: Side, qty: Decimal) -> Vec<Signal> {
+        vec![Signal::Reduce {
+            instrument: btcusdt().id.clone(),
+            side,
+            qty: Qty::new(qty),
+            kind: OrderKind::Market,
+        }]
+    }
+
     #[test]
     fn self_registers_and_checks_params() {
         assert!(names().contains(&NAME));
@@ -257,10 +279,10 @@ mod tests {
     }
 
     /// SMA(3). 100, 100, 100: on the average, nothing. 110: SMA 103.33 →
-    /// long 1000/110 = 9.09090 (lot). Held: 90 → SMA 100 → flip: sell the
-    /// 9.09090 held + 1000/90 = 11.11111 → 20.20201. Short 11.11111: 80 →
-    /// SMA 93.33, still below → nothing. 120: SMA (90+80+120)/3 = 96.67 →
-    /// buy 11.11111 back + 1000/120 = 8.33333 → 19.44444.
+    /// long 1000/110 = 9.09090 (lot). Held: 90 → SMA 100 → flip, first
+    /// half: close the 9.09090, reduce-only. Flat: 80 → SMA 93.33, below →
+    /// short 1000/80 = 12.5. 120: SMA (90+80+120)/3 = 96.67 → flip: close
+    /// the 12.5 short, reduce-only.
     #[test]
     fn flips_between_long_and_short_on_a_perpetual() {
         let mut s = build(NAME, &params("")).unwrap();
@@ -275,13 +297,17 @@ mod tests {
         hold(&mut ctx, dec!(9.0909));
         assert_eq!(
             bar(s.as_mut(), &mut ctx, 4, "90"),
-            order(Side::Sell, dec!(20.20201))
+            close(Side::Sell, dec!(9.0909))
         );
-        hold(&mut ctx, dec!(-11.11111));
-        assert!(bar(s.as_mut(), &mut ctx, 5, "80").is_empty());
+        hold(&mut ctx, dec!(0));
+        assert_eq!(
+            bar(s.as_mut(), &mut ctx, 5, "80"),
+            order(Side::Sell, dec!(12.5))
+        );
+        hold(&mut ctx, dec!(-12.5));
         assert_eq!(
             bar(s.as_mut(), &mut ctx, 6, "120"),
-            order(Side::Buy, dec!(19.44444))
+            close(Side::Buy, dec!(12.5))
         );
     }
 
@@ -302,7 +328,7 @@ mod tests {
         hold(&mut ctx, dec!(9.0909));
         assert_eq!(
             bar(s.as_mut(), &mut ctx, 4, "90"),
-            order(Side::Sell, dec!(9.0909))
+            close(Side::Sell, dec!(9.0909))
         );
         hold(&mut ctx, dec!(0));
         assert!(bar(s.as_mut(), &mut ctx, 5, "80").is_empty());

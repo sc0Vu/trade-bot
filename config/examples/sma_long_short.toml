@@ -1,7 +1,8 @@
 # sma_long_short: one coin, long above its simple moving average, short
 # below it where the instrument can be shorted (USDⓈ-M perpetuals, as
-# here), flat below it on spot. Fixed notional per entry; a flip is one
-# order. Textbook params, not tuned; edge unverified. Backtest first:
+# here), flat below it on spot. Fixed notional per entry; a flip closes
+# first and opens the other side at the next decision. Textbook params,
+# not tuned; edge unverified. Backtest first:
 #
 #   cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT --from 2026-01-01
 #   cargo run -p cli -- backtest --venue binance-usdm --strategy sma_long_short \
