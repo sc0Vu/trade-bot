@@ -32,7 +32,8 @@ that would be a bug.
 - [Development](#development)
 - [License](#license)
 
-More depth: [doc/architecture.md](doc/architecture.md). Project page:
+More depth: [doc/architecture.md](doc/architecture.md); writing script
+strategies: [doc/scripting.md](doc/scripting.md). Project page:
 <https://sc0vu.github.io/trade-bot/>.
 
 ## Safety model
@@ -192,6 +193,9 @@ candles, open orders, params, and a way to submit signals. It never touches
 the broker, the network or the database.
 
 ### Script strategies (Rhai)
+
+The full script API, a worked example and a checklist for vetting a
+script are in [doc/scripting.md](doc/scripting.md).
 
 A strategy can also be a [Rhai](https://rhai.rs) script, loaded at startup,
 with no Rust and no recompiling. Release binaries and the container include
