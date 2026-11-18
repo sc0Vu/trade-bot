@@ -65,6 +65,9 @@ pub struct Report {
     pub earn_interest: Notional,
     /// Perpetual funding received (negative: paid), in realized P&L.
     pub funding: Notional,
+    /// Equity after each close time, oldest first: the series drawdown
+    /// and Sharpe are computed from (for charts).
+    pub equity_curve: Vec<(bot_core::Timestamp, Notional)>,
 }
 
 /// The share of cash a run keeps in Simple Earn (`[earn] ratio`) and the
@@ -152,6 +155,7 @@ impl Report {
         let mut funding = funding.into_iter().peekable();
         let mut fills = run.fills.iter().peekable();
         let mut equity = Vec::new();
+        let mut curve = Vec::new();
         let mut interest = Notional::ZERO;
         let mut prev: Option<bot_core::Timestamp> = None;
         let mut i = 0;
@@ -182,6 +186,7 @@ impl Report {
                 i += 1;
             }
             equity.push(ledger.equity(&by_id) + interest);
+            curve.push(t);
         }
         // Fills after the last candle can't happen (fills need a candle),
         // but apply any so the ledger is complete.
@@ -210,6 +215,7 @@ impl Report {
             earn,
             earn_interest: interest,
             funding: ledger.funding,
+            equity_curve: curve.into_iter().zip(equity).collect(),
         }
     }
 }
@@ -595,6 +601,20 @@ mod tests {
         );
         assert_eq!(r.earn_interest, Notional::new(dec!(0.002)));
         assert_eq!(r.final_equity, Notional::new(dec!(1000.002)));
+        // Closes at hours 1, 2, 3 (−1 ms): 1000, then 0.001 more each hour.
+        let curve: Vec<(i64, Decimal)> = r
+            .equity_curve
+            .iter()
+            .map(|(t, e)| (t.as_millis(), e.get()))
+            .collect();
+        assert_eq!(
+            curve,
+            vec![
+                (3_599_999, dec!(1000)),
+                (7_199_999, dec!(1000.001)),
+                (10_799_999, dec!(1000.002)),
+            ]
+        );
         assert!(r.to_string().contains("assumed APR of 8.76%"));
         let plain = Report::compute(
             &RunReport::default(),
