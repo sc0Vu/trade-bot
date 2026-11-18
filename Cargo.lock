@@ -691,6 +691,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "api",
+ "axum",
  "backtest",
  "bot-core",
  "clap",

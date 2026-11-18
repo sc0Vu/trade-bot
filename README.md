@@ -23,6 +23,7 @@ that would be a bug.
 - [Configuration](#configuration)
 - [Strategies](#strategies)
 - [Backtesting](#backtesting)
+- [Console (web)](#console-web)
 - [Paper and live trading](#paper-and-live-trading)
 - [Containers and Render](#containers-and-render)
 - [Commands](#commands)
@@ -363,6 +364,33 @@ and what to know: eToro charges $1 per stock order (set `--fee` to $1 / your
 order size), `.RTH` symbols trade regular hours and start in mid-2023,
 plain symbols (`AAPL`, `SPY`) go back to 2018 daily.
 
+## Console (web)
+
+A local web page for writing script strategies and backtesting any
+strategy against buy-and-hold:
+
+```sh
+cargo run -p cli --features rhai -- console   # release binaries: trade-bot console
+# open http://127.0.0.1:9186/
+```
+
+- **Strategies**: pick a built-in (its params start from
+  `config/examples/<name>.toml`) or a Rhai script in `strategies/`; edit the
+  script and its params, *Check* builds it as a run would (a script's
+  `check_params` included), *Save* writes `strategies/<name>.rhai`.
+  *New script* starts from a small template.
+- **Backtest**: any series `fetch-data` cached, with fee, slippage
+  (required) and starting cash; results beside buy-and-hold of a symbol you
+  pick on the same dates and costs, with both equity curves. It runs the
+  same code as `trade-bot backtest`, so the numbers match it exactly.
+- **Safety**: loopback only (an SSH tunnel to reach it from elsewhere),
+  reads no keys, places no orders. It refuses requests from other web pages
+  (wrong `Host` or `Origin`, or a write that isn't JSON), and writes only
+  `strategies/*.rhai`. One backtest runs at a time.
+
+Not yet: starting and watching paper runs from the page, AI-drafted
+strategies.
+
 ## Paper and live trading
 
 Paper trading uses fake balances on one of two Binance environments. Keys
@@ -588,6 +616,7 @@ Render's settings. It's never in the image (invariant 7).
 | `make etoro-stocks-backtest` | Backtest the eToro stock examples against buy-and-hold SPY (`FROM`, `TO`) |
 | `make run-paper` | Paper trade on the configured fake-money network |
 | `make migrate-up` / `-down` / `-status` / `-fresh` | Database migrations (`DATABASE_URL`) |
+| `make console` | The local web console (script editor and backtests) on <http://127.0.0.1:9186/> |
 
 `run` also applies pending migrations to its own database on start.
 
@@ -603,7 +632,7 @@ crates/
   backtest/   kline cache, BacktestProvider, report
   storage/    SeaORM repositories: trades, holdings, order journal
   api/        read-only HTTP API: status, positions, orders, trades
-  cli/        the `cli` binary: fetch-data, backtest, run
+  cli/        the `cli` binary (`trade-bot`): fetch-data, backtest, run, console
 migration/    SeaORM schema migrations
 strategies/   script strategies (Rhai), e.g. sma_trend.rhai
 config/       config.example.toml, examples/ (one per strategy; etoro/ for stocks),

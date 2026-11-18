@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trade-bot console</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5b6573; --line: #dde1e6;
+    --accent: #2563eb; --accent-ink: #ffffff; --good: #15803d; --bad: #b91c1c;
+    --series-a: #2563eb; --series-b: #9aa3ad; --code: #f1f3f5;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --ink: #e6e9ed; --muted: #98a2ae; --line: #2a3038;
+      --accent: #60a5fa; --accent-ink: #0b1220; --good: #4ade80; --bad: #f87171;
+      --series-a: #60a5fa; --series-b: #6b7480; --code: #11151a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+           padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0; }
+  header span { color: var(--muted); font-size: 12px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px;
+         padding: 16px; max-width: 1500px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+            padding: 14px; min-width: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+       margin: 0 0 10px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  select, input, textarea, button { font: inherit; color: var(--ink); }
+  select, input { width: 100%; padding: 6px 8px; border: 1px solid var(--line);
+                  border-radius: 6px; background: var(--bg); }
+  textarea { width: 100%; font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
+             padding: 10px; border: 1px solid var(--line); border-radius: 6px;
+             background: var(--code); resize: vertical; tab-size: 4; }
+  #script { min-height: 340px; }
+  #params { min-height: 150px; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .row > div { min-width: 0; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--bg); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: progress; }
+  .status { font-size: 12.5px; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+  .status.ok { color: var(--good); } .status.err { color: var(--bad); }
+  #symbols { height: 96px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; color: var(--muted); font-weight: normal; }
+  thead th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .chart { margin-top: 12px; }
+  .chart svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; }
+  ul.notes { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+  .hidden { display: none; }
+  .fine { font-size: 12px; color: var(--muted); margin-top: 12px; }
+  code { font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>trade-bot console</h1>
+  <span>local only · backtests and script editing · places no orders</span>
+</header>
+<main>
+  <section>
+    <h2>Strategy</h2>
+    <label for="pick">Strategy</label>
+    <select id="pick"></select>
+    <div id="newbox" class="bar hidden">
+      <input id="newname" placeholder="new_script_name" style="flex:1; min-width:0">
+      <button id="create">Create</button>
+    </div>
+    <div id="scriptbox" class="hidden">
+      <label for="script">Script (<code>strategies/<span id="scriptname"></span>.rhai</code>)</label>
+      <textarea id="script" spellcheck="false"></textarea>
+      <div class="bar"><button id="save">Save</button><span id="savestatus" class="status"></span></div>
+    </div>
+    <label for="params">Params (TOML; money as strings, <code>fee = "0.001"</code>)</label>
+    <textarea id="params" spellcheck="false"></textarea>
+    <div class="bar"><button id="check">Check</button><span id="checkstatus" class="status"></span></div>
+    <p id="norhai" class="fine hidden">This build can't run scripts: rebuild with
+      <code>--features rhai</code> (release binaries have it).</p>
+  </section>
+
+  <section>
+    <h2>Backtest</h2>
+    <div class="row">
+      <div><label for="venue">Venue</label><select id="venue"></select></div>
+      <div><label for="interval">Interval</label><select id="interval"></select></div>
+    </div>
+    <label for="symbols">Symbols (cached by <code>fetch-data</code>; Ctrl/⌘-click for several)</label>
+    <select id="symbols" multiple></select>
+    <div class="row">
+      <div><label for="from">From</label><input id="from" type="date" value="2024-01-01"></div>
+      <div><label for="to">To (exclusive)</label><input id="to" type="date"></div>
+    </div>
+    <div class="row">
+      <div><label for="cash">Initial cash</label><input id="cash" value="10000"></div>
+      <div><label for="fee">Fee rate</label><input id="fee" value="0.001"></div>
+      <div><label for="slip">Slippage (bps)</label><input id="slip" placeholder="required"></div>
+      <div><label for="hist">History bars</label><input id="hist" value="500"></div>
+    </div>
+    <label for="bench">Benchmark: buy and hold</label>
+    <select id="bench"></select>
+    <div class="bar"><button id="run" class="primary">Run backtest</button><span id="runstatus" class="status"></span></div>
+    <div id="results" class="hidden">
+      <table>
+        <thead><tr><th></th><th>Strategy</th><th id="benchhead">Buy &amp; hold</th></tr></thead>
+        <tbody id="figures"></tbody>
+      </table>
+      <div class="chart" id="chart"></div>
+      <div class="legend"><span><i style="background:var(--series-a)"></i>strategy</span>
+        <span id="benchlegend"><i style="background:var(--series-b)"></i>buy &amp; hold</span></div>
+      <ul class="notes" id="notes"></ul>
+      <p class="fine">Model output under the stated fill model (next-open fills, fee and
+        slippage as entered), not a forecast. A strategy that can't beat buy-and-hold after
+        costs has no edge here.</p>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const TEMPLATE = `// A new script strategy. The API is documented in
+// crates/strategy/src/script/rhai.rs; strategies/sma_trend.rhai is a full example.
+// Non-integer numbers are exact decimals; money params are strings.
+
+fn check_params(p) {
+    instrument_id(p.coin);
+    if parse_decimal(p.quote_amount) <= 0 { throw "quote_amount must be positive"; }
+}
+
+fn on_candle(ctx, c) {
+    let p = ctx.params;
+    let coin = instrument_id(p.coin);
+    if c.instrument != coin || ctx.open_orders(coin).len() > 0 { return; }
+    let hist = ctx.history(coin, 2);
+    if hist.len() < 2 { return; }
+    let inst = ctx.instrument(coin);
+    let units = inst.round_qty(ctx.position(coin).qty);
+    let long = inst.market_ok(units, c.close, "sell");
+    // Example rule: buy after an up bar, sell after a down bar.
+    if !long && c.close > hist[0].close { return market_buy_quote(coin, parse_decimal(p.quote_amount)); }
+    if long && c.close < hist[0].close { return market_sell(coin, units); }
+}
+
+fn restore(saved, ctx) {}
+`;
+let catalog = null;
+
+async function api(path, opts = {}) {
+  const init = { method: opts.method || "GET", headers: {} };
+  if (opts.body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch(path, init);
+  if (res.status === 204) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function setStatus(el, text, kind) {
+  el.textContent = text;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+function option(sel, value, label) {
+  const o = document.createElement("option");
+  o.value = value; o.textContent = label ?? value;
+  sel.appendChild(o);
+  return o;
+}
+
+function choice() {
+  const v = $("pick").value;
+  return v.startsWith("script:")
+    ? { script: v.slice(7), params: $("params").value }
+    : { strategy: v, params: $("params").value };
+}
+
+async function loadCatalog(select) {
+  catalog = await api("/api/catalog");
+  const pick = $("pick");
+  pick.innerHTML = "";
+  const g1 = document.createElement("optgroup"); g1.label = "Script strategies";
+  for (const s of catalog.scripts) option(g1, "script:" + s, s);
+  option(g1, "new", "+ New script…");
+  const g2 = document.createElement("optgroup"); g2.label = "Built-in strategies";
+  for (const s of catalog.strategies) option(g2, s);
+  pick.append(g1, g2);
+  $("norhai").classList.toggle("hidden", catalog.rhai);
+  pick.value = select || (catalog.scripts.length ? "script:" + catalog.scripts[0] : catalog.strategies[0]);
+  await onPick();
+  fillData();
+}
+
+async function onPick() {
+  const v = $("pick").value;
+  $("newbox").classList.toggle("hidden", v !== "new");
+  $("scriptbox").classList.toggle("hidden", !v.startsWith("script:"));
+  setStatus($("checkstatus"), ""); setStatus($("savestatus"), "");
+  if (v === "new") return;
+  if (v.startsWith("script:")) {
+    const name = v.slice(7);
+    $("scriptname").textContent = name;
+    $("script").value = (await api("/api/scripts/" + name)).text;
+    const saved = localStorageGet("params:" + v);
+    if (saved !== null) $("params").value = saved;
+    else $("params").value = (await api("/api/examples/" + name)).params;
+  } else {
+    const saved = localStorageGet("params:" + v);
+    $("params").value = saved !== null ? saved : (await api("/api/examples/" + v)).params;
+  }
+}
+
+function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function localStorageSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+function fillData() {
+  const venues = [...new Set(catalog.data.map((d) => d.venue))];
+  const keepVenue = $("venue").value;
+  $("venue").innerHTML = "";
+  for (const v of venues) option($("venue"), v);
+  if (venues.includes(keepVenue)) $("venue").value = keepVenue;
+  if (!venues.length) setStatus($("runstatus"), "No cached data: run trade-bot fetch-data first.", "err");
+  fillIntervals();
+}
+
+function fillIntervals() {
+  const venue = $("venue").value;
+  const ivs = [...new Set(catalog.data.filter((d) => d.venue === venue).map((d) => d.interval))];
+  const keep = $("interval").value;
+  $("interval").innerHTML = "";
+  for (const i of ivs) option($("interval"), i);
+  if (ivs.includes(keep)) $("interval").value = keep;
+  fillSymbols();
+}
+
+function fillSymbols() {
+  const venue = $("venue").value, iv = $("interval").value;
+  const syms = catalog.data.filter((d) => d.venue === venue && d.interval === iv).map((d) => d.symbol);
+  $("symbols").innerHTML = ""; $("bench").innerHTML = "";
+  option($("bench"), "", "none");
+  for (const s of syms) { option($("symbols"), s); option($("bench"), s); }
+  if (syms.length) { $("symbols").options[0].selected = true; $("bench").value = syms[0]; }
+}
+
+async function create() {
+  const name = $("newname").value.trim();
+  try {
+    await api("/api/scripts/" + name, { method: "PUT", body: { text: TEMPLATE } });
+    localStorageSet("params:script:" + name,
+      'coin = "binance:BTCUSDT"\nquote_amount = "100"\nfee = "0.001"\nslippage_bps = "5"\n');
+    await loadCatalog("script:" + name);
+  } catch (e) { setStatus($("checkstatus"), e.message, "err"); }
+}
+
+async function save() {
+  const v = $("pick").value;
+  try {
+    await api("/api/scripts/" + v.slice(7), { method: "PUT", body: { text: $("script").value } });
+    setStatus($("savestatus"), "saved " + new Date().toLocaleTimeString(), "ok");
+  } catch (e) { setStatus($("savestatus"), e.message, "err"); }
+}
+
+async function check() {
+  if ($("pick").value.startsWith("script:")) await save();
+  localStorageSet("params:" + $("pick").value, $("params").value);
+  try {
+    const r = await api("/api/check", { method: "POST", body: choice() });
+    setStatus($("checkstatus"), r.ok ? "builds: params accepted" : r.error, r.ok ? "ok" : "err");
+    return r.ok;
+  } catch (e) { setStatus($("checkstatus"), e.message, "err"); return false; }
+}
+
+async function run() {
+  if (!(await check())) return;
+  const symbols = [...$("symbols").selectedOptions].map((o) => o.value);
+  const body = Object.assign(choice(), {
+    venue: $("venue").value, interval: $("interval").value, symbols,
+    from: $("from").value, to: $("to").value,
+    initial_cash: $("cash").value.trim(), fee: $("fee").value.trim(),
+    slippage_bps: $("slip").value.trim(),
+    history_len: parseInt($("hist").value, 10) || 500,
+    benchmark: $("bench").value || null,
+  });
+  if (!body.slippage_bps) { setStatus($("runstatus"), "Set slippage: a market order never fills at the price it saw.", "err"); return; }
+  $("run").disabled = true;
+  setStatus($("runstatus"), "running…");
+  const t0 = performance.now();
+  try {
+    const r = await api("/api/backtest", { method: "POST", body });
+    show(r);
+    setStatus($("runstatus"), `done in ${((performance.now() - t0) / 1000).toFixed(1)} s`, "ok");
+  } catch (e) { setStatus($("runstatus"), e.message, "err"); }
+  finally { $("run").disabled = false; }
+}
+
+function show(r) {
+  const s = r.strategy, b = r.benchmark;
+  const rows = [
+    ["Final equity", "final_equity"], ["Return", "return_pct", "%"],
+    ["Max drawdown", "max_drawdown_pct", "%"], ["Sharpe (ann.)", "sharpe"],
+    ["Fills", "fills"], ["Closed trades", "closed_trades"],
+    ["Win rate", "win_rate_pct", "%"], ["Rejected signals", "rejected_signals"],
+  ];
+  const fmt = (o, k, unit) => (o && o[k] !== null && o[k] !== undefined) ? o[k] + (unit || "") : "–";
+  const tb = $("figures"); tb.innerHTML = "";
+  for (const [label, k, unit] of rows) {
+    const tr = document.createElement("tr");
+    for (const v of [label, fmt(s, k, unit), fmt(b, k, unit)]) {
+      const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
+    }
+    tb.appendChild(tr);
+  }
+  $("benchhead").textContent = b ? "Buy & hold " + $("bench").value : "Buy & hold";
+  $("benchlegend").classList.toggle("hidden", !b);
+  const notes = [...s.notes, ...(r.benchmark_error ? ["benchmark: " + r.benchmark_error] : [])];
+  $("notes").innerHTML = "";
+  for (const n of notes) { const li = document.createElement("li"); li.textContent = n; $("notes").appendChild(li); }
+  chart(s.curve, b ? b.curve : []);
+  $("results").classList.remove("hidden");
+}
+
+function chart(a, b) {
+  const W = 640, H = 260, L = 56, R = 8, T = 8, B = 24;
+  const all = a.concat(b);
+  if (!all.length) { $("chart").innerHTML = ""; return; }
+  const xs = all.map((p) => p[0]), ys = all.map((p) => Number(p[1]));
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const sx = (x) => L + (x1 === x0 ? 0 : (x - x0) / (x1 - x0) * (W - L - R));
+  const sy = (y) => T + (y1 === y0 ? (H - T - B) / 2 : (1 - (y - y0) / (y1 - y0)) * (H - T - B));
+  const line = (pts, color) => pts.length ? `<polyline fill="none" stroke="${color}" stroke-width="1.6"
+     points="${pts.map((p) => sx(p[0]).toFixed(1) + "," + sy(Number(p[1])).toFixed(1)).join(" ")}"/>` : "";
+  const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const grid = [y0, (y0 + y1) / 2, y1].map((y) =>
+    `<line x1="${L}" x2="${W - R}" y1="${sy(y)}" y2="${sy(y)}" stroke="var(--line)"/>
+     <text x="${L - 6}" y="${sy(y) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${Math.round(y)}</text>`).join("");
+  $("chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="equity curves">${grid}
+    <text x="${L}" y="${H - 6}" font-size="11" fill="var(--muted)">${day(x0)}</text>
+    <text x="${W - R}" y="${H - 6}" font-size="11" text-anchor="end" fill="var(--muted)">${day(x1)}</text>
+    ${line(b, "var(--series-b)")}${line(a, "var(--series-a)")}</svg>`;
+}
+
+$("to").value = new Date().toISOString().slice(0, 10);
+$("pick").addEventListener("change", onPick);
+$("venue").addEventListener("change", fillIntervals);
+$("interval").addEventListener("change", fillSymbols);
+$("create").addEventListener("click", create);
+$("save").addEventListener("click", save);
+$("check").addEventListener("click", check);
+$("run").addEventListener("click", run);
+$("params").addEventListener("change", () => localStorageSet("params:" + $("pick").value, $("params").value));
+$("script").addEventListener("keydown", (e) => {
+  if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "    "); }
+  if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); save(); }
+});
+loadCatalog().catch((e) => setStatus($("runstatus"), e.message, "err"));
+</script>
+</body>
+</html>

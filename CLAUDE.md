@@ -1096,7 +1096,13 @@ crates/
   storage/     SeaORM entities + repositories
   api/         read-only HTTP API (axum): /status /positions /open-orders /orders /trades;
                no write route ever (orders only from strategy via risk)
-  cli/         binary: run | backtest | fetch-data | migrate
+  cli/         binary: run | backtest | fetch-data | migrate | console
+               (`console`: axum on loopback only, page `console.html` embedded;
+               catalog / scripts get+put / example params / check / backtest via
+               `backtest_report` (= `backtest` command) + buy_and_hold benchmark;
+               guard: Host = own loopback addr, Origin same, writes JSON only;
+               writes only `<scripts_dir>/<[a-z0-9_]{1,64}>.rhai`; one backtest at
+               a time; no keys, no orders; `Report.equity_curve` for the chart)
 migration/     SeaORM migrations
 strategies/    script strategies (`sma_trend.rhai`: reference port, tested vs built-in)
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.

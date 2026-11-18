@@ -4,6 +4,7 @@
 //! `mode = "live"`, `exchange.network = "live"`, and `--i-understand`.
 
 mod config;
+mod console;
 mod date;
 mod gate;
 mod logging;
@@ -52,6 +53,9 @@ enum Command {
     /// Trade on Binance: testnet or demo (`--paper`), mainnet only behind
     /// the live gate.
     Run(RunArgs),
+    /// Local web console: edit script strategies, backtest them against
+    /// buy-and-hold. Loopback only; places no orders.
+    Console(console::ConsoleArgs),
 }
 
 #[derive(Args)]
@@ -721,7 +725,15 @@ fn parse_decimal(s: &str) -> anyhow::Result<Decimal> {
 }
 
 async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
-    let (report, notes) = backtest_report(&a).await?;
+    let params = match &a.params {
+        Some(path) => Params::from_toml(
+            &std::fs::read_to_string(path)
+                .with_context(|| format!("reading {}", path.display()))?,
+        )
+        .with_context(|| format!("parsing {}", path.display()))?,
+        None => Params::default(),
+    };
+    let (report, notes) = backtest_report(&a, params).await?;
     for n in notes {
         eprintln!("{n}");
     }
@@ -734,16 +746,11 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
 /// about the data it ran on (shorter warm-up, delistings replayed, funding
 /// estimated), each a line for the user. `backtest` prints them; the
 /// console shows them beside the result.
-async fn backtest_report(a: &BacktestArgs) -> anyhow::Result<(backtest::Report, Vec<String>)> {
+async fn backtest_report(
+    a: &BacktestArgs,
+    params: Params,
+) -> anyhow::Result<(backtest::Report, Vec<String>)> {
     let mut notes = Vec::new();
-    let params = match &a.params {
-        Some(path) => Params::from_toml(
-            &std::fs::read_to_string(path)
-                .with_context(|| format!("reading {}", path.display()))?,
-        )
-        .with_context(|| format!("parsing {}", path.display()))?,
-        None => Params::default(),
-    };
     let venue = a.venue.id();
     let ids: Vec<InstrumentId> = a
         .symbol
@@ -1078,6 +1085,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let rust_log = std::env::var("RUST_LOG").ok();
     match cli.command {
+        Command::Console(a) => {
+            init_logging(&config::log_filter(rust_log, None, "info,sqlx=warn"));
+            console::run(a).await
+        }
         Command::Run(a) => {
             // Config first: it may set the level. Loading logs nothing, and
             // a bad config is reported as main's error. A live run must

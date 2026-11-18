@@ -26,6 +26,7 @@ that pins it is named.
 - [The live gate](#the-live-gate)
 - [Configuration](#configuration)
 - [Strategies and how they are loaded](#strategies-and-how-they-are-loaded)
+- [Console](#console)
 - [Where the design is headed](#where-the-design-is-headed)
 
 ## Design goals
@@ -699,6 +700,23 @@ script shared, not copied, and `ctx.history(id, n)` hands over only the
 newest `n`, so the cost doesn't grow with `history_len` (building the whole
 history every bar at `history_len` 500 took 30 s). Fine at candle
 frequency.
+
+## Console
+
+`trade-bot console` serves a local page (loopback only) for editing Rhai
+strategies and backtesting them. It adds no second backtester: requests
+become the same arguments the `backtest` command takes and run through
+the same function, and the benchmark is the `buy_and_hold` strategy on
+the same dates and costs. So a result on the page is the CLI's result.
+
+It reads no keys and places no orders. Since it can write
+`strategies/*.rhai`, which a later run would execute, it accepts only
+requests from its own page: the `Host` must be its loopback address (a
+page using DNS rebinding can't pass), an `Origin` must match, and every
+write is JSON, which a cross-site form can't send without a CORS
+preflight that is never granted. Running paper strategies from the page,
+and multi-user hosting (which would mean holding other people's keys),
+are not built.
 
 ## Where the design is headed
 

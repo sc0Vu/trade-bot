@@ -30,7 +30,7 @@ FEATURES := --features strategy/rhai,backtest/rhai,cli/rhai
 .DEFAULT_GOAL := help
 .PHONY: help build test lint fmt fmt-check doc check \
         migrate-up migrate-down migrate-status migrate-fresh \
-        fetch-data backtest etoro-stocks-data etoro-stocks-backtest run-paper clean
+        fetch-data backtest etoro-stocks-data etoro-stocks-backtest console run-paper clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -98,6 +98,9 @@ etoro-stocks-backtest: ## Backtest the eToro stock examples vs buy-and-hold SPY 
 			--from $(FROM) --to $(TO) --slippage-bps 5 --fee 0.0002 --initial-cash 10000 \
 			--history-len 100 --params config/examples/etoro/params/$$3.toml || exit 1; \
 	done
+
+console: ## Local web console: script editor + backtests vs buy-and-hold (http://127.0.0.1:9186/)
+	cargo run -p cli --features rhai -- console
 
 run-paper: ## Paper trade against testnet prices (the safe default)
 	$(CLI) run --paper
