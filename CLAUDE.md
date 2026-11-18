@@ -684,6 +684,11 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `Backfill` (`BacktestProvider::warm_up_from_cache` / `with_warmup`;
    fewer cached → stderr warning); report starts at `--from`. Pinned by
    `tests/warmup.rs` (start at t3 + warm-up = fills of start at t0).
+   Data check (`backtest::suspect_moves`, `BacktestProvider::all_candles`):
+   before each run (CLI + console, `backtest_report`) bars where prev close →
+   open/close or open → close moved > 30% by ratio (1.3×, either way) are
+   warned per symbol (3 shown, rest counted), warm-up included; never
+   corrected (splits unadjusted on eToro; real crashes move that much too).
    Delistings without lookahead (`backtest::listing`): announced ones from
    committed `config/delistings/<venue>.toml` (UTC `announced`, `at`,
    required `source`; replayed at announcement, candles from `at` dropped:

@@ -10,6 +10,7 @@ mod feed;
 mod listing;
 mod perp;
 mod provider;
+mod quality;
 mod report;
 mod runner;
 
@@ -18,6 +19,7 @@ pub use feed::KlineFeed;
 pub use listing::{Delisting, cut_at_gaps, read_delistings};
 pub use perp::{FundingRate, PerpData, fetch_funding, fetch_marks, funding_events, mark_events};
 pub use provider::{BacktestProvider, PaperConfig, PerpSetup};
+pub use quality::{SuspectMove, suspect_moves};
 pub use report::{EarnModel, Report};
 pub use runner::{BacktestError, run_backtest};
 

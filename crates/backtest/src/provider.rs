@@ -207,6 +207,13 @@ impl BacktestProvider {
         Ok(Self::new(instruments, candles, paper))
     }
 
+    /// Warm-up and decision bars together, for data checks
+    /// ([`crate::suspect_moves`]): a bad bar in the warm-up feeds the
+    /// first decisions too.
+    pub fn all_candles(&self) -> impl Iterator<Item = &Candle> {
+        self.warmup.iter().chain(&self.candles)
+    }
+
     /// The candles this provider replays as decisions (warm-up excluded),
     /// in no particular order.
     pub fn candles(&self) -> &[Candle] {

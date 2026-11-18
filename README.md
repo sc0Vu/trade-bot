@@ -277,6 +277,12 @@ cargo run -p cli -- backtest --venue max --strategy sma_trend --params p.toml \
     --symbol BTCTWD --from 2024-01-01 --to 2026-10-01 --fee 0.0015 --slippage-bps 20
 ```
 
+Before it runs, a backtest warns about any bar whose price moved more
+than 30% from the previous close or within the bar (warm-up included):
+usually a split the history doesn't adjust for (eToro's isn't) or a bad
+print. Nothing is corrected, since real crashes move that much too, so
+check the series or pick a window without it.
+
 ### Perpetual futures (USDⓈ-M: backtest and paper)
 
 `--venue binance-usdm` backtests Binance USDⓈ-M linear perpetuals

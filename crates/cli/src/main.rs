@@ -846,6 +846,7 @@ async fn backtest_report(
             ));
         }
     }
+    notes.extend(suspect_notes(&provider));
     let mut strategy = strategy::build(&a.strategy, &params)?;
     let config = EngineConfig {
         whitelist: ids,
@@ -854,6 +855,41 @@ async fn backtest_report(
     };
     let report = run_backtest(&provider, strategy.as_mut(), params, &config, a.interval).await?;
     Ok((report, notes))
+}
+
+/// Moves above this between bars are reported before a backtest.
+const SUSPECT_MOVE: Decimal = Decimal::from_parts(3, 0, 0, false, 1);
+/// Suspect bars listed per symbol; the rest are counted.
+const SUSPECT_SHOWN: usize = 3;
+
+/// Warnings for bars that moved more than 30% (warm-up included): a split
+/// the history doesn't adjust for, or a bad print. Reported, never
+/// corrected; the strategy trades them as real.
+fn suspect_notes(provider: &BacktestProvider) -> Vec<String> {
+    let bars: Vec<bot_core::Candle> = provider.all_candles().cloned().collect();
+    let moves = backtest::suspect_moves(&bars, SUSPECT_MOVE);
+    let mut notes = Vec::new();
+    for chunk in moves.chunk_by(|a, b| a.instrument == b.instrument) {
+        for m in chunk.iter().take(SUSPECT_SHOWN) {
+            notes.push(format!(
+                "warning: {}: {} → {} on {} ({:+.1}%): a split, or a bad bar? \
+                 The backtest trades it as real; check the series or pick a window without it",
+                m.instrument,
+                m.from,
+                m.to,
+                date::format(m.at),
+                m.change() * Decimal::ONE_HUNDRED
+            ));
+        }
+        if chunk.len() > SUSPECT_SHOWN {
+            notes.push(format!(
+                "warning: {}: {} more bars moved over 30%",
+                chunk[0].instrument,
+                chunk.len() - SUSPECT_SHOWN
+            ));
+        }
+    }
+    notes
 }
 
 /// A perpetual backtest's margin terms (cached brackets, `--leverage`,
