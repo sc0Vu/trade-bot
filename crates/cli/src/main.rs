@@ -721,6 +721,21 @@ fn parse_decimal(s: &str) -> anyhow::Result<Decimal> {
 }
 
 async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
+    let (report, notes) = backtest_report(&a).await?;
+    for n in notes {
+        eprintln!("{n}");
+    }
+    println!("{report}");
+    println!("(model output under the stated fill model; unverified against live)");
+    Ok(())
+}
+
+/// Runs the backtest `a` describes: the report, and the notes and warnings
+/// about the data it ran on (shorter warm-up, delistings replayed, funding
+/// estimated), each a line for the user. `backtest` prints them; the
+/// console shows them beside the result.
+async fn backtest_report(a: &BacktestArgs) -> anyhow::Result<(backtest::Report, Vec<String>)> {
+    let mut notes = Vec::new();
     let params = match &a.params {
         Some(path) => Params::from_toml(
             &std::fs::read_to_string(path)
@@ -784,7 +799,7 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         provider = provider.with_touch_fills();
     }
     if perp {
-        provider = with_perp(provider, &dir, &ids, &a)?;
+        provider = with_perp(provider, &dir, &ids, a, &mut notes)?;
     } else if a.leverage.is_some() || a.clearance.is_some() {
         anyhow::bail!("--leverage and --clearance are for --venue binance-usdm");
     }
@@ -808,20 +823,20 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
             ts,
         } = e
         {
-            eprintln!(
+            notes.push(format!(
                 "note: {instrument} delists at {} (known from {})",
                 date::format(*at),
                 date::format(*ts)
-            );
+            ));
         }
     }
     for (id, n) in provider.warmup_bars() {
         if n < a.history_len {
-            eprintln!(
+            notes.push(format!(
                 "warning: {id}: {n} of {} warm-up bars cached before --from; the first \
                  decisions see a shorter history than a live run would (fetch-data from earlier)",
                 a.history_len
-            );
+            ));
         }
     }
     let mut strategy = strategy::build(&a.strategy, &params)?;
@@ -831,9 +846,7 @@ async fn backtest(a: BacktestArgs) -> anyhow::Result<()> {
         delist_exit: Duration::from_secs(a.delist_exit_hours.saturating_mul(3600)),
     };
     let report = run_backtest(&provider, strategy.as_mut(), params, &config, a.interval).await?;
-    println!("{report}");
-    println!("(model output under the stated fill model; unverified against live)");
-    Ok(())
+    Ok((report, notes))
 }
 
 /// A perpetual backtest's margin terms (cached brackets, `--leverage`,
@@ -844,6 +857,7 @@ fn with_perp(
     dir: &DataDir,
     ids: &[InstrumentId],
     a: &BacktestArgs,
+    notes: &mut Vec<String>,
 ) -> anyhow::Result<BacktestProvider> {
     use bot_core::margin::MarginMode;
     let leverage = a
@@ -875,21 +889,23 @@ fn with_perp(
         );
         let rates = dir.read_funding(id)?;
         if rates.is_empty() {
-            eprintln!("warning: {id}: no funding history cached: funding not modelled");
+            notes.push(format!(
+                "warning: {id}: no funding history cached: funding not modelled"
+            ));
         }
         let (ev, estimated) =
             backtest::funding_events(id, &rates, provider.candles(), a.from, a.to);
         if estimated > 0 {
-            eprintln!(
+            notes.push(format!(
                 "note: {id}: {estimated} funding settlements without a venue mark price valued at last price"
-            );
+            ));
         }
         events.extend(ev);
         let marks = dir.read_marks(id, a.interval)?;
         if marks.is_empty() {
-            eprintln!(
+            notes.push(format!(
                 "warning: {id}: no mark-price bars cached: liquidation checked on last price (fetch-data again)"
-            );
+            ));
         }
         events.extend(backtest::mark_events(marks, a.from, a.to));
     }
@@ -1219,9 +1235,15 @@ mod tests {
                 },
             )
         };
-        let err = with_perp(provider(), &data, std::slice::from_ref(&id), &a)
-            .err()
-            .unwrap();
+        let err = with_perp(
+            provider(),
+            &data,
+            std::slice::from_ref(&id),
+            &a,
+            &mut Vec::new(),
+        )
+        .err()
+        .unwrap();
         assert!(
             format!("{err:#}").contains("fetch-data --venue binance-usdm"),
             "{err:#}"
@@ -1234,9 +1256,15 @@ mod tests {
             },
         )
         .unwrap();
-        let err = with_perp(provider(), &data, std::slice::from_ref(&id), &a)
-            .err()
-            .unwrap();
+        let err = with_perp(
+            provider(),
+            &data,
+            std::slice::from_ref(&id),
+            &a,
+            &mut Vec::new(),
+        )
+        .err()
+        .unwrap();
         assert!(format!("{err:#}").contains("no margin brackets"), "{err:#}");
         let _ = std::fs::remove_dir_all(dir);
     }
