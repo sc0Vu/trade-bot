@@ -691,8 +691,13 @@ its inputs:
 `__`) into one typed struct with `deny_unknown_fields`. A typo is an error,
 not a silent default. Validation runs on load, so a bad config never
 reaches the trading loop. API keys are the exception to the file layer:
-they are read only from `BINANCE_API_KEY` and `BINANCE_API_SECRET`, and no
-field exists that could hold one. `config/config.example.toml` documents
+they are read only from the environment (`BINANCE_API_KEY` /
+`BINANCE_API_SECRET`, `ETORO_PUBLIC_KEY` / `ETORO_PRIVATE_KEY`), and no
+field exists that could hold one. Instruments may be written bare
+(`"QQQ"`): whitelist entries take `exchange.venue`, and strategy params
+naming a whitelisted symbol are rewritten to its full id at load, so
+strategies, books and logs only ever see `venue:SYMBOL`; a symbol on two
+venues of one setup must be written in full. `config/config.example.toml` documents
 every field, and a test loads it.
 
 ## Strategies and how they are loaded

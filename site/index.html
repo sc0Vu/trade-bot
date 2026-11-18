@@ -327,8 +327,8 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
         <p>Backtests warn about bars that jump over 30% (unadjusted splits, bad prints). On eToro the run compares
           its books with the account every bar and stops if a split or a manual trade changed them.</p></div>
       <div class="card"><h3><span class="ico">⌂</span>A console that can't trade</h3>
-        <p><code>trade-bot console</code> edits script strategies and backtests them against buy-and-hold in your
-          browser. Loopback only, no keys, no orders, and it refuses requests from other pages.</p></div>
+        <p><code>trade-bot console</code> edits script strategies, checks them for lookahead and for surviving a
+          restart, and backtests them against buy-and-hold in your browser. Loopback only, no keys, no orders.</p></div>
     </div>
   </div>
 </section>
@@ -462,6 +462,8 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-bn" id="t-bn">binance paper</button>
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-pp" id="t-pp">perpetuals</button>
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-et" id="t-et">etoro demo</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-co" id="t-co">console</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-sv" id="t-sv">service</button>
     </div>
     <div class="term">
       <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~/trade-bot</span></div>
@@ -480,9 +482,24 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
     --fee 0.0005 --slippage-bps 2 --leverage 2 --margin isolated</pre></div>
 <div class="panel" role="tabpanel" id="p-et" aria-labelledby="t-et" hidden><pre><span class="c"># eToro: data and orders need your keys (a demo user key works)</span>
 <span class="p">$ </span>export ETORO_PUBLIC_KEY=… ETORO_PRIVATE_KEY=…
-<span class="p">$ </span>cargo run -p cli -- fetch-data --venue etoro --symbol AAPL,BTC --from 2026-01-01
-<span class="c"># exchange.venue = "etoro", network = "demo": orders on your demo account</span>
+<span class="p">$ </span>cat etoro.toml
+whitelist = ["QQQ", "MSFT", "META"]     <span class="c"># bare symbols take the venue below</span>
+[exchange]
+venue = "etoro"
+network = "demo"                        <span class="c"># your demo account</span>
+[strategy]
+name = "top_k_momentum"
+params = { coins = ["QQQ", "MSFT", "META"], k = 1, lookback = 60, … }
 <span class="p">$ </span>cargo run -p cli -- run --paper --config etoro.toml</pre></div>
+<div class="panel" role="tabpanel" id="p-co" aria-labelledby="t-co" hidden><pre><span class="c"># write, check and backtest strategies in your browser (local only)</span>
+<span class="p">$ </span>make console
+<span class="c"># open http://127.0.0.1:9186/ : edit a script, then Check, Check lookahead,</span>
+<span class="c"># Check restart, and Run backtest against buy-and-hold</span></pre></div>
+<div class="panel" role="tabpanel" id="p-sv" aria-labelledby="t-sv" hidden><pre><span class="c"># start a run at login/boot and after a failure (launchd or systemd)</span>
+<span class="p">$ </span>printf 'ETORO_PUBLIC_KEY=…\nETORO_PRIVATE_KEY=…\n' &gt; ~/.trade-bot.env
+<span class="p">$ </span>chmod 600 ~/.trade-bot.env        <span class="c"># keys stay out of the service file</span>
+<span class="p">$ </span>trade-bot service install --config etoro.toml --env-file ~/.trade-bot.env
+<span class="p">$ </span>trade-bot service status trade-bot-etoro</pre></div>
     </div>
     <div class="cards" style="margin-top:22px">
       <div class="card"><h3><span class="ico">⌁</span>Observable, read-only</h3>
@@ -490,9 +507,10 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
           or cancel an order.</p></div>
       <div class="card"><h3><span class="ico">λ</span>Strategies as scripts</h3>
         <p>Rhai scripts with exact decimals, no file or network access, and an operation budget per call. Drop one in
-          and run it without recompiling.</p></div>
+          and run it without recompiling; the console checks it before you trust it.</p></div>
       <div class="card"><h3><span class="ico">▣</span>Ship it anywhere</h3>
-        <p>Release binaries for five platforms, a Dockerfile, and a Render blueprint that keeps the books on a disk.</p></div>
+        <p>Release binaries for five platforms, <code>trade-bot service</code> for launchd and systemd, a Dockerfile,
+          and a Render blueprint that keeps the books on a disk.</p></div>
     </div>
   </div>
 </section>

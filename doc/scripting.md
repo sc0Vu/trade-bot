@@ -18,15 +18,20 @@ The fastest loop is the console: `make console`, open
 *Check lookahead* and *Run backtest*. From a config:
 
 ```toml
+whitelist = ["BTCUSDT"]               # exchange.venue defaults to "binance"
 [strategy]
 name = "rhai"
 [strategy.params]
 script = "strategies/my_trend.rhai"   # relative to the working directory
-coin = "binance:BTCUSDT"              # everything else is the script's own params
+coin = "BTCUSDT"                      # everything else is the script's own params
 quote_amount = "100"
 fee = "0.001"
 slippage_bps = "5"
 ```
+
+A param that names a whitelisted symbol (`coin = "BTCUSDT"`) reaches the
+script as its full id (`"binance:BTCUSDT"`), so compare it with
+`candle.instrument` through `instrument_id(..)` as the example does.
 
 ## How a script is called
 
