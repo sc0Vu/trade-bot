@@ -190,8 +190,13 @@ fn restore(saved, ctx) {}   // stateless: any saved state is fine
 2. **Check lookahead**: rewriting the future at 10 cut points must not
    change any decision or fill before them. A vacuous pass (the strategy
    never traded) proves nothing.
-3. **Backtest against buy-and-hold**, after realistic fee and slippage, on
+3. **Check restart**: stopping and restarting from the saved state at up
+   to 10 points must not change the fills. A script that keeps decisions
+   in `this` needs a `restore` that takes them back (or derives them from
+   the books). A pass with no restart while holding a position tested
+   little.
+4. **Backtest against buy-and-hold**, after realistic fee and slippage, on
    data with no warnings (the backtest flags bars that moved over 30%: an
    unadjusted split or a bad print). A strategy that can't beat holding
    has no edge there.
-4. **Paper run** before real money; real money needs the three locks.
+5. **Paper run** before real money; real money needs the three locks.

@@ -422,6 +422,10 @@ cargo run -p cli --features rhai -- console   # release binaries: trade-bot cons
   point rewritten, at 10 cut points, and fails if any decision or fill up
   to the cut changed (the strategy read ahead). It says so when a pass is
   vacuous (the strategy never traded differently).
+- **Check restart**: stops the run at up to 10 points where nothing is
+  working, restarts it from its saved state, and fails if the fills
+  change (its `save_state` / `restore` loses something). It says so when
+  no restart happened while holding a position.
 - **Safety**: loopback only (an SSH tunnel to reach it from elsewhere),
   reads no keys, places no orders. It refuses requests from other web pages
   (wrong `Host` or `Origin`, or a write that isn't JSON), and writes only

@@ -1,8 +1,9 @@
 //! Restart property: stopping a run and starting it again from its saved
 //! state must not change what it does.
 //!
-//! For each built-in strategy, on its regression fixture: run all bars
-//! uninterrupted. Then, for every cut point k where no order is working,
+//! Each case runs `backtest::check_restart` (the same check the console
+//! offers for any strategy). For each built-in strategy, on its
+//! regression fixture: run all bars uninterrupted. Then, for every cut point k where no order is working,
 //! run bars before k, keep the strategy's last saved state, build a fresh
 //! strategy, restore it, and run the remaining bars after a warm-up (the
 //! earlier bars as Backfill, as the live feed does), against the same
@@ -20,27 +21,11 @@
 
 mod common;
 
-use bot_core::{Candle, Fill, InstrumentId, MarketEvent};
-use common::{LastState, Replay, Shared, paper};
+use bot_core::InstrumentId;
 use engine::EngineConfig;
-use exchange::Broker;
-use exchange::paper::{BpsSlippage, RateFee};
+use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
 use rust_decimal_macros::dec;
 use strategy::Params;
-
-/// A fill as it matters for P&L: everything but the order id.
-fn essence(f: &Fill) -> String {
-    format!(
-        "{} {:?} {} @ {} fee {:?} {:?} t{}",
-        f.instrument,
-        f.side,
-        f.qty,
-        f.price,
-        f.fee,
-        f.liquidity,
-        f.ts.as_millis()
-    )
-}
 
 struct Case {
     strategy: &'static str,
@@ -50,6 +35,8 @@ struct Case {
     params: &'static str,
 }
 
+/// `backtest::check_restart` at every cut of the fixture's bars: it must
+/// pass, and restart at least once while holding a position.
 async fn run_case(c: &Case) {
     let ids: Vec<InstrumentId> = c.coins.iter().map(|s| s.parse().unwrap()).collect();
     let dir = backtest::DataDir::new(format!(
@@ -70,102 +57,31 @@ async fn run_case(c: &Case) {
         },
     )
     .unwrap();
-    let instruments = cached.instruments().to_vec();
-    let mut candles: Vec<Candle> = cached.candles().to_vec();
-    candles.sort_by(|a, b| (a.close_time, &a.instrument).cmp(&(b.close_time, &b.instrument)));
+    // Costs as live; cash ample (the property is about state, not money).
+    let paper = backtest::PaperConfig {
+        fees: RateFee::new(dec!(0.001), dec!(0.001), FeeAsset::Received).unwrap(),
+        slippage: BpsSlippage::new(dec!(10)).unwrap(),
+        initial_cash: bot_core::Notional::new(dec!(1000000000)),
+    };
     let config = EngineConfig {
-        whitelist: ids.clone(),
+        whitelist: ids,
         history_len: 20,
         ..Default::default()
     };
     let params = Params::from_toml(c.params).unwrap();
-    let per_bar = ids.len();
-
-    // Uninterrupted.
-    let base = {
-        let provider = Replay {
-            instruments: instruments.clone(),
-            events: candles.iter().cloned().map(MarketEvent::Candle).collect(),
-            broker: Shared(paper(&instruments), ""),
-        };
-        let mut s = strategy::build(c.strategy, &params).unwrap();
-        engine::run(&provider, s.as_mut(), params.clone(), &config)
-            .await
-            .unwrap()
-    };
-    let expected: Vec<String> = base.fills.iter().map(essence).collect();
-
-    let mut compared = 0;
-    let mut compared_while_holding = 0;
-    for k in 1..c.bars as usize {
-        let split = k * per_bar;
-        let broker = paper(&instruments);
-        let first = Replay {
-            instruments: instruments.clone(),
-            events: candles[..split]
-                .iter()
-                .cloned()
-                .map(MarketEvent::Candle)
-                .collect(),
-            broker: Shared(broker.clone(), ""),
-        };
-        let mut s1 = strategy::build(c.strategy, &params).unwrap();
-        let mut last = LastState(None);
-        let r1 = engine::run_observed(
-            &first,
-            s1.as_mut(),
-            params.clone(),
-            &config,
-            &mut last,
-            None,
-        )
-        .await
-        .unwrap();
-        if !broker.lock().await.open_orders().is_empty() {
-            continue; // an order is working: a live restart would cancel it
-        }
-        let holding = {
-            let b = broker.lock().await;
-            ids.iter().any(|id| !b.position(id).is_flat())
-        };
-        assert!(last.0.is_some(), "{} saves state", c.strategy);
-
-        let mut events: Vec<MarketEvent> = candles[..split]
-            .iter()
-            .cloned()
-            .map(MarketEvent::Backfill)
-            .collect();
-        events.extend(candles[split..].iter().cloned().map(MarketEvent::Candle));
-        let second = Replay {
-            instruments: instruments.clone(),
-            events,
-            broker: Shared(broker.clone(), "r2-"),
-        };
-        let mut s2 = strategy::build(c.strategy, &params).unwrap();
-        let mut ignore = LastState(None);
-        let r2 = engine::run_observed(
-            &second,
-            s2.as_mut(),
-            params.clone(),
-            &config,
-            &mut ignore,
-            last.0,
-        )
-        .await
-        .unwrap();
-
-        let got: Vec<String> = r1.fills.iter().chain(&r2.fills).map(essence).collect();
-        assert_eq!(
-            got, expected,
-            "{}: restart at bar {k} changed the fills",
-            c.strategy
-        );
-        compared += 1;
-        compared_while_holding += usize::from(holding);
-    }
-    assert!(compared > 0, "{}: no clean restart point", c.strategy);
+    let r = backtest::check_restart(
+        cached.instruments(),
+        cached.candles(),
+        paper,
+        &|_| strategy::build(c.strategy, &params),
+        &params,
+        &config,
+        c.bars as usize,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("{}: {e}", c.strategy));
     assert!(
-        compared_while_holding > 0,
+        r.while_holding > 0,
         "{}: never restarted while holding a position",
         c.strategy
     );

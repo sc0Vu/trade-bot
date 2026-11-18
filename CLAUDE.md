@@ -853,7 +853,9 @@ version;
 buy_and_hold `decided`; dca `last_period` + `buys`; funding_carry `rates`; momentum_rotation
 `last_eval`; top_k_momentum `rebalanced_at` (null = never: old state rebalances
 at once); trailing_stop `started` + track (side, extreme, last close time); grid stage, gaps,
-dust. Pinned by
+dust. Checked by `backtest::check_restart` (any strategy; console *Check
+restart*; cuts = close times, idle ones only, `while_holding` counts the
+meaningful ones), run per built-in in
 `crates/backtest/tests/restart.rs`: every strategy, every idle cut point
 (no working order): run₁ + save → fresh strategy + restore + Backfill
 warm-up + same broker → fills identical to uninterrupted run. New strategy
@@ -1172,7 +1174,8 @@ crates/
   cli/         binary: run | backtest | fetch-data | migrate | console
                (`console`: axum on loopback only, page `console.html` embedded;
                catalog / scripts get+put / example params / check / lookahead
-               (`check_lookahead`, 10 cuts, decision bars only) / backtest via
+               (`check_lookahead`) / restart (`check_restart`; both 10 cuts,
+               decision bars only, `meaningful` flag) / backtest via
                `backtest_report` (= `backtest` command) + buy_and_hold benchmark;
                guard: Host = own loopback addr, Origin same, writes JSON only;
                writes only `<scripts_dir>/<[a-z0-9_]{1,64}>.rhai`; one backtest at

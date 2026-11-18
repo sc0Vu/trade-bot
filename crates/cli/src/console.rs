@@ -104,6 +104,7 @@ fn router(console: Console) -> Router {
         .route("/api/check", post(check))
         .route("/api/backtest", post(run_backtest))
         .route("/api/lookahead", post(lookahead))
+        .route("/api/restart", post(restart))
         .layer(middleware::from_fn_with_state(console.clone(), guard))
         .with_state(console)
 }
@@ -483,34 +484,35 @@ async fn run_backtest(
     }))
 }
 
-/// Cut points the console's lookahead check tries (one backtest each).
-const LOOKAHEAD_CUTS: usize = 10;
+/// Cut points the console's property checks try (a backtest or two each).
+const CHECK_CUTS: usize = 10;
 
+/// The outcome of a property check (lookahead or restart).
 #[derive(Serialize)]
-struct LookaheadReply {
-    /// No decision or fill up to any cut changed when only later candles did.
+struct CheckReply {
     passed: bool,
+    /// Cut points compared.
     cuts: usize,
-    /// Whether the rewrite changed anything later (false: a pass says
-    /// nothing, the strategy may not have traded).
-    future_mattered: bool,
-    /// What changed, when it failed.
+    /// Whether the pass tested anything: lookahead, the rewrite changed a
+    /// later fill; restart, a cut was taken while holding a position.
+    meaningful: bool,
+    /// What failed.
     error: Option<String>,
 }
 
-/// `backtest::check_lookahead` on the request's strategy and cached bars
-/// (decision bars only, no warm-up), at `LOOKAHEAD_CUTS` cut points.
-async fn lookahead(
-    State(c): State<Console>,
-    Json(r): Json<BacktestRequest>,
-) -> Result<Json<LookaheadReply>, Failure> {
-    let Ok(_one) = c.busy.try_lock() else {
-        return Err(Failure(
-            StatusCode::CONFLICT,
-            "a backtest is already running".into(),
-        ));
-    };
-    let (name, params) = resolve(&c, &r.choice)?;
+/// What both property checks run on: the request's strategy, its cached
+/// decision bars (no warm-up), costs and engine settings.
+struct CheckInput {
+    name: String,
+    params: strategy::Params,
+    instruments: Vec<bot_core::Instrument>,
+    candles: Vec<bot_core::Candle>,
+    paper: backtest::PaperConfig,
+    config: engine::EngineConfig,
+}
+
+fn check_input(c: &Console, r: &BacktestRequest) -> Result<CheckInput, Failure> {
+    let (name, params) = resolve(c, &r.choice)?;
     let venue = r.venue.id();
     let ids: Vec<bot_core::InstrumentId> = r
         .symbols
@@ -556,36 +558,108 @@ async fn lookahead(
         paper,
     )
     .map_err(bad)?;
-    let config = engine::EngineConfig {
-        whitelist: ids,
-        history_len: r.history_len.unwrap_or(500),
-        ..Default::default()
-    };
-    let checked = backtest::check_lookahead(
-        cached.instruments(),
-        cached.candles(),
+    Ok(CheckInput {
+        name,
+        params,
+        instruments: cached.instruments().to_vec(),
+        candles: cached.candles().to_vec(),
         paper,
-        &|_| strategy::build(&name, &params),
-        &params,
-        &config,
-        LOOKAHEAD_CUTS,
+        config: engine::EngineConfig {
+            whitelist: ids,
+            history_len: r.history_len.unwrap_or(500),
+            ..Default::default()
+        },
+    })
+}
+
+/// `backtest::check_lookahead` on the request (see [`check_input`]) at
+/// `CHECK_CUTS` cut points.
+async fn lookahead(
+    State(c): State<Console>,
+    Json(r): Json<BacktestRequest>,
+) -> Result<Json<CheckReply>, Failure> {
+    let Ok(_one) = c.busy.try_lock() else {
+        return Err(Failure(
+            StatusCode::CONFLICT,
+            "a backtest is already running".into(),
+        ));
+    };
+    let i = check_input(&c, &r)?;
+    let checked = backtest::check_lookahead(
+        &i.instruments,
+        &i.candles,
+        i.paper,
+        &|_| strategy::build(&i.name, &i.params),
+        &i.params,
+        &i.config,
+        CHECK_CUTS,
     )
     .await;
     Ok(Json(match checked {
-        Ok(rep) => LookaheadReply {
+        Ok(rep) => CheckReply {
             passed: true,
             cuts: rep.cuts,
-            future_mattered: rep.future_mattered,
+            meaningful: rep.future_mattered,
             error: None,
         },
-        Err(backtest::LookaheadError::Changed { cut, what }) => LookaheadReply {
+        Err(backtest::LookaheadError::Changed { cut, what }) => CheckReply {
             passed: false,
             cuts: 0,
-            future_mattered: true,
+            meaningful: true,
             error: Some(format!(
                 "{what} up to {} changed when only later candles did: the strategy reads ahead",
                 date::format(cut)
             )),
+        },
+        Err(e) => return Err(bad(e)),
+    }))
+}
+
+/// `backtest::check_restart` on the request (see [`check_input`]) at up to
+/// `CHECK_CUTS` cut points.
+async fn restart(
+    State(c): State<Console>,
+    Json(r): Json<BacktestRequest>,
+) -> Result<Json<CheckReply>, Failure> {
+    let Ok(_one) = c.busy.try_lock() else {
+        return Err(Failure(
+            StatusCode::CONFLICT,
+            "a backtest is already running".into(),
+        ));
+    };
+    let i = check_input(&c, &r)?;
+    let checked = backtest::check_restart(
+        &i.instruments,
+        &i.candles,
+        i.paper,
+        &|_| strategy::build(&i.name, &i.params),
+        &i.params,
+        &i.config,
+        CHECK_CUTS,
+    )
+    .await;
+    Ok(Json(match checked {
+        Ok(rep) => CheckReply {
+            passed: true,
+            cuts: rep.cuts,
+            meaningful: rep.while_holding > 0,
+            error: None,
+        },
+        Err(backtest::RestartError::Changed { cut, .. }) => CheckReply {
+            passed: false,
+            cuts: 0,
+            meaningful: true,
+            error: Some(format!(
+                "restarting after {} from saved state changed the fills: save_state / restore \
+                 loses something the decisions depend on",
+                date::format(cut)
+            )),
+        },
+        Err(backtest::RestartError::NoIdleCut) => CheckReply {
+            passed: false,
+            cuts: 0,
+            meaningful: false,
+            error: Some("no cut point without a working order: nothing comparable".into()),
         },
         Err(e) => return Err(bad(e)),
     }))

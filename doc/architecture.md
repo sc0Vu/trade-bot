@@ -558,6 +558,14 @@ the startup reconcile and delivered to `on_fill` with the first decision
 event, so, for example, `ratio_hop` restarted between the legs of a rotation
 buys with the proceeds of the sell that filled meanwhile.
 
+`backtest::check_restart` checks this for any strategy (each built-in is,
+in `crates/backtest/tests/restart.rs`; the console offers it too): the
+series runs once uninterrupted, then at each idle cut point the first half
+runs, the strategy's last saved state goes to a fresh strategy, and the
+rest runs after a warm-up against the same broker. The fills together must
+equal the uninterrupted run's. Cuts with an order working are skipped,
+since a live restart's reconcile cancels it.
+
 ## Reconcile
 
 Binance is the source of truth for what happened; the books say which

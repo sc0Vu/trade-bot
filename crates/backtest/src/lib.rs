@@ -13,6 +13,7 @@ mod perp;
 mod provider;
 mod quality;
 mod report;
+mod restart;
 mod runner;
 mod split;
 
@@ -24,6 +25,7 @@ pub use perp::{FundingRate, PerpData, fetch_funding, fetch_marks, funding_events
 pub use provider::{BacktestProvider, HedgeSetup, PaperConfig, PerpSetup};
 pub use quality::{SuspectMove, suspect_moves};
 pub use report::{EarnModel, Report};
+pub use restart::{RestartError, RestartReport, check_restart};
 pub use runner::{BacktestError, run_backtest};
 
 #[cfg(test)]

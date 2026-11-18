@@ -113,6 +113,7 @@
     <select id="bench"></select>
     <div class="bar"><button id="run" class="primary">Run backtest</button>
       <button id="peek" title="Rewrite the future at 10 cut points; the past must not change">Check lookahead</button>
+      <button id="restart" title="Stop and restart from saved state at 10 points; the fills must not change">Check restart</button>
       <span id="runstatus" class="status"></span></div>
     <div id="results" class="hidden">
       <table>
@@ -309,9 +310,8 @@ async function run() {
   finally { $("run").disabled = false; }
 }
 
-async function peek() {
-  if (!(await check())) return;
-  const body = Object.assign(choice(), {
+function checkBody() {
+  return Object.assign(choice(), {
     venue: $("venue").value, interval: $("interval").value,
     symbols: [...$("symbols").selectedOptions].map((o) => o.value),
     from: $("from").value, to: $("to").value,
@@ -319,17 +319,27 @@ async function peek() {
     slippage_bps: $("slip").value.trim() || "0",
     history_len: parseInt($("hist").value, 10) || 500,
   });
-  $("peek").disabled = true;
-  setStatus($("runstatus"), "checking lookahead (11 backtests)…");
-  try {
-    const r = await api("/api/lookahead", { method: "POST", body });
-    if (!r.passed) setStatus($("runstatus"), "FAILED: " + r.error, "err");
-    else if (!r.future_mattered) setStatus($("runstatus"),
-      `passed ${r.cuts} cuts, but vacuously: the strategy never traded differently`, "");
-    else setStatus($("runstatus"), `no lookahead: ${r.cuts} cuts, past unchanged`, "ok");
-  } catch (e) { setStatus($("runstatus"), e.message, "err"); }
-  finally { $("peek").disabled = false; }
 }
+
+/// Runs a property check; `label` names it, `vacuous` explains a pass
+/// that tested nothing.
+async function property(button, path, label, vacuous) {
+  if (!(await check())) return;
+  button.disabled = true;
+  setStatus($("runstatus"), `checking ${label}…`);
+  try {
+    const r = await api(path, { method: "POST", body: checkBody() });
+    if (!r.passed) setStatus($("runstatus"), `${label} FAILED: ${r.error}`, "err");
+    else if (!r.meaningful) setStatus($("runstatus"), `${label}: passed ${r.cuts} cuts, but ${vacuous}`, "");
+    else setStatus($("runstatus"), `${label}: passed at ${r.cuts} cuts`, "ok");
+  } catch (e) { setStatus($("runstatus"), e.message, "err"); }
+  finally { button.disabled = false; }
+}
+
+const peek = () => property($("peek"), "/api/lookahead", "lookahead",
+  "vacuously: the strategy never traded differently");
+const restartCheck = () => property($("restart"), "/api/restart", "restart",
+  "never while holding a position: restoring state wasn't really tested");
 
 function show(r) {
   const s = r.strategy, b = r.benchmark;
@@ -386,6 +396,7 @@ $("save").addEventListener("click", save);
 $("check").addEventListener("click", check);
 $("run").addEventListener("click", run);
 $("peek").addEventListener("click", peek);
+$("restart").addEventListener("click", restartCheck);
 $("params").addEventListener("change", () => localStorageSet("params:" + $("pick").value, $("params").value));
 $("script").addEventListener("keydown", (e) => {
   if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "    "); }
