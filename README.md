@@ -194,12 +194,12 @@ the broker, the network or the database.
 
 ### Script strategies (Rhai)
 
-The full script API, a worked example and a checklist for vetting a
-script are in [doc/scripting.md](doc/scripting.md).
-
 A strategy can also be a [Rhai](https://rhai.rs) script, loaded at startup,
 with no Rust and no recompiling. Release binaries and the container include
 it; from source, build with `--features rhai`.
+
+The full script API, a worked example and a checklist for vetting a
+script are in [doc/scripting.md](doc/scripting.md).
 
 ```toml
 [strategy]

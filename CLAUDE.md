@@ -1202,7 +1202,9 @@ render.yaml    worker, frankfurt (Binance 451s US IPs), disk /app/data (books su
 deploy/        Prometheus + Alertmanager + Loki/Alloy (tails `[log] file`) + Grafana
                compose, alerts.yml (+ promtool unit tests alerts_test.yml), dashboard;
                keep in sync with metric names and log keys (cli test pins alloy keys)
-doc/           architecture.md (human-facing; update with design changes)
+doc/           architecture.md (human-facing; update with design changes),
+               scripting.md (Rhai API for people and AI drafting; its example
+               is run, keep in sync with script/rhai.rs)
 README.md      user-facing overview, quick start, config, limitations
 ```
 
