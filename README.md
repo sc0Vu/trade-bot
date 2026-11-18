@@ -414,6 +414,10 @@ cargo run -p cli --features rhai -- console   # release binaries: trade-bot cons
   (required) and starting cash; results beside buy-and-hold of a symbol you
   pick on the same dates and costs, with both equity curves. It runs the
   same code as `trade-bot backtest`, so the numbers match it exactly.
+- **Check lookahead**: reruns the strategy with every candle after a cut
+  point rewritten, at 10 cut points, and fails if any decision or fill up
+  to the cut changed (the strategy read ahead). It says so when a pass is
+  vacuous (the strategy never traded differently).
 - **Safety**: loopback only (an SSH tunnel to reach it from elsewhere),
   reads no keys, places no orders. It refuses requests from other web pages
   (wrong `Host` or `Origin`, or a write that isn't JSON), and writes only

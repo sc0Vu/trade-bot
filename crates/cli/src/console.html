@@ -111,7 +111,9 @@
     </div>
     <label for="bench">Benchmark: buy and hold</label>
     <select id="bench"></select>
-    <div class="bar"><button id="run" class="primary">Run backtest</button><span id="runstatus" class="status"></span></div>
+    <div class="bar"><button id="run" class="primary">Run backtest</button>
+      <button id="peek" title="Rewrite the future at 10 cut points; the past must not change">Check lookahead</button>
+      <span id="runstatus" class="status"></span></div>
     <div id="results" class="hidden">
       <table>
         <thead><tr><th></th><th>Strategy</th><th id="benchhead">Buy &amp; hold</th></tr></thead>
@@ -307,6 +309,28 @@ async function run() {
   finally { $("run").disabled = false; }
 }
 
+async function peek() {
+  if (!(await check())) return;
+  const body = Object.assign(choice(), {
+    venue: $("venue").value, interval: $("interval").value,
+    symbols: [...$("symbols").selectedOptions].map((o) => o.value),
+    from: $("from").value, to: $("to").value,
+    initial_cash: $("cash").value.trim(), fee: $("fee").value.trim(),
+    slippage_bps: $("slip").value.trim() || "0",
+    history_len: parseInt($("hist").value, 10) || 500,
+  });
+  $("peek").disabled = true;
+  setStatus($("runstatus"), "checking lookahead (11 backtests)…");
+  try {
+    const r = await api("/api/lookahead", { method: "POST", body });
+    if (!r.passed) setStatus($("runstatus"), "FAILED: " + r.error, "err");
+    else if (!r.future_mattered) setStatus($("runstatus"),
+      `passed ${r.cuts} cuts, but vacuously: the strategy never traded differently`, "");
+    else setStatus($("runstatus"), `no lookahead: ${r.cuts} cuts, past unchanged`, "ok");
+  } catch (e) { setStatus($("runstatus"), e.message, "err"); }
+  finally { $("peek").disabled = false; }
+}
+
 function show(r) {
   const s = r.strategy, b = r.benchmark;
   const rows = [
@@ -361,6 +385,7 @@ $("create").addEventListener("click", create);
 $("save").addEventListener("click", save);
 $("check").addEventListener("click", check);
 $("run").addEventListener("click", run);
+$("peek").addEventListener("click", peek);
 $("params").addEventListener("change", () => localStorageSet("params:" + $("pick").value, $("params").value));
 $("script").addEventListener("keydown", (e) => {
   if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "    "); }

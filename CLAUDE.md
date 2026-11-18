@@ -1171,7 +1171,8 @@ crates/
                no write route ever (orders only from strategy via risk)
   cli/         binary: run | backtest | fetch-data | migrate | console
                (`console`: axum on loopback only, page `console.html` embedded;
-               catalog / scripts get+put / example params / check / backtest via
+               catalog / scripts get+put / example params / check / lookahead
+               (`check_lookahead`, 10 cuts, decision bars only) / backtest via
                `backtest_report` (= `backtest` command) + buy_and_hold benchmark;
                guard: Host = own loopback addr, Origin same, writes JSON only;
                writes only `<scripts_dir>/<[a-z0-9_]{1,64}>.rhai`; one backtest at

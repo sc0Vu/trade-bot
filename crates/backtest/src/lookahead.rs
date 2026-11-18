@@ -28,7 +28,8 @@ use thiserror::Error;
 
 /// Builds a fresh strategy for one run, given that run's feed (module
 /// docs: only a test uses the feed).
-pub type BuildStrategy<'a> = dyn Fn(&[Candle]) -> Result<Box<dyn Strategy>, StrategyError> + 'a;
+pub type BuildStrategy<'a> =
+    dyn Fn(&[Candle]) -> Result<Box<dyn Strategy>, StrategyError> + Send + Sync + 'a;
 
 /// A decision the strategy made, as the check compares them: when, and
 /// what (the accepted order or the refused signal, as text).

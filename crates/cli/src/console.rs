@@ -103,6 +103,7 @@ fn router(console: Console) -> Router {
         .route("/api/examples/{strategy}", get(example_params))
         .route("/api/check", post(check))
         .route("/api/backtest", post(run_backtest))
+        .route("/api/lookahead", post(lookahead))
         .layer(middleware::from_fn_with_state(console.clone(), guard))
         .with_state(console)
 }
@@ -479,6 +480,114 @@ async fn run_backtest(
         strategy,
         benchmark,
         benchmark_error,
+    }))
+}
+
+/// Cut points the console's lookahead check tries (one backtest each).
+const LOOKAHEAD_CUTS: usize = 10;
+
+#[derive(Serialize)]
+struct LookaheadReply {
+    /// No decision or fill up to any cut changed when only later candles did.
+    passed: bool,
+    cuts: usize,
+    /// Whether the rewrite changed anything later (false: a pass says
+    /// nothing, the strategy may not have traded).
+    future_mattered: bool,
+    /// What changed, when it failed.
+    error: Option<String>,
+}
+
+/// `backtest::check_lookahead` on the request's strategy and cached bars
+/// (decision bars only, no warm-up), at `LOOKAHEAD_CUTS` cut points.
+async fn lookahead(
+    State(c): State<Console>,
+    Json(r): Json<BacktestRequest>,
+) -> Result<Json<LookaheadReply>, Failure> {
+    let Ok(_one) = c.busy.try_lock() else {
+        return Err(Failure(
+            StatusCode::CONFLICT,
+            "a backtest is already running".into(),
+        ));
+    };
+    let (name, params) = resolve(&c, &r.choice)?;
+    let venue = r.venue.id();
+    let ids: Vec<bot_core::InstrumentId> = r
+        .symbols
+        .iter()
+        .map(|s| {
+            Ok(bot_core::InstrumentId::new(
+                venue.clone(),
+                Symbol::new(s).map_err(bad)?,
+            ))
+        })
+        .collect::<Result<_, Failure>>()?;
+    if ids.is_empty() {
+        return Err(bad("pick at least one symbol"));
+    }
+    let fee = parse_decimal(&r.fee).map_err(|e| bad(format!("{e:#}")))?;
+    let quote_fee = matches!(r.venue, Venue::Etoro | Venue::BinanceUsdm);
+    let fees = exchange::paper::RateFee::new(
+        fee,
+        fee,
+        if quote_fee {
+            exchange::paper::FeeAsset::Quote
+        } else {
+            exchange::paper::FeeAsset::Received
+        },
+    )
+    .ok_or_else(|| bad("fee must be in [0, 1)"))?;
+    let paper = backtest::PaperConfig {
+        fees,
+        slippage: exchange::paper::BpsSlippage::new(
+            parse_decimal(&r.slippage_bps).map_err(|e| bad(format!("{e:#}")))?,
+        )
+        .ok_or_else(|| bad("slippage must be >= 0"))?,
+        initial_cash: bot_core::Notional::new(
+            parse_decimal(&r.initial_cash).map_err(|e| bad(format!("{e:#}")))?,
+        ),
+    };
+    let cached = backtest::BacktestProvider::from_cache(
+        &backtest::DataDir::new(c.data_dir.clone()),
+        &ids,
+        parse_interval(&r.interval).map_err(bad)?,
+        date::parse(&r.from).map_err(bad)?,
+        date::parse(&r.to).map_err(bad)?,
+        paper,
+    )
+    .map_err(bad)?;
+    let config = engine::EngineConfig {
+        whitelist: ids,
+        history_len: r.history_len.unwrap_or(500),
+        ..Default::default()
+    };
+    let checked = backtest::check_lookahead(
+        cached.instruments(),
+        cached.candles(),
+        paper,
+        &|_| strategy::build(&name, &params),
+        &params,
+        &config,
+        LOOKAHEAD_CUTS,
+    )
+    .await;
+    Ok(Json(match checked {
+        Ok(rep) => LookaheadReply {
+            passed: true,
+            cuts: rep.cuts,
+            future_mattered: rep.future_mattered,
+            error: None,
+        },
+        Err(backtest::LookaheadError::Changed { cut, what }) => LookaheadReply {
+            passed: false,
+            cuts: 0,
+            future_mattered: true,
+            error: Some(format!(
+                "{what} up to {} changed when only later candles did: the strategy reads ahead",
+                date::format(cut)
+            )),
+        },
+        Err(e) => return Err(bad(e)),
     }))
 }
 
