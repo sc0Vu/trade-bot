@@ -45,9 +45,32 @@ pub(crate) fn period_start(period: Period, t: Timestamp) -> Timestamp {
     })
 }
 
+/// Day of the month (1-based) of `t`, and how many days its month has.
+pub(crate) fn day_of_month(t: Timestamp) -> (i64, i64) {
+    let start = period_start(Period::Month, t).as_millis();
+    // 32 days past the first is always in the next month.
+    let next = period_start(Period::Month, Timestamp::from_millis(start + 32 * DAY_MS)).as_millis();
+    (
+        (t.as_millis() - start).div_euclid(DAY_MS) + 1,
+        (next - start) / DAY_MS,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2024-02-29T10:00: day 29 of a 29-day February (leap year);
+    /// 2023-02-28T23:59:59.999: day 28 of 28; 1970-01-31: day 31 of 31;
+    /// 2024-04-30T00:00: day 30 of 30.
+    #[test]
+    fn days_of_month_count_leap_years() {
+        let d = |ms| day_of_month(Timestamp::from_millis(ms));
+        assert_eq!(d(1_709_200_800_000), (29, 29));
+        assert_eq!(d(1_677_628_799_999), (28, 28));
+        assert_eq!(d(30 * DAY_MS), (31, 31));
+        assert_eq!(d(1_714_435_200_000), (30, 30));
+    }
 
     /// Reference instants from Python's datetime (UTC).
     #[test]

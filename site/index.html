@@ -398,6 +398,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
       <button class="chip" aria-pressed="false" data-k="revert">mean reversion</button>
       <button class="chip" aria-pressed="false" data-k="multi">multi-asset</button>
       <button class="chip" aria-pressed="false" data-k="risk">risk sizing</button>
+      <button class="chip" aria-pressed="false" data-k="other">calendar &amp; carry</button>
       <input class="search" id="q" type="search" placeholder="Search strategies…" aria-label="Search strategies">
     </div>
     <div class="table-wrap">
@@ -410,6 +411,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
           <tr data-k="trend"><td>sma_trend</td><td>Trends: long above the SMA, cash below.</td><td class="fails">Ranges cause whipsaws.</td></tr>
           <tr data-k="trend"><td>ichimoku</td><td>Trends confirmed twice: price clear of the cloud and Tenkan over Kijun.</td><td class="fails">Late entries and exits; a wide cloud gives back much of a move.</td></tr>
           <tr data-k="trend"><td>supertrend</td><td>Trends, with an ATR trailing stop that only ratchets toward price.</td><td class="fails">Turns: gives back up to mult ATRs each time; chop that crosses the band.</td></tr>
+          <tr data-k="other"><td>turn_of_month</td><td>The equity calendar effect: held over each month's last days and the first bars of the next, cash otherwise.</td><td class="fails">Published anomalies fade; out of the market most of the time, so it misses most of a bull run.</td></tr>
           <tr data-k="trend"><td>trailing_stop</td><td>Capping the fall from the best close: sells a set % off the peak, buys back a set % off the trough.</td><td class="fails">Chop: sells near lows, rebuys higher; crashes gap past the stop.</td></tr>
           <tr data-k="trend"><td>dual_ma_cross</td><td>Trends: long while the fast average is above the slow one.</td><td class="fails">Ranges and lag.</td></tr>
           <tr data-k="trend"><td>macd_cross</td><td>Trends: long while MACD is above its signal line.</td><td class="fails">Ranges (turns early, whipsaws) and lag at turns.</td></tr>

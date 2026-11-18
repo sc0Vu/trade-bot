@@ -63,6 +63,7 @@ pub mod supertrend;
 pub mod top_k_momentum;
 pub mod trailing_stop;
 pub mod tsmom;
+pub mod turn_of_month;
 pub mod vol_target;
 pub mod volatility_breakout;
 

@@ -355,6 +355,20 @@ async fn every_strategy_survives_a_restart() {
                 fee = "0.001"
                 slippage_bps = "10""#,
         },
+        // 760 hourly bars, 1970-01-01 to Feb 1 16:00: the window opens
+        // with Jan 31's bars and closes at February's 3rd bar.
+        Case {
+            strategy: "turn_of_month",
+            fixture: "turn_of_month",
+            coins: BTC,
+            bars: 760,
+            params: r#"coin = "binance:BTCUSDT"
+                enter_days = 1
+                hold_bars = 3
+                quote_amount = "1000"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
         // Every overlay: the saved rebalance time drives the schedule and
         // the stop's window.
         Case {

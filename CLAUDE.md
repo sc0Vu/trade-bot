@@ -829,6 +829,7 @@ volatility_breakout, rebalance, vol_target, bollinger_reversion, macd_cross,
 ichimoku,
 supertrend,
 stochastic,
+turn_of_month,
 pair_reversion,
 tsmom,
 risk_parity) only
@@ -1012,6 +1013,16 @@ sellable holding when close ≤ max close since `rebalanced_at` ·
 (1 − trail), slot cash until next period (window from history:
 `history_len` must span a period). Restart case with every overlay.
 
+`turn_of_month` — `long_flat` skeleton, calendar rule. Window (UTC, a bar's
+date = its close time's): bar day > days in month − `enter_days` (1–10) →
+long; else long while fewer than `hold_bars` (1–15) bars of the new month
+have closed, counted only if history reaches the previous month (a
+history starting mid-month reads as outside: no buy on a short warm-up);
+else cash. `calendar::day_of_month`. Stateless. Fixture
+`turn_of_month` (760 1h bars over Jan 31 → Feb 1 1970) for restart.
+Measured: eToro SPY 2020–2026 +28% vs hold +133%, dd 9.7% vs 33% (in
+market ~1/4 of the time; no excess return).
+
 `tsmom` — Moskowitz/Ooi/Pedersen time-series momentum, long-only,
 `portfolio` machinery, ≥ 1 coin (one quote). Per coin: close /
 close[`lookback` ago] − 1 > 0 (= 0 → out) → min(`max_weight`, `target_vol`
@@ -1086,7 +1097,7 @@ crates/
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
                buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, ichimoku, macd_cross,
                momentum_rotation, pair_reversion, ratio_hop, rebalance, risk_parity, rsi_reversion,
-               sma_long_short, sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, vol_target,
+               sma_long_short, sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, turn_of_month, vol_target,
                volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;

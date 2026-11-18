@@ -1,0 +1,28 @@
+# turn_of_month: hold one instrument over the turn of each month (the last
+# `enter_days` calendar days and the first `hold_bars` bars of the next),
+# cash otherwise. A documented equity calendar effect, not a forecast;
+# published anomalies shrink, so backtest it on your market. Few trades a
+# month. Edge unverified.
+#
+#   cargo run -p cli -- run --paper --config config/examples/turn_of_month.toml
+
+mode = "paper"
+whitelist = ["binance:BTCUSDT"]
+
+[exchange]
+network = "testnet"
+interval = "1d"
+
+[strategy]
+name = "turn_of_month"
+
+[strategy.params]
+coin = "binance:BTCUSDT"
+enter_days = 2          # bars closing in the month's last 2 days buy
+hold_bars = 3           # the 3rd bar of the new month sells
+quote_amount = "100"    # USDT per buy (quote-budget market buy)
+fee = "0.001"
+slippage_bps = "5"
+
+[engine]
+history_len = 40        # must reach back over the turn of the month
