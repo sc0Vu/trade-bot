@@ -832,6 +832,7 @@ stochastic,
 turn_of_month,
 pair_reversion,
 tsmom,
+tsmom_long_short,
 risk_parity) only
 version;
 buy_and_hold `decided`; dca `last_period` + `buys`; momentum_rotation
@@ -1013,6 +1014,21 @@ sellable holding when close ≤ max close since `rebalanced_at` ·
 (1 − trail), slot cash until next period (window from history:
 `history_len` must span a period). Restart case with every overlay.
 
+`tsmom_long_short` — MOP time-series momentum both ways, each coin
+independently at its own close (no all-in sync). Sign of close /
+close[`lookback` ago] − 1 (> 0 long, < 0 short if `allows_short` else flat,
+= 0 flat); units = lot(`capital`/N · min(`max_weight` ≤ 3, `target_vol` /
+(`return_sd`(`vol_period`) · √bars/365d)) / close), vol 0 → max_weight.
+Held signed, dust = flat. Flip = reduce-only close of the whole position
+now, new side next decision from flat (one flip order needs margin for
+both; refused after a loss → losing position stuck, seen in a 2023
+backtest). Exit / cut = `Signal::Reduce`; entry / growth = Submit;
+same-side resize only if |Δ| > `band`·|target|. Stateless. Sizes from
+`capital`, not wallet: 1x with capital = wallet → entries refused after
+losses (329 in 2022–26); example 2x. Measured BTC perp 4h 2022–Jul 2026
+2x: 2136 (dd 38%) vs hold 1x 997 (65%); 2022 1097 vs 369; 2023–26 2038
+vs 2852.
+
 `turn_of_month` — `long_flat` skeleton, calendar rule. Window (UTC, a bar's
 date = its close time's): bar day > days in month − `enter_days` (1–10) →
 long; else long while fewer than `hold_bars` (1–15) bars of the new month
@@ -1097,7 +1113,7 @@ crates/
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
                buy_and_hold, dca, donchian_breakout, dual_ma_cross, grid, ichimoku, macd_cross,
                momentum_rotation, pair_reversion, ratio_hop, rebalance, risk_parity, rsi_reversion,
-               sma_long_short, sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, turn_of_month, vol_target,
+               sma_long_short, sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, tsmom_long_short, turn_of_month, vol_target,
                volatility_breakout)
                `indicator` (shared, window of newest bars only: ATR = simple mean of
                true ranges, not Wilder: Wilder depends on where bounded history starts;

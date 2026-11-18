@@ -21,6 +21,7 @@ One complete, runnable config per built-in strategy:
 | `rebalance.toml` | fixed weights (half BTC, half cash), traded back on drift |
 | `ratio_hop.toml` | several coins, rotate when units ratchet up |
 | `grid.toml` | one coin, spot grid |
+| `tsmom_long_short.toml` | time-series momentum long and short on perpetuals (flat on spot) |
 | `turn_of_month.toml` | one instrument, held over each month's turn, cash otherwise |
 
 Venue-specific examples live in subdirectories: `etoro/` (US stocks and

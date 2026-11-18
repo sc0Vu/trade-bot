@@ -317,6 +317,23 @@ async fn every_strategy_survives_a_restart() {
                 fee = "0.001"
                 slippage_bps = "10""#,
         },
+        // On spot (the harness's broker) its short side is flat: the
+        // long/flat path is what a restart can cut here.
+        Case {
+            strategy: "tsmom_long_short",
+            fixture: "tsmom",
+            coins: BTC_ETH,
+            bars: 12,
+            params: r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT"]
+                capital = "10000"
+                lookback = 3
+                vol_period = 3
+                target_vol = "1.5"
+                max_weight = "1"
+                band = "0.2"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
         Case {
             strategy: "trailing_stop",
             fixture: "trailing_stop",

@@ -1,0 +1,49 @@
+# tsmom_long_short: time-series momentum both ways (Moskowitz, Ooi and
+# Pedersen). Each coin: long while its return over `lookback` bars is
+# positive, short while negative (flat on spot), sized for `target_vol`.
+# Funding, flips and whipsaw cost; edge unverified. Backtest first:
+#
+#   cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT --interval 1h --from 2025-01-01
+#   cargo run -p cli -- backtest --venue binance-usdm --strategy tsmom_long_short \
+#       --params p.toml --symbol BTCUSDT --interval 1h --from 2025-06-01 --to 2026-11-01 \
+#       --fee 0.0005 --slippage-bps 2 --leverage 2
+#
+# Paper run: Binance futures prices and funding, local fills and margin.
+# Reads your account's margin brackets: BINANCE_API_KEY / BINANCE_API_SECRET
+# (a demo key works).
+#
+#   cargo run -p cli -- run --paper --config config/examples/tsmom_long_short.toml
+
+mode = "paper"
+whitelist = ["binance-usdm:BTCUSDT", "binance-usdm:ETHUSDT"]
+
+[exchange]
+venue = "binance-usdm"
+interval = "4h"
+
+[paper]
+initial_cash = "1000"   # USDT wallet
+fee = "0.0005"
+slippage_bps = "2"
+
+[perp]
+leverage = 2            # max_weight 1 per coin, 2 coins: up to 1x of capital gross
+margin = "isolated"
+brackets_from = "demo"
+
+[strategy]
+name = "tsmom_long_short"
+
+[strategy.params]
+coins = ["binance-usdm:BTCUSDT", "binance-usdm:ETHUSDT"]
+capital = "1000"        # notional base: each coin up to capital / 2 x max_weight
+lookback = 180          # 4h bars: 30 days
+vol_period = 42         # 4h bars: 7 days of returns
+target_vol = "0.5"      # 50% annualized per position
+max_weight = "1"
+band = "0.2"            # resize only when 20% off target
+fee = "0.0005"
+slippage_bps = "2"
+
+[engine]
+history_len = 200
