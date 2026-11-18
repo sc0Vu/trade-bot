@@ -1179,15 +1179,7 @@ crates/
                `backtest_report` (= `backtest` command) + buy_and_hold benchmark;
                guard: Host = own loopback addr, Origin same, writes JSON only;
                writes only `<scripts_dir>/<[a-z0-9_]{1,64}>.rhai`; one backtest at
-               a time; no keys, no orders; `Report.equity_curve` for the chart;
-               `/api/draft` → `cli::draft`: raw HTTPS Messages API (no Rust SDK),
-               `--ai-model` default `claude-opus-5-5`, adaptive thinking, effort
-               high, `output_config.format` json_schema {name, script,
-               params_toml, explanation}, `fallbacks: "default"` + beta
-               `server-side-fallback-2026-07-01`, system = rules +
-               `doc/scripting.md` (include_str!); key `ANTHROPIC_API_KEY` per
-               request; refusal / max_tokens / API errors surfaced; page saves
-               `draft_<name>` then runs check, lookahead, restart, backtest)
+               a time; no keys, no orders; `Report.equity_curve` for the chart)
 migration/     SeaORM migrations
 strategies/    script strategies (`sma_trend.rhai`: reference port, tested vs built-in)
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.
@@ -1214,7 +1206,7 @@ deploy/        Prometheus + Alertmanager + Loki/Alloy (tails `[log] file`) + Gra
                compose, alerts.yml (+ promtool unit tests alerts_test.yml), dashboard;
                keep in sync with metric names and log keys (cli test pins alloy keys)
 doc/           architecture.md (human-facing; update with design changes),
-               scripting.md (Rhai API for people and AI drafting; its example
+               scripting.md (Rhai API for script writers; its example
                is run, keep in sync with script/rhai.rs)
 README.md      user-facing overview, quick start, config, limitations
 ```
