@@ -281,7 +281,10 @@ async function check() {
   if ($("pick").value.startsWith("script:")) await save();
   localStorageSet("params:" + $("pick").value, $("params").value);
   try {
-    const r = await api("/api/check", { method: "POST", body: choice() });
+    const r = await api("/api/check", { method: "POST", body: Object.assign(choice(), {
+      venue: $("venue").value || null,
+      symbols: [...$("symbols").selectedOptions].map((o) => o.value),
+    }) });
     setStatus($("checkstatus"), r.ok ? "builds: params accepted" : r.error, r.ok ? "ok" : "err");
     return r.ok;
   } catch (e) { setStatus($("checkstatus"), e.message, "err"); return false; }

@@ -124,7 +124,7 @@ are errors, so a typo fails loudly instead of falling back to a default.
 | Section | Field | Meaning |
 |---|---|---|
 | top level | `mode` | `"paper"` (default) or `"live"` |
-| top level | `whitelist` | The only instruments the bot may trade, e.g. `["binance:BTCUSDT"]` |
+| top level | `whitelist` | The only instruments the bot may trade, e.g. `["binance:BTCUSDT"]`, or bare symbols on `exchange.venue` (`["BTCUSDT"]`). In strategy params, a string naming a whitelisted symbol (`coin = "BTCUSDT"`, `coins = [...]`, map keys) gets its venue too; a symbol on two venues (a spot + perpetual hedge) must be written in full |
 | `[exchange]` | `venue` | `"binance"` (default, spot), `"binance-usdm"` (perpetuals), `"etoro"` or `"max"`; the whitelist must use the same venue |
 | `[exchange]` | `network` | `"testnet"` (default), `"demo"` or `"live"` |
 | `[exchange]` | `interval` | Candle width: `1s`, `1m`, `5m`, `15m`, `1h`, `4h`, `1d` |

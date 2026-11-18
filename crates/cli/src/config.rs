@@ -34,7 +34,12 @@ pub struct Config {
     #[serde(default)]
     pub mode: Mode,
     pub exchange: ExchangeSection,
-    /// The only instruments the bot may trade.
+    /// The only instruments the bot may trade, as written: `venue:SYMBOL`,
+    /// or a bare symbol on `exchange.venue` (`crate::symbols`).
+    #[serde(rename = "whitelist")]
+    whitelist_raw: Vec<String>,
+    /// The whitelist as full ids, filled in at load.
+    #[serde(skip)]
     pub whitelist: Vec<InstrumentId>,
     pub strategy: StrategySection,
     #[serde(default)]
@@ -541,6 +546,11 @@ impl Config {
             .merge(Env::prefixed("BOT_").ignore(&["CONFIG"]).split("__"))
             .extract()
             .context("invalid configuration")?;
+        let mut cfg: Self = cfg;
+        cfg.whitelist = crate::symbols::qualify(&cfg.whitelist_raw, &cfg.exchange.venue.id())
+            .context("whitelist")?;
+        crate::symbols::qualify_params(&mut cfg.strategy.params, &cfg.whitelist)
+            .context("strategy.params")?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -1249,6 +1259,46 @@ mod tests {
         ] {
             assert!(with(bad).is_err(), "{bad}");
         }
+    }
+
+    /// Bare symbols take `exchange.venue`, in the whitelist and in the
+    /// params that name them; a param naming no whitelisted symbol stays.
+    #[test]
+    fn bare_symbols_take_the_configured_venue() {
+        let c = parse(
+            r#"
+            whitelist = ["QQQ", "MSFT"]
+            [exchange]
+            venue = "etoro"
+            network = "demo"
+            [strategy]
+            name = "top_k_momentum"
+            params = { coins = ["QQQ", "msft"], k = 1, lookback = 2, capital = "100", band = "0.05", fee = "0.001", slippage_bps = "5" }
+            "#,
+        )
+        .unwrap();
+        let want: Vec<InstrumentId> =
+            vec!["etoro:QQQ".parse().unwrap(), "etoro:MSFT".parse().unwrap()];
+        assert_eq!(c.whitelist, want);
+        assert_eq!(
+            c.strategy.params["coins"],
+            toml::Value::Array(vec!["etoro:QQQ".into(), "etoro:MSFT".into()])
+        );
+        let other = parse(
+            r#"
+            whitelist = ["binance:BTCUSDT"]
+            [exchange]
+            [strategy]
+            name = "buy_and_hold"
+            params = { coin = "ETHUSDT", quote_amount = "100", fee = "0.001", slippage_bps = "5" }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            other.strategy.params["coin"],
+            toml::Value::from("ETHUSDT"),
+            "not in the whitelist: left as written"
+        );
     }
 
     #[test]

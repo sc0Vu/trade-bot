@@ -110,6 +110,13 @@ impl Instrument {
 ```
 
 `InstrumentId` = `venue:SYMBOL` (`binance:BTCUSDT`), case-normalized.
+Configs may write bare symbols (`cli::symbols`): whitelist entries without
+`venue:` take `exchange.venue` (backtest: `--venue`, console: the form);
+in strategy params (not `script`) a string / list item / table key equal
+(case-insensitive) to a whitelisted symbol becomes its full id; a bare
+symbol on two venues of the universe is an error. Applied at config load,
+in `backtest_report` and in the console's checks; downstream sees full
+ids only.
 Validated core types (`Instrument`, `Candle`, `Quote`, `Order`, `Fill`) built
 only from `*Spec` via checking `new`/`try_from`; fields via `Deref`. Existing
 value passed validation. `Fill.fee` is `Fee::{Base, Quote,

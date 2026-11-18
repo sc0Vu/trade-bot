@@ -315,6 +315,16 @@ struct Choice {
 }
 
 fn resolve(c: &Console, choice: &Choice) -> Result<(String, Params), Failure> {
+    resolve_in(c, choice, &[])
+}
+
+/// [`resolve`], with bare symbols in the params naming instruments of
+/// `universe` (`crate::symbols`).
+fn resolve_in(
+    c: &Console,
+    choice: &Choice,
+    universe: &[bot_core::InstrumentId],
+) -> Result<(String, Params), Failure> {
     let (name, text) = match (&choice.strategy, &choice.script) {
         (Some(s), None) => (s.clone(), choice.params.clone()),
         (None, Some(script)) => {
@@ -327,8 +337,9 @@ fn resolve(c: &Console, choice: &Choice) -> Result<(String, Params), Failure> {
         }
         _ => return Err(bad("name a strategy or a script")),
     };
-    let params = Params::from_toml(&text).map_err(bad)?;
-    Ok((name, params))
+    let mut table: toml::Table = text.parse().map_err(bad)?;
+    crate::symbols::qualify_params(&mut table, universe).map_err(|e| bad(format!("{e:#}")))?;
+    Ok((name, Params::new(table)))
 }
 
 #[derive(Serialize)]
@@ -337,13 +348,31 @@ struct Checked {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct CheckRequest {
+    #[serde(flatten)]
+    choice: Choice,
+    /// The venue and symbols picked on the page, so bare symbols in the
+    /// params resolve as a backtest would.
+    #[serde(default)]
+    venue: Option<Venue>,
+    #[serde(default)]
+    symbols: Vec<String>,
+}
+
 /// Builds the strategy from its params (a script: compiles it and runs
 /// its `check_params`), as a run would at start.
 async fn check(
     State(c): State<Console>,
-    Json(choice): Json<Choice>,
+    Json(r): Json<CheckRequest>,
 ) -> Result<Json<Checked>, Failure> {
-    let (name, params) = resolve(&c, &choice)?;
+    let universe = match r.venue {
+        Some(v) => {
+            crate::symbols::qualify(&r.symbols, &v.id()).map_err(|e| bad(format!("{e:#}")))?
+        }
+        None => Vec::new(),
+    };
+    let (name, params) = resolve_in(&c, &r.choice, &universe)?;
     Ok(Json(match strategy::build(&name, &params) {
         Ok(_) => Checked {
             ok: true,
@@ -512,7 +541,6 @@ struct CheckInput {
 }
 
 fn check_input(c: &Console, r: &BacktestRequest) -> Result<CheckInput, Failure> {
-    let (name, params) = resolve(c, &r.choice)?;
     let venue = r.venue.id();
     let ids: Vec<bot_core::InstrumentId> = r
         .symbols
@@ -527,6 +555,7 @@ fn check_input(c: &Console, r: &BacktestRequest) -> Result<CheckInput, Failure> 
     if ids.is_empty() {
         return Err(bad("pick at least one symbol"));
     }
+    let (name, params) = resolve_in(c, &r.choice, &ids)?;
     let fee = parse_decimal(&r.fee).map_err(|e| bad(format!("{e:#}")))?;
     let quote_fee = matches!(r.venue, Venue::Etoro | Venue::BinanceUsdm);
     let fees = exchange::paper::RateFee::new(

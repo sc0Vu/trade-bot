@@ -23,6 +23,8 @@
 mode = "paper"
 
 # The only instruments the bot may trade. Must not be empty.
+# Full ids ("binance:BTCUSDT") or bare symbols on exchange.venue below
+# ("BTCUSDT"). Params naming a whitelisted symbol get its venue the same way.
 whitelist = ["binance:BTCUSDT", "binance:ETHUSDT"]
 
 [exchange]

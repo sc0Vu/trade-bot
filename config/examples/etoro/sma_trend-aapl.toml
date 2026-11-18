@@ -9,7 +9,7 @@
 #   make etoro-stocks-data && make etoro-stocks-backtest FROM=2024-01-01 TO=2026-11-01
 
 mode = "paper"
-whitelist = ["etoro:AAPL.RTH"]
+whitelist = ["AAPL.RTH"]
 
 [exchange]
 venue = "etoro"
@@ -20,7 +20,7 @@ interval = "1d"
 name = "sma_trend"
 
 [strategy.params]
-coin = "etoro:AAPL.RTH"
+coin = "AAPL.RTH"
 sma_period = 50
 band_pct = "0.01"
 quote_amount = "900"  # USD per buy; eToro's minimum is $10, its fee $1 per stock order

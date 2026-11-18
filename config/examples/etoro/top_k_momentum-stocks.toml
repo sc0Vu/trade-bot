@@ -7,7 +7,7 @@
 # Edge unverified: in the 2024-2026 backtest it trailed buy-and-hold SPY.
 
 mode = "paper"
-whitelist = ["etoro:AAPL.RTH", "etoro:MSFT.RTH", "etoro:AMZN.RTH", "etoro:QQQ.RTH"]
+whitelist = ["AAPL.RTH", "MSFT.RTH", "AMZN.RTH", "QQQ.RTH"]
 
 [exchange]
 venue = "etoro"
@@ -18,7 +18,7 @@ interval = "1d"
 name = "top_k_momentum"
 
 [strategy.params]
-coins = ["etoro:AAPL.RTH", "etoro:MSFT.RTH", "etoro:AMZN.RTH", "etoro:QQQ.RTH"]
+coins = ["AAPL.RTH", "MSFT.RTH", "AMZN.RTH", "QQQ.RTH"]
 k = 2
 lookback = 60
 capital = "2000"      # USD the strategy manages

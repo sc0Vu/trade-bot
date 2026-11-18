@@ -11,6 +11,7 @@ mod logging;
 mod service;
 mod shutdown;
 mod state;
+mod symbols;
 mod telemetry;
 
 use anyhow::Context;
@@ -888,6 +889,12 @@ async fn backtest_report(
     } else if a.perp_cash.is_some() {
         anyhow::bail!("--perp-cash is for --perp-symbol");
     }
+    // Bare symbols in the params name instruments of this universe.
+    let params = {
+        let mut table: toml::Table = params.parse("params")?;
+        symbols::qualify_params(&mut table, &ids).context("params")?;
+        Params::new(table)
+    };
     // Futures charge every fee in the quote (margin) asset.
     // Futures and eToro charge in the quote (USD).
     let fee_asset = if perp || a.venue == Venue::Etoro {
