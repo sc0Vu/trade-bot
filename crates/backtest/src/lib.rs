@@ -8,6 +8,7 @@
 mod data;
 mod feed;
 mod listing;
+mod lookahead;
 mod perp;
 mod provider;
 mod quality;
@@ -18,6 +19,7 @@ mod split;
 pub use data::{DataDir, DataError, FetchSummary, HistorySource, fetch};
 pub use feed::KlineFeed;
 pub use listing::{Delisting, cut_at_gaps, read_delistings};
+pub use lookahead::{BuildStrategy, LookaheadError, LookaheadReport, check_lookahead};
 pub use perp::{FundingRate, PerpData, fetch_funding, fetch_marks, funding_events, mark_events};
 pub use provider::{BacktestProvider, HedgeSetup, PaperConfig, PerpSetup};
 pub use quality::{SuspectMove, suspect_moves};

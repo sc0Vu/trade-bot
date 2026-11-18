@@ -201,9 +201,14 @@ budget. The engine checks it after every hook call, before routing, so
 nothing the failing call queued reaches the broker, and the run stops with
 `StrategyFault`. A live run then closes out as on any error.
 
-Pinned by `crates/backtest/tests/lookahead.rs`: for every cut point *t*,
-all candles after *t* are rewritten, and every fill and rejection up to *t*'s
-close must be identical. It runs for `ratio_hop` and `sma_trend`.
+Checked by `backtest::check_lookahead`, which any strategy can be put
+through (each built-in is, in `crates/backtest/tests/lookahead.rs`): for
+every cut point *t*, all candles after *t* are rewritten, and every
+decision (each order accepted, each signal refused) and every fill up to
+*t*'s close must be identical. Decisions are compared, not just fills: a
+strategy peeking one bar ahead changes an order decided at *t* that fills
+after *t*, which a fills-only comparison would never see. A strategy that
+never trades passes vacuously, and the check says so.
 
 ## Providers, feeds and brokers
 

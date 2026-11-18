@@ -31,8 +31,11 @@ Correctness, not style. Task violates one → stop, flag.
 2. **No lookahead.** Strategy reads market data only up to and including
    current event. Never index future bar. *Why* engine
    event-driven, not vectorized over full DataFrame.
-   Pinned by `crates/backtest/tests/lookahead.rs`: rewrite all candles after
-   t → every fill/rejection up to t's close must be identical.
+   Checked by `backtest::check_lookahead` (any strategy; run per built-in in
+   `crates/backtest/tests/lookahead.rs`): rewrite all candles after t →
+   every decision (order accepted / signal refused, via a recording
+   wrapper) and fill up to t's close must be identical; decisions catch a
+   one-bar peek that fills only after t. `future_mattered` false = vacuous.
 3. **Backtest == live.** `Strategy` trait and engine loop shared.
    Backtest swaps only provider (data feed + broker). Change makes
    backtest and live diverge in strategy-visible behavior → change wrong.
