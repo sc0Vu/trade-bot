@@ -68,6 +68,8 @@ pub struct Report {
     /// Equity after each close time, oldest first: the series drawdown
     /// and Sharpe are computed from (for charts).
     pub equity_curve: Vec<(bot_core::Timestamp, Notional)>,
+    /// Why the engine's kill switch ended the run early, if it did.
+    pub killed: Option<String>,
 }
 
 /// The share of cash a run keeps in Simple Earn (`[earn] ratio`) and the
@@ -216,6 +218,7 @@ impl Report {
             earn_interest: interest,
             funding: ledger.funding,
             equity_curve: curve.into_iter().zip(equity).collect(),
+            killed: run.killed.clone(),
         }
     }
 }
@@ -400,6 +403,12 @@ impl fmt::Display for Report {
                 pct(e.apr)
             )?;
         }
+        if let Some(why) = &self.killed {
+            write!(
+                f,
+                "\nkill switch      tripped: {why}; the rest of the period wasn't traded"
+            )?;
+        }
         Ok(())
     }
 }
@@ -455,6 +464,7 @@ mod tests {
             ],
             rejections: vec![],
             positions: vec![],
+            ..Default::default()
         };
         let r = Report::compute(
             &run,

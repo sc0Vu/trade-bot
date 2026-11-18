@@ -269,6 +269,7 @@ mod tests {
             whitelist: vec![id],
             history_len: 10,
             delist_exit: std::time::Duration::from_secs(2 * 3600),
+            ..Default::default()
         };
         let run = engine::run(&provider, &mut Shorter, Params::default(), &config)
             .await

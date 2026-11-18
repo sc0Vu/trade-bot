@@ -319,6 +319,16 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
       <div class="card"><h3><span class="ico">⟲</span>Books survive restarts</h3>
         <p>Every order is journaled before it is sent and every fill recorded once by the venue's id. Start and exit
           reconcile with the venue, which is always the source of truth.</p></div>
+      <div class="card"><h3><span class="ico">⏻</span>Exits the engine enforces</h3>
+        <p>Whatever the strategy does, the engine closes a coin before its delisting, and an optional kill switch
+          closes everything once equity falls a set share from its peak. A tripped switch refuses restarts until
+          cleared.</p></div>
+      <div class="card"><h3><span class="ico">?</span>Data checked, not trusted</h3>
+        <p>Backtests warn about bars that jump over 30% (unadjusted splits, bad prints). On eToro the run compares
+          its books with the account every bar and stops if a split or a manual trade changed them.</p></div>
+      <div class="card"><h3><span class="ico">⌂</span>A console that can't trade</h3>
+        <p><code>trade-bot console</code> edits script strategies and backtests them against buy-and-hold in your
+          browser. Loopback only, no keys, no orders, and it refuses requests from other pages.</p></div>
     </div>
   </div>
 </section>

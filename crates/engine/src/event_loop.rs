@@ -2,8 +2,8 @@ use crate::EngineError;
 use crate::metrics as m;
 use crate::risk;
 use bot_core::{
-    Candle, Fill, InstrumentId, MarketEvent, Order, OrderId, OrderKind, Position, Side, Signal,
-    Size, Timestamp,
+    Candle, Decimal, Fill, InstrumentId, MarketEvent, Notional, Order, OrderId, OrderKind,
+    Position, Side, Signal, Size, Timestamp,
 };
 use exchange::{Broker, ExchangeError, InstrumentQuery, Provider};
 use std::collections::HashSet;
@@ -24,6 +24,31 @@ pub struct EngineConfig {
     /// sells the holding at market, whatever the strategy does. New buys
     /// are refused from the announcement on.
     pub delist_exit: Duration,
+    /// Stop the strategy once the run's equity falls this far from its
+    /// peak (see [`KillSwitch`]); `None`: never.
+    pub kill_switch: Option<KillSwitch>,
+}
+
+/// A drawdown limit for the whole run, enforced by the engine whatever the
+/// strategy does.
+///
+/// Equity = `capital` + the run's P&L: realized (fees and funding
+/// included) plus each open position at its last close
+/// ([`Instrument::notional`](bot_core::Instrument::notional) − cost
+/// basis), over the whitelist, in their (one) quote. The peak starts at
+/// `capital`. When equity falls to `peak · (1 − max_drawdown)` or below at
+/// a candle, the strategy is muted for good (no hooks, no signals); the
+/// engine cancels every working order and closes every position at
+/// market, reduce-only, retrying each event like the delisting exit, and
+/// once all is flat and nothing works the run ends with
+/// [`RunReport::killed`] set. Same in a backtest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KillSwitch {
+    /// What the drawdown is measured against at the start (the money the
+    /// strategy trades with).
+    pub capital: Notional,
+    /// Fraction of the peak (`0.25` = 25%), in (0, 1).
+    pub max_drawdown: Decimal,
 }
 
 /// Default for [`EngineConfig::delist_exit`]: a day, enough for a few
@@ -38,6 +63,7 @@ impl Default for EngineConfig {
             whitelist: Vec::new(),
             history_len: 500,
             delist_exit: DEFAULT_DELIST_EXIT,
+            kill_switch: None,
         }
     }
 }
@@ -60,6 +86,9 @@ pub struct RunReport {
     pub rejections: Vec<Rejection>,
     /// Final position per whitelisted instrument, in whitelist order.
     pub positions: Vec<Position>,
+    /// Why the kill switch stopped the run, if it did ([`KillSwitch`]):
+    /// everything was closed and the feed's remaining events weren't read.
+    pub killed: Option<String>,
 }
 
 /// What a live run looks like after one event: enough for a status page,
@@ -164,6 +193,8 @@ async fn run_inner<P: Provider + ?Sized>(
         report: RunReport::default(),
         exit_cancelled: HashSet::new(),
         exit_sells: HashSet::new(),
+        peak: config.kill_switch.map(|k| k.capital),
+        killed: None,
     };
 
     strategy.on_start(&mut ctx);
@@ -221,7 +252,9 @@ async fn run_inner<P: Provider + ?Sized>(
             .increment(1);
             tracing::info!(order = %run.broker.client_order_id(&fill.order_id), instrument = %fill.instrument, side = ?fill.side, "fill");
             driver::set_position(&mut ctx, run.broker.position(&fill.instrument));
-            strategy.on_fill(&mut ctx, &fill);
+            if run.killed.is_none() {
+                strategy.on_fill(&mut ctx, &fill);
+            }
             run.report.fills.push(fill);
         }
 
@@ -257,15 +290,29 @@ async fn run_inner<P: Provider + ?Sized>(
         if let MarketEvent::Candle(c) | MarketEvent::Backfill(c) = &event {
             driver::push_candle(&mut ctx, c.clone());
         }
-        let returned = strategy.on_event(&mut ctx, &event);
-        // Covers this event's `on_fill` calls too: nothing they or
-        // `on_event` queued is routed from a strategy that failed.
-        check_fault(strategy)?;
-        let mut signals = driver::take_signals(&mut ctx);
-        signals.extend(returned);
-        run.route(&mut ctx, strategy, signals).await?;
-        check_fault(strategy)?;
+        if run.killed.is_none() {
+            let returned = strategy.on_event(&mut ctx, &event);
+            // Covers this event's `on_fill` calls too: nothing they or
+            // `on_event` queued is routed from a strategy that failed.
+            check_fault(strategy)?;
+            let mut signals = driver::take_signals(&mut ctx);
+            signals.extend(returned);
+            run.route(&mut ctx, strategy, signals).await?;
+            check_fault(strategy)?;
+        }
         run.exit_delisting(&ctx, config).await?;
+        if let (Some(ks), MarketEvent::Candle(_)) = (config.kill_switch, &event)
+            && run.killed.is_none()
+            && let Some(reason) = run.drawdown_breach(&ctx, config, ks)
+        {
+            tracing::error!(%reason, "kill switch: strategy stopped; closing every position");
+            metrics::counter!(m::KILL_SWITCH).increment(1);
+            run.killed = Some(reason);
+        }
+        if run.killed.is_some() && run.close_everything(&ctx, config).await? {
+            run.report.killed = run.killed.take();
+            break;
+        }
 
         if let Some(o) = observer.as_deref_mut() {
             o.on_snapshot(&Snapshot {
@@ -313,6 +360,10 @@ struct Run<'a> {
     exit_cancelled: HashSet<OrderId>,
     /// The delisting exit's own closing orders: waited for, never cancelled.
     exit_sells: HashSet<OrderId>,
+    /// Highest equity seen (kill switch on), from its `capital`.
+    peak: Option<Notional>,
+    /// Set when the kill switch trips: the strategy is muted from then on.
+    killed: Option<String>,
 }
 
 /// Whether a `side` order on `id` could open or add to a position rather
@@ -366,91 +417,165 @@ impl Run<'_> {
             if now.as_millis() < at.as_millis().saturating_sub(lead) || now >= at {
                 continue;
             }
-            if ctx.halted(id) {
-                continue; // nothing can be done until it resumes
-            }
-            let working: Vec<OrderId> = self
-                .broker
-                .open_orders()
-                .into_iter()
-                .filter(|o| o.instrument == *id)
-                .map(|o| o.id.clone())
-                .collect();
-            if working.iter().any(|o| self.exit_sells.contains(o)) {
-                continue; // our sell is working: wait for it
-            }
-            for oid in &working {
-                if !self.exit_cancelled.insert(oid.clone()) {
-                    continue;
-                }
-                tracing::warn!(order = %self.broker.client_order_id(oid), instrument = %id, "delisting: cancelling order");
-                if let Err(e) = self.broker.cancel(oid.clone()).await {
-                    let reason = format!("delisting exit: {}", refusal(e)?);
-                    self.reject(now, Signal::Cancel(oid.clone()), reason);
-                }
-            }
-            let cancelling = self
-                .broker
-                .cancelling_orders()
-                .iter()
-                .any(|o| o.instrument == *id);
-            if !working.is_empty() || cancelling {
-                continue; // sell once nothing else can fill
-            }
-            let (Some(inst), Some(last)) = (ctx.instrument(id), ctx.last_candle(id)) else {
-                continue;
-            };
-            let held = self.broker.position(id).qty();
-            let side = if held.is_negative() {
-                Side::Buy
-            } else {
-                Side::Sell
-            };
-            let units = inst.round_qty(held.abs());
-            if inst.check_market(units, last.close, side).is_err() {
-                continue; // flat, or dust the venue won't take
-            }
-            // Reduce-only: the exit closes, it never opens or flips.
-            let signal = Signal::Reduce {
-                instrument: id.clone(),
-                side,
-                qty: units,
-                kind: OrderKind::Market,
-            };
-            let oid = self.mint_id();
-            let market = risk::MarketPrices {
-                last_close: Some(last.close),
-                average: None,
-            };
-            let outcome = match risk::to_order(
-                oid,
-                Some(inst),
-                side,
-                Size::Base(units),
-                OrderKind::Market,
-                market,
-                now,
-            )
-            .and_then(|o| o.with_reduce_only().map_err(risk::RiskRejection::Invalid))
-            {
-                Ok(order) => {
-                    let oid = order.id.clone();
-                    match self.broker.submit(order).await {
-                        Ok(_) => {
-                            tracing::warn!(order = %self.broker.client_order_id(&oid), instrument = %id, side = ?side, "delisting: closing the position");
-                            self.exit_sells.insert(oid);
-                            Ok(())
-                        }
-                        Err(e) => Err(refusal(e)?),
-                    }
-                }
-                Err(r) => Err(r.to_string()),
-            };
-            if let Err(reason) = outcome {
-                self.reject(now, signal, format!("delisting exit: {reason}"));
-            }
+            self.close_instrument(ctx, id, now, "delisting exit")
+                .await?;
         }
         Ok(())
+    }
+
+    /// The run's equity for the kill switch (see [`KillSwitch`]); a reason
+    /// when it is at or below `peak · (1 − max_drawdown)`, after raising
+    /// the peak.
+    fn drawdown_breach(
+        &mut self,
+        ctx: &Context,
+        config: &EngineConfig,
+        ks: KillSwitch,
+    ) -> Option<String> {
+        let pnl: Notional = config
+            .whitelist
+            .iter()
+            .map(|id| {
+                let p = self.broker.position(id);
+                let open = match (ctx.instrument(id), ctx.last_candle(id)) {
+                    (Some(inst), Some(c)) => inst.notional(p.qty(), c.close) - p.cost_basis(),
+                    _ => Notional::ZERO,
+                };
+                p.realized_pnl() + open
+            })
+            .sum();
+        let equity = ks.capital + pnl;
+        let peak = self.peak.unwrap_or(ks.capital).max(equity);
+        self.peak = Some(peak);
+        let floor = peak.get() * (Decimal::ONE - ks.max_drawdown);
+        (equity.get() <= floor).then(|| {
+            format!(
+                "equity {} fell to or below {}% under its peak {}",
+                equity.get().round_dp(8),
+                (ks.max_drawdown * Decimal::ONE_HUNDRED).normalize(),
+                peak.get().round_dp(8)
+            )
+        })
+    }
+
+    /// The kill switch's exit: every whitelisted instrument closed as the
+    /// delisting exit closes one. True once all are flat (or dust) with
+    /// nothing working or being cancelled.
+    async fn close_everything(
+        &mut self,
+        ctx: &Context,
+        config: &EngineConfig,
+    ) -> Result<bool, EngineError> {
+        let Some(now) = ctx.now() else {
+            return Ok(false);
+        };
+        let mut done = true;
+        for id in &config.whitelist {
+            done &= self.close_instrument(ctx, id, now, "kill switch").await?;
+        }
+        Ok(done)
+    }
+
+    /// Closes `id` for an engine exit (`why` names it in logs and
+    /// rejections): cancel every working order on it (once each), and
+    /// when none is working or being cancelled, close the lot-rounded
+    /// position at market, reduce-only (sell a long, buy back a short), if
+    /// the venue would take it (dust stays). The strategy hears the fills
+    /// like any other, but these orders aren't its signals (no `on_order` /
+    /// `on_rejected`). A refusal is recorded in the report and logged;
+    /// other broker errors stop the run, as for any order. True when
+    /// nothing is left to do: flat or dust, nothing working.
+    async fn close_instrument(
+        &mut self,
+        ctx: &Context,
+        id: &InstrumentId,
+        now: Timestamp,
+        why: &str,
+    ) -> Result<bool, EngineError> {
+        if ctx.halted(id) {
+            return Ok(false); // nothing can be done until it resumes
+        }
+        let working: Vec<OrderId> = self
+            .broker
+            .open_orders()
+            .into_iter()
+            .filter(|o| o.instrument == *id)
+            .map(|o| o.id.clone())
+            .collect();
+        if working.iter().any(|o| self.exit_sells.contains(o)) {
+            return Ok(false); // our sell is working: wait for it
+        }
+        for oid in &working {
+            if !self.exit_cancelled.insert(oid.clone()) {
+                continue;
+            }
+            tracing::warn!(order = %self.broker.client_order_id(oid), instrument = %id, "engine exit: cancelling order");
+            if let Err(e) = self.broker.cancel(oid.clone()).await {
+                let reason = format!("{why}: {}", refusal(e)?);
+                self.reject(now, Signal::Cancel(oid.clone()), reason);
+            }
+        }
+        let cancelling = self
+            .broker
+            .cancelling_orders()
+            .iter()
+            .any(|o| o.instrument == *id);
+        if !working.is_empty() || cancelling {
+            return Ok(false); // sell once nothing else can fill
+        }
+        let (Some(inst), Some(last)) = (ctx.instrument(id), ctx.last_candle(id)) else {
+            return Ok(false);
+        };
+        let held = self.broker.position(id).qty();
+        let side = if held.is_negative() {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        let units = inst.round_qty(held.abs());
+        if inst.check_market(units, last.close, side).is_err() {
+            return Ok(true); // flat, or dust the venue won't take
+        }
+        // Reduce-only: the exit closes, it never opens or flips.
+        let signal = Signal::Reduce {
+            instrument: id.clone(),
+            side,
+            qty: units,
+            kind: OrderKind::Market,
+        };
+        let oid = self.mint_id();
+        let market = risk::MarketPrices {
+            last_close: Some(last.close),
+            average: None,
+        };
+        let outcome = match risk::to_order(
+            oid,
+            Some(inst),
+            side,
+            Size::Base(units),
+            OrderKind::Market,
+            market,
+            now,
+        )
+        .and_then(|o| o.with_reduce_only().map_err(risk::RiskRejection::Invalid))
+        {
+            Ok(order) => {
+                let oid = order.id.clone();
+                match self.broker.submit(order).await {
+                    Ok(_) => {
+                        tracing::warn!(order = %self.broker.client_order_id(&oid), instrument = %id, side = ?side, "engine exit: closing the position");
+                        self.exit_sells.insert(oid);
+                        Ok(())
+                    }
+                    Err(e) => Err(refusal(e)?),
+                }
+            }
+            Err(r) => Err(r.to_string()),
+        };
+        if let Err(reason) = outcome {
+            self.reject(now, signal, format!("{why}: {reason}"));
+        }
+        Ok(false)
     }
 
     fn reject(&mut self, at: Timestamp, signal: Signal, reason: String) {
@@ -1338,6 +1463,94 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, EngineError::StrategyFault(_)));
+    }
+
+    /// buy_and_hold puts 1,000 into 10 BTC at c1's open (100); closes
+    /// then fall 100, 90, 80, 70, 60, 50. Kill switch: capital 1,000, 25%
+    /// → floor 750 under the 1,000 peak. Equity 900 at c2, 800 at c3, 700
+    /// at c4 → tripped: the engine sells the 10 (reduce-only) at c5's open
+    /// (60: each bar opens at its own price) and, flat at c5, ends the
+    /// run: c6 is never read. Without the
+    /// switch the 10 are held to the end.
+    #[tokio::test]
+    async fn the_kill_switch_closes_everything_and_ends_the_run() {
+        let bars = |closes: &[&str]| -> Vec<MarketEvent> {
+            closes
+                .iter()
+                .enumerate()
+                .map(|(i, p)| MarketEvent::Candle(candle(i as i64, [p, p, p, p])))
+                .collect()
+        };
+        let events = bars(&["100", "100", "90", "80", "70", "60", "50"]);
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let config = EngineConfig {
+            kill_switch: Some(KillSwitch {
+                capital: Notional::new(dec!(1000)),
+                max_drawdown: dec!(0.25),
+            }),
+            ..config()
+        };
+        let r = run(&provider, s.as_mut(), params.clone(), &config)
+            .await
+            .unwrap();
+        let got: Vec<(i64, bot_core::Side, Qty, Decimal)> = r
+            .fills
+            .iter()
+            .map(|f| (f.ts.as_millis() / HOUR, f.side, f.qty, f.price.get()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, bot_core::Side::Buy, Qty::new(dec!(10)), dec!(100)),
+                (5, bot_core::Side::Sell, Qty::new(dec!(10)), dec!(60)),
+            ]
+        );
+        assert!(r.positions[0].is_flat());
+        assert_eq!(r.events, 6, "c6 never read");
+        let why = r.killed.expect("tripped");
+        assert!(
+            why.contains("equity 700") && why.contains("peak 1000"),
+            "{why}"
+        );
+
+        let (mut s, params) = buy_and_hold("1000");
+        let r = run(&provider, s.as_mut(), params, &self::config())
+            .await
+            .unwrap();
+        assert_eq!(r.fills.len(), 1);
+        assert_eq!(r.killed, None);
+        assert_eq!(r.events, 7);
+    }
+
+    /// The peak follows equity up: 1,000 → 10 BTC at 100, closes 100, 150
+    /// (equity 1,500: the new peak), 120 (1,200 > 1,125 = 1,500 · 0.75),
+    /// 110 (1,100 ≤ 1,125) → tripped at c4, sold at c5's open.
+    #[tokio::test]
+    async fn the_kill_switch_measures_from_the_highest_equity() {
+        let events: Vec<MarketEvent> = ["100", "100", "150", "120", "110", "110", "110"]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| MarketEvent::Candle(candle(i as i64, [p, p, p, p])))
+            .collect();
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let config = EngineConfig {
+            kill_switch: Some(KillSwitch {
+                capital: Notional::new(dec!(1000)),
+                max_drawdown: dec!(0.25),
+            }),
+            ..config()
+        };
+        let r = run(&provider, s.as_mut(), params, &config).await.unwrap();
+        let sells: Vec<i64> = r
+            .fills
+            .iter()
+            .filter(|f| f.side == bot_core::Side::Sell)
+            .map(|f| f.ts.as_millis() / HOUR)
+            .collect();
+        assert_eq!(sells, vec![5]);
+        assert!(r.killed.unwrap().contains("peak 1500"));
     }
 
     fn delisting(at: Option<i64>, ts: i64) -> MarketEvent {

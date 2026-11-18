@@ -126,6 +126,15 @@ history_len = 500
 # the schedule comes from the live API only (demo and testnet don't
 # publish it).
 delist_exit_hours = 24
+# Kill switch (off unless both are set): once the run's equity
+# (kill_capital + its P&L: realized, plus open positions at their last
+# close) falls kill_drawdown below its peak, the engine stops the strategy,
+# cancels every order, closes every position at market (reduce-only) and
+# ends the run. A marker under data/kill-switch/ then refuses the next
+# start until `run --clear-kill-switch`, so a supervisor can't quietly
+# resume. Backtests: --kill-drawdown (capital = --initial-cash).
+# kill_drawdown = "0.25"     # 25% from the peak
+# kill_capital = "1000"      # what the strategy trades with, in its quote
 
 # Keep a share of the quote cash in Binance Simple Earn. Off by default.
 # Live network only: Binance serves Simple Earn on its live host alone.

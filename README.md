@@ -56,6 +56,10 @@ These rules are invariants in the code, not just conventions:
   needs all three of `mode = "live"` in config, `exchange.network = "live"`,
   and `run --live --i-understand` typed on the command line. There is
   deliberately no `make` target for live.
+- **A drawdown limit the strategy can't override.** With `[engine]
+  kill_drawdown` set, the engine closes every position and stops the run
+  once equity falls that far from its peak, and refuses to start again
+  until someone runs it with `--clear-kill-switch`.
 
 ## Quick start
 
@@ -132,6 +136,7 @@ are errors, so a typo fails loudly instead of falling back to a default.
 | `[strategy]` | `name`, `params` | A registered strategy and its own parameter table |
 | `[engine]` | `history_len` | Candles of history kept per instrument (default 500) |
 | `[engine]` | `delist_exit_hours` | Hours before a scheduled delisting when the engine closes the position (default 24) |
+| `[engine]` | `kill_drawdown`, `kill_capital` | Kill switch, off unless both are set: once equity (`kill_capital` plus the run's P&L) falls `kill_drawdown` below its peak, the engine closes everything and stops; the next start is refused until `run --clear-kill-switch`. Backtests: `--kill-drawdown` |
 | `[db]` | `url` | Where a run keeps its books; default `data/<network>.db` |
 | `[metrics]` | `enabled`, `listen`, `include_money`, `allow_public` | Prometheus `/metrics` during `run`; off, loopback-only and money-free by default |
 | `[api]` | `enabled`, `listen`, `allow_public` | Read-only JSON API during `run` (default `127.0.0.1:9185`); a public address needs a token in `TRADEBOT_API_TOKEN` |

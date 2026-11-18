@@ -21,6 +21,16 @@ groups:
           summary: "No closed candle for {{ $labels.instrument }} in over 150 s"
           description: "The market-data feed looks stalled; the bot is trading blind or about to stop."
 
+      - alert: KillSwitchTripped
+        # The run's drawdown limit ([engine] kill_drawdown) was reached: the
+        # bot closed everything and stopped, and refuses to restart until
+        # someone clears it.
+        expr: increase(tradebot_kill_switch_total[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Kill switch tripped: positions closed, strategy stopped"
+          description: "Equity fell past [engine] kill_drawdown from its peak. Review the run, then start it with --clear-kill-switch."
+
       - alert: SignalsRejected
         expr: sum by (source, code) (increase(tradebot_signals_rejected_total[15m])) > 3
         labels: { severity: warning }

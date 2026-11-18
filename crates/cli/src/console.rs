@@ -434,6 +434,7 @@ async fn run_backtest(
             earn_ratio: None,
             earn_apr: None,
             delist_exit_hours: 24,
+            kill_drawdown: None,
             history_len: r.history_len.unwrap_or(500),
             data_dir: c.data_dir.clone(),
             leverage: r.leverage,
@@ -687,6 +688,7 @@ mod tests {
             earn_interest: Notional::ZERO,
             funding: Notional::ZERO,
             equity_curve: curve,
+            killed: None,
         };
         let o = outcome(&r, vec![]);
         assert_eq!(

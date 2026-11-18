@@ -12,7 +12,8 @@ pub mod risk;
 
 pub use error::EngineError;
 pub use event_loop::{
-    DEFAULT_DELIST_EXIT, EngineConfig, Observer, Rejection, RunReport, Snapshot, run, run_observed,
+    DEFAULT_DELIST_EXIT, EngineConfig, KillSwitch, Observer, Rejection, RunReport, Snapshot, run,
+    run_observed,
 };
 
 #[cfg(test)]

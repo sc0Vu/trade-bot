@@ -19,3 +19,5 @@ pub const FILLS: &str = "tradebot_fills_total";
 /// Counter, per `source` (`risk` or `broker`) and `code` (a Binance error
 /// code, or the broker's refusal kind): signals that didn't become orders.
 pub const REJECTED: &str = "tradebot_signals_rejected_total";
+/// Counter: kill-switch trips (the run's drawdown limit reached).
+pub const KILL_SWITCH: &str = "tradebot_kill_switch_total";

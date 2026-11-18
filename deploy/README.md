@@ -41,6 +41,7 @@ Alerts reach nobody until you give Alertmanager a receiver: edit
 |---|---|
 | `TradeBotDown` | `/metrics` unreachable for 1 min |
 | `FeedStale` | No closed candle for over 150 s (1m bars; scale for others) |
+| `KillSwitchTripped` | The run's drawdown limit was reached: everything closed, restart refused until cleared |
 | `SignalsRejected` | More than 3 refusals of one kind in 15 min |
 | `BinanceErrors` | More than 5 errors on one endpoint in 5 min |
 | `BinanceSlow` | p99 latency over 2 s for 5 min |

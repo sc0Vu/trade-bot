@@ -49,7 +49,7 @@ enum Command {
     /// Download public Binance klines and instrument filters into the cache.
     FetchData(FetchArgs),
     /// Replay cached klines through the engine with a paper broker.
-    Backtest(BacktestArgs),
+    Backtest(Box<BacktestArgs>),
     /// Trade on Binance: testnet or demo (`--paper`), mainnet only behind
     /// the live gate.
     Run(RunArgs),
@@ -79,6 +79,10 @@ struct RunArgs {
     /// that instance's orders.
     #[arg(long)]
     cancel_orphans: bool,
+    /// Start although the kill switch stopped this strategy before
+    /// (removes its marker under `data/kill-switch/`).
+    #[arg(long)]
+    clear_kill_switch: bool,
     /// Config file (default `BOT_CONFIG`, else config/config.toml).
     #[arg(long)]
     config: Option<PathBuf>,
@@ -172,6 +176,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
         whitelist: cfg.whitelist,
         history_len: cfg.engine.history_len,
         delist_exit: cfg.engine.delist_exit(),
+        kill_switch: cfg.engine.kill_switch(),
     };
     if network == Network::Live {
         eprintln!("LIVE: sending real orders to Binance mainnet");
@@ -201,14 +206,12 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
         ),
         Err(e) => eprintln!("could not close out open orders: {e}; check the account"),
     }
-    if let Some(r) = outcome? {
-        print_summary(&r);
-    }
+    let killed = finish_run(outcome?);
     if let Some(saver) = observer.state.take() {
         saver.finish().await;
     }
     closed?;
-    Ok(())
+    tripped(killed)
 }
 
 /// A paper run on MAX: MAX's live klines, the local paper broker. No key is
@@ -244,6 +247,7 @@ async fn run_max_paper(cfg: config::Config) -> anyhow::Result<()> {
         whitelist: cfg.whitelist,
         history_len: cfg.engine.history_len,
         delist_exit: cfg.engine.delist_exit(),
+        kill_switch: cfg.engine.kill_switch(),
     };
     telemetry::start(&cfg.metrics);
     let mut observer = telemetry::RunObserver {
@@ -263,10 +267,8 @@ async fn run_max_paper(cfg: config::Config) -> anyhow::Result<()> {
             Ok(None)
         }
     };
-    if let Some(r) = outcome? {
-        print_summary(&r);
-    }
-    Ok(())
+    let killed = finish_run(outcome?);
+    tripped(killed)
 }
 
 /// A USDⓈ-M paper run: live futures prices and funding, the local perp
@@ -327,6 +329,7 @@ async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
         whitelist: cfg.whitelist,
         history_len: cfg.engine.history_len,
         delist_exit: cfg.engine.delist_exit(),
+        kill_switch: cfg.engine.kill_switch(),
     };
     telemetry::start(&cfg.metrics);
     let mut observer = telemetry::RunObserver {
@@ -347,10 +350,8 @@ async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
             Ok(None)
         }
     };
-    if let Some(r) = outcome? {
-        print_summary(&r);
-    }
-    Ok(())
+    let killed = finish_run(outcome?);
+    tripped(killed)
 }
 
 /// What a run with books observes: saved strategy state (loaded for
@@ -464,6 +465,7 @@ async fn run_usdm_orders(
         whitelist: cfg.whitelist,
         history_len: cfg.engine.history_len,
         delist_exit: cfg.engine.delist_exit(),
+        kill_switch: cfg.engine.kill_switch(),
     };
     if network == Network::Live {
         eprintln!("LIVE: sending real orders to Binance USDⓈ-M futures");
@@ -498,10 +500,9 @@ async fn run_usdm_orders(
         ),
         Err(e) => eprintln!("could not close out open orders: {e}; check the account"),
     }
-    if let Some(r) = outcome? {
-        print_summary(&r);
-    }
-    closed.map(|_| ())
+    let killed = finish_run(outcome?);
+    closed?;
+    tripped(killed)
 }
 
 /// An eToro run: the demo account for a fake-money network, the real one
@@ -552,6 +553,7 @@ async fn run_etoro(cfg: config::Config, network: Network) -> anyhow::Result<()> 
         whitelist: cfg.whitelist,
         history_len: cfg.engine.history_len,
         delist_exit: cfg.engine.delist_exit(),
+        kill_switch: cfg.engine.kill_switch(),
     };
     if account == Account::Real {
         eprintln!("LIVE: sending real orders to eToro");
@@ -583,10 +585,9 @@ async fn run_etoro(cfg: config::Config, network: Network) -> anyhow::Result<()> 
         ),
         Err(e) => eprintln!("could not settle orders in flight: {e}; check the account"),
     }
-    if let Some(r) = outcome? {
-        print_summary(&r);
-    }
-    closed.map(|_| ())
+    let killed = finish_run(outcome?);
+    closed?;
+    tripped(killed)
 }
 
 /// A signed client of `network`'s USDⓈ-M host, keys from env.
@@ -603,6 +604,70 @@ fn usdm_signed(network: Network) -> anyhow::Result<exchange::binance::SignedClie
         Credentials::from_env()?,
         Box::new(exchange::binance::SystemClock),
     ))
+}
+
+/// Prints the summary of a run that ended on its own (`None`: stopped by
+/// a signal); the kill switch's reason if it tripped.
+fn finish_run(report: Option<engine::RunReport>) -> Option<String> {
+    let r = report?;
+    print_summary(&r);
+    r.killed
+}
+
+/// A run ended by its kill switch (`[engine] kill_drawdown`): an error,
+/// so the process exits non-zero, and `run` leaves a marker that refuses
+/// the next start (a supervisor restarting it must not trade on).
+#[derive(Debug)]
+struct KillSwitchTripped(String);
+
+impl std::fmt::Display for KillSwitchTripped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "kill switch tripped: {}; every position closed, strategy stopped",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for KillSwitchTripped {}
+
+/// `Err` when the kill switch ended the run.
+fn tripped(killed: Option<String>) -> anyhow::Result<()> {
+    match killed {
+        Some(why) => Err(KillSwitchTripped(why).into()),
+        None => Ok(()),
+    }
+}
+
+/// Where a tripped kill switch is remembered for this venue, network and
+/// strategy (`data/kill-switch/<venue>-<network>-<strategy>.txt`).
+fn kill_marker(cfg: &config::Config) -> PathBuf {
+    PathBuf::from("data/kill-switch").join(format!(
+        "{}-{}-{}.txt",
+        cfg.exchange.venue.id().as_str(),
+        format!("{:?}", cfg.exchange.network).to_lowercase(),
+        cfg.strategy.name
+    ))
+}
+
+/// Refuses to start while `marker` exists, unless `clear` (which removes
+/// it): a kill switch stays tripped until a person says otherwise.
+fn check_kill_marker(marker: &std::path::Path, clear: bool) -> anyhow::Result<()> {
+    let Ok(text) = std::fs::read_to_string(marker) else {
+        return Ok(());
+    };
+    if clear {
+        std::fs::remove_file(marker).with_context(|| format!("removing {}", marker.display()))?;
+        tracing::warn!(marker = %marker.display(), "kill switch cleared by --clear-kill-switch");
+        return Ok(());
+    }
+    anyhow::bail!(
+        "the kill switch stopped this strategy earlier ({}); review it, then start with \
+         --clear-kill-switch (or delete {})",
+        text.trim(),
+        marker.display()
+    )
 }
 
 /// The end-of-run summary `run` prints.
@@ -693,6 +758,11 @@ struct BacktestArgs {
     /// holding, as `[engine] delist_exit_hours` live.
     #[arg(long, default_value_t = 24)]
     delist_exit_hours: u64,
+    /// Kill switch, as `[engine] kill_drawdown` live: once equity falls
+    /// this fraction below its peak (from `--initial-cash`), the strategy
+    /// is stopped and everything closed (`0.25` = 25%).
+    #[arg(long, value_parser = parse_decimal)]
+    kill_drawdown: Option<Decimal>,
     /// Candles of history kept per instrument for the strategy. As many
     /// cached bars before `--from` are replayed first as warm-up (history,
     /// no decisions), as `run` does before trading.
@@ -852,6 +922,10 @@ async fn backtest_report(
         whitelist: ids,
         history_len: a.history_len,
         delist_exit: Duration::from_secs(a.delist_exit_hours.saturating_mul(3600)),
+        kill_switch: a.kill_drawdown.map(|d| engine::KillSwitch {
+            capital: Notional::new(a.initial_cash),
+            max_drawdown: d,
+        }),
     };
     let report = run_backtest(&provider, strategy.as_mut(), params, &config, a.interval).await?;
     Ok((report, notes))
@@ -1135,7 +1209,24 @@ async fn main() -> anyhow::Result<()> {
                 &config::log_filter(rust_log, cfg.log.level.as_deref(), "info,sqlx=warn"),
                 &cfg.log,
             );
+            let marker = kill_marker(&cfg);
+            check_kill_marker(&marker, a.clear_kill_switch)?;
             let ran = run_bot(a, cfg).await;
+            if let Err(e) = &ran
+                && let Some(k) = e.downcast_ref::<KillSwitchTripped>()
+            {
+                let stamp = date::format(Timestamp::from_millis(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0),
+                ));
+                if let Err(w) = std::fs::create_dir_all("data/kill-switch")
+                    .and_then(|()| std::fs::write(&marker, format!("{stamp}: {}\n", k.0)))
+                {
+                    tracing::error!(error = %w, marker = %marker.display(), "could not record the kill switch");
+                }
+            }
             // Also as a log line, so the log file (and whatever ships it)
             // says why the bot stopped, not only the terminal.
             if let Err(e) = &ran {
@@ -1150,7 +1241,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Backtest(a) => {
             init_logging(&config::log_filter(rust_log, None, "warn"));
-            backtest(a).await
+            backtest(*a).await
         }
     }
 }
@@ -1314,5 +1405,27 @@ mod tests {
         .unwrap();
         assert!(format!("{err:#}").contains("no margin brackets"), "{err:#}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A marker refuses the start and names its reason; `--clear-kill-switch`
+    /// removes it and starts; no marker, no question.
+    #[test]
+    fn a_tripped_kill_switch_refuses_the_next_start() {
+        let dir = std::env::temp_dir().join(format!("kill-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("binance-demo-sma_trend.txt");
+        let _ = std::fs::remove_file(&marker);
+        assert!(check_kill_marker(&marker, false).is_ok());
+        std::fs::write(&marker, "2026-11-18: equity 700 fell\n").unwrap();
+        let err = check_kill_marker(&marker, false).unwrap_err().to_string();
+        assert!(
+            err.contains("equity 700 fell") && err.contains("--clear-kill-switch"),
+            "{err}"
+        );
+        assert!(check_kill_marker(&marker, true).is_ok());
+        assert!(!marker.exists());
+        let e = tripped(Some("why".into())).unwrap_err();
+        assert!(e.downcast_ref::<KillSwitchTripped>().is_some());
+        assert!(tripped(None).is_ok());
     }
 }

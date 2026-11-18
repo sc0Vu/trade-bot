@@ -120,3 +120,20 @@ tests:
             exp_annotations:
               summary: "User data stream down for 10 min"
               description: "Every open order is being polled each event; check the bot's warnings for why the stream won't subscribe."
+
+  # One trip at the third minute: the alert fires once the counter rises.
+  - interval: 1m
+    input_series:
+      - series: 'tradebot_kill_switch_total'
+        values: '0 0 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: KillSwitchTripped
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: KillSwitchTripped
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "Kill switch tripped: positions closed, strategy stopped"
+              description: "Equity fell past [engine] kill_drawdown from its peak. Review the run, then start it with --clear-kill-switch."

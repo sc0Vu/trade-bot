@@ -303,7 +303,19 @@ at t+1. Prevents deciding on close and trading at it.
 (2) `broker.settle(event)`; (3) each fill → ctx position from broker →
 `on_fill`, *before* event joins history (fill at open must not see that
 close); (4) event → history → `on_event`; (5) signals → `engine::risk` →
-broker, `created_at` = event ts → `on_order` / `on_rejected`; (6) delisting exit.
+broker, `created_at` = event ts → `on_order` / `on_rejected`; (6) delisting exit;
+(7) kill switch (`EngineConfig::kill_switch: Option<KillSwitch { capital,
+max_drawdown }>`, `[engine] kill_drawdown` + `kill_capital`, backtest
+`--kill-drawdown` with capital = initial cash): at each Candle, equity =
+capital + Σ whitelist (realized + `Instrument::notional`(qty, last close) −
+basis); peak from capital; equity ≤ peak·(1 − dd) → tripped: strategy muted
+(no hooks), every instrument closed like the delisting exit
+(`close_instrument`, shared), once all flat/dust and idle → loop ends,
+`RunReport.killed` / `Report.killed` (printed); metric
+`tradebot_kill_switch_total`, alert `KillSwitchTripped`. `run`: trip →
+`KillSwitchTripped` error (exit non-zero) + marker
+`data/kill-switch/<venue>-<network>-<strategy>.txt`; marker present →
+start refused unless `--clear-kill-switch` (supervisor can't resume).
 `EngineConfig { .. }` literals end `..Default::default()` (new fields break no caller).
 `Signal::Reduce { instrument, side, qty, kind }` = reduce-only (venue
 `reduceOnly`): risk as Submit + `Order::with_reduce_only` (base size only;

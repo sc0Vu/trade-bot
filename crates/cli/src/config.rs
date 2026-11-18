@@ -459,6 +459,15 @@ pub struct EngineSection {
     /// from the announcement on. Default 24.
     #[serde(default = "twenty_four")]
     pub delist_exit_hours: u64,
+    /// Kill switch: stop the strategy and close everything once the run's
+    /// equity (`kill_capital` + its P&L) falls this fraction below its
+    /// peak (`"0.25"`). Unset: off. Needs `kill_capital`.
+    #[serde(default, deserialize_with = "opt_exact_decimal")]
+    pub kill_drawdown: Option<Decimal>,
+    /// The capital the kill switch measures from (`"1000"`, in the quote):
+    /// what the strategy trades with.
+    #[serde(default)]
+    pub kill_capital: Option<Notional>,
 }
 
 fn twenty_four() -> u64 {
@@ -466,6 +475,14 @@ fn twenty_four() -> u64 {
 }
 
 impl EngineSection {
+    /// The kill switch, when both fields are set (validated on load).
+    pub fn kill_switch(&self) -> Option<engine::KillSwitch> {
+        Some(engine::KillSwitch {
+            capital: self.kill_capital?,
+            max_drawdown: self.kill_drawdown?,
+        })
+    }
+
     /// [`delist_exit_hours`](Self::delist_exit_hours) as a duration.
     pub fn delist_exit(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.delist_exit_hours.saturating_mul(3600))
@@ -477,6 +494,8 @@ impl Default for EngineSection {
         Self {
             history_len: five_hundred(),
             delist_exit_hours: twenty_four(),
+            kill_drawdown: None,
+            kill_capital: None,
         }
     }
 }
@@ -527,6 +546,18 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        match (self.engine.kill_drawdown, self.engine.kill_capital) {
+            (None, None) => {}
+            (Some(d), Some(c)) => {
+                if d <= Decimal::ZERO || d >= Decimal::ONE {
+                    bail!("engine.kill_drawdown must be in (0, 1)");
+                }
+                if !c.is_positive() {
+                    bail!("engine.kill_capital must be positive");
+                }
+            }
+            _ => bail!("engine.kill_drawdown and engine.kill_capital go together"),
+        }
         if let Some(level) = &self.log.level {
             tracing_subscriber::EnvFilter::try_new(level)
                 .with_context(|| format!("log.level {level:?} is not a valid filter"))?;
@@ -1193,6 +1224,31 @@ mod tests {
             }
         }
         assert!(seen >= 5, "the eToro examples are found ({seen})");
+    }
+
+    /// Both kill-switch fields or neither; the drawdown in (0, 1), the
+    /// capital positive and a string.
+    #[test]
+    fn kill_switch_fields_go_together_and_are_checked() {
+        let with = |extra: &str| parse(&format!("{MIN}\n[engine]\n{extra}"));
+        let ok = with("kill_drawdown = \"0.25\"\nkill_capital = \"1000\"").unwrap();
+        assert_eq!(
+            ok.engine.kill_switch(),
+            Some(engine::KillSwitch {
+                capital: Notional::new(Decimal::new(1000, 0)),
+                max_drawdown: Decimal::new(25, 2),
+            })
+        );
+        assert_eq!(with("").unwrap().engine.kill_switch(), None);
+        for bad in [
+            "kill_drawdown = \"0.25\"",
+            "kill_capital = \"1000\"",
+            "kill_drawdown = \"1\"\nkill_capital = \"1000\"",
+            "kill_drawdown = \"0.25\"\nkill_capital = \"0\"",
+            "kill_drawdown = 0.25\nkill_capital = \"1000\"",
+        ] {
+            assert!(with(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

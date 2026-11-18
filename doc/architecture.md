@@ -167,6 +167,18 @@ for good), target it at 0 and choose among the rest; `ratio_hop` rotates
 out of it even below its ratchet; `grid` winds down. A backtest replays the same event, so the
 exit is part of every backtest too.
 
+**Kill switch.** An optional drawdown limit for the whole run
+(`[engine] kill_drawdown` and `kill_capital`). The engine knows positions
+and prices but not the account's cash, so it measures equity as the
+capital plus the run's P&L: realized (fees and funding included) plus open
+positions at their last close. When equity falls the set fraction below
+its peak, the strategy is muted for good and the engine closes everything
+the way the delisting exit closes one coin (cancel, then reduce-only market
+orders, retried each event); when all is flat the run ends. A live run
+then exits with an error and leaves a marker that refuses the next start,
+so a supervisor's automatic restart can't trade on; a person clears it.
+Backtests apply the same rule (`--kill-drawdown`).
+
 **Halts.** A venue can also stop trading a coin with no schedule (a
 suspension, a break) and resume later. `MarketEvent::TradingStatus` reports
 it; while a coin is halted no order is sent on it (risk and the paper
