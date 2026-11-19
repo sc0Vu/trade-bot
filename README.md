@@ -538,7 +538,11 @@ units). eToro's own rules for a partial close apply: it
 must take at least eToro's minimum (about $10; smaller is refused before
 sending) and leave at least $1 (a sell that would leave less closes the
 whole position). eToro publishes no unit step; the bot uses the 6 decimals
-every position eToro opened carried.
+every position eToro opened carried. eToro limits requests per key (about 60–120 a minute by kind); the bot
+spreads them out (at most one a second per kind), resolves all symbols in a
+few batched requests at start, and waits out and retries a "too many
+requests" answer. Two bots on the same key share eToro's limit, so keep
+them few.
 
 Orders eToro can take, and how the bot maps them:
 

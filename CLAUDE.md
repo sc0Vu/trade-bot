@@ -555,7 +555,14 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    User-Agent (Cloudflare 1010 otherwise); one user key = one account
    (demo key → `403 InsufficientPermissions` on real paths); demo paths
    splice `/demo/` (`Account::path`). Limits per user key /60 s: market data
-   120, execution 20, info 60 (80% budgeted, 429 → `Retry-After`).
+   120, execution 20, info 60 (80% budgeted per process, plus ≤ 1 request/s
+   per pool: a startup burst under the minute budget got 429, 2026-11-19);
+   429 → wait `Retry-After` (else 60 s) and resend, same request id, ≤ 3
+   tries. Instruments resolved in batches (`instruments`: lookup by
+   `symbols=` list, eligibility `instrumentIds` list, rates list; 50 per
+   batch; checked on demo 2026-11-19), once per provider (`OnceCell`, shared
+   by engine resolve, feed, broker, close-out). Several processes on one key
+   share eToro's limit but not the budget.
    Instruments `etoro:<symbol>` by exact `symbol` (`/api/v2/market-data/
    instruments?symbols=`; search is prefix) + eligibility (`/api/v2/
    trading/info[/demo]/eligibility`): only the real asset (settlement

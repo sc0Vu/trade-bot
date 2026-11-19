@@ -263,6 +263,9 @@ pub struct EtoroProvider {
     universe: Vec<InstrumentId>,
     books: Arc<dyn Books>,
     run_tag: String,
+    /// The universe as eToro instruments, looked up once (one batch) and
+    /// shared by the engine, the feed, the broker and the close-out.
+    resolved: tokio::sync::OnceCell<Vec<(Instrument, i64)>>,
 }
 
 impl EtoroProvider {
@@ -278,6 +281,7 @@ impl EtoroProvider {
             universe,
             books,
             run_tag: crate::binance::run_tag(now_ms()),
+            resolved: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -286,24 +290,30 @@ impl EtoroProvider {
     }
 
     async fn resolved(&self) -> Result<Vec<(Instrument, i64)>, ExchangeError> {
-        let mut out = Vec::with_capacity(self.universe.len());
-        for id in &self.universe {
-            if id.venue().as_str() != VENUE {
-                return Err(ExchangeError::UnknownInstrument(id.clone()));
-            }
-            let e = self.client.instrument(id.symbol()).await?;
-            if e.requires_w8ben
-                && !self.config.w8ben_signed
-                && self.client.account() == super::Account::Real
-            {
-                return Err(ExchangeError::Credentials(format!(
-                    "{id}: eToro requires a signed W-8BEN to trade it; once it is on file, \
-                     set [etoro] w8ben_signed = true"
-                )));
-            }
-            out.push((e.instrument, e.etoro_id));
-        }
-        Ok(out)
+        self.resolved
+            .get_or_try_init(|| async {
+                if let Some(id) = self.universe.iter().find(|id| id.venue().as_str() != VENUE) {
+                    return Err(ExchangeError::UnknownInstrument(id.clone()));
+                }
+                let symbols: Vec<_> = self.universe.iter().map(|id| id.symbol().clone()).collect();
+                let found = self.client.instruments(&symbols).await?;
+                let mut out = Vec::with_capacity(found.len());
+                for (id, e) in self.universe.iter().zip(found) {
+                    if e.requires_w8ben
+                        && !self.config.w8ben_signed
+                        && self.client.account() == super::Account::Real
+                    {
+                        return Err(ExchangeError::Credentials(format!(
+                            "{id}: eToro requires a signed W-8BEN to trade it; once it is on file, \
+                             set [etoro] w8ben_signed = true"
+                        )));
+                    }
+                    out.push((e.instrument, e.etoro_id));
+                }
+                Ok(out)
+            })
+            .await
+            .cloned()
     }
 
     /// Settles every order still in flight and records its fills; positions
@@ -375,12 +385,17 @@ impl Provider for EtoroProvider {
 
     async fn resolve(&self, query: &InstrumentQuery) -> Result<Vec<Instrument>, ExchangeError> {
         let InstrumentQuery::Ids(ids) = query;
+        // The universe is resolved once; anything outside it is looked up.
+        let known = self.resolved().await?;
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             if id.venue().as_str() != VENUE {
                 return Err(ExchangeError::UnknownInstrument(id.clone()));
             }
-            out.push(self.client.instrument(id.symbol()).await?.instrument);
+            match known.iter().find(|(i, _)| i.id == *id) {
+                Some((i, _)) => out.push(i.clone()),
+                None => out.push(self.client.instrument(id.symbol()).await?.instrument),
+            }
         }
         Ok(out)
     }

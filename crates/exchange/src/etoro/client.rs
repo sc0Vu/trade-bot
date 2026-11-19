@@ -86,14 +86,24 @@ const HEADROOM: f64 = 0.8;
 /// Wait after a 429 without `Retry-After`.
 const BACKOFF: Duration = Duration::from_secs(60);
 
+/// The published per-minute limit at `HEADROOM`, and at most one request a
+/// second: eToro answered 429 to a startup that spent well under a
+/// minute's budget in a few seconds (2026-11-19), so bursts are spread out.
 fn limiter(per_minute: u64) -> Arc<RateLimiter> {
-    Arc::new(RateLimiter::new([Limit::with_headroom(
-        Kind::Weight,
-        Duration::from_secs(60),
-        per_minute,
-        HEADROOM,
-    )]))
+    Arc::new(RateLimiter::new([
+        Limit::with_headroom(Kind::Weight, Duration::from_secs(60), per_minute, HEADROOM),
+        Limit {
+            kind: Kind::Weight,
+            window: Duration::from_secs(1),
+            budget: 1,
+        },
+    ]))
 }
+
+/// Tries per request when eToro answers 429: it is waited out (its
+/// `Retry-After`, else `BACKOFF`) and sent again, with the same
+/// `x-request-id` (eToro deduplicates by it, so an order is never doubled).
+const TRIES_429: u32 = 3;
 
 /// See the module docs. Cloning shares the rate limiters (eToro counts
 /// per user key).
@@ -211,45 +221,57 @@ impl EtoroClient {
             Pool::Trading => &self.trading,
             Pool::Info => &self.info,
         };
-        limiter
-            .acquire(1, 0)
-            .await
-            .map_err(|e| ExchangeError::RateLimited(e.to_string()))?;
         let id = request_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
-        let res = retry_transport(TRANSPORT_TRIES, Duration::from_millis(500), || {
-            let mut req = self
-                .http
-                .request(method.clone(), format!("{}{path}", self.base))
-                .query(query)
-                .header("x-api-key", &self.keys.api_key)
-                .header("x-user-key", &self.keys.user_key)
-                .header("x-request-id", &id)
-                .header("accept", "application/json");
-            if let Some(b) = body {
-                req = req
-                    .header("content-type", "application/json")
-                    .body(b.to_string());
-            }
-            req.send()
-        })
-        .await
-        .map_err(|e| ExchangeError::Http(e.without_url().to_string()))?;
-        let status = res.status().as_u16();
-        if status == 429 {
-            let wait = res
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.trim().parse().ok())
-                .map_or(BACKOFF, Duration::from_secs);
-            limiter.block_for(wait);
-            metrics::counter!(crate::metrics::RATE_LIMITED).increment(1);
-        }
-        let body = res
-            .text()
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            limiter
+                .acquire(1, 0)
+                .await
+                .map_err(|e| ExchangeError::RateLimited(e.to_string()))?;
+            let res = retry_transport(TRANSPORT_TRIES, Duration::from_millis(500), || {
+                let mut req = self
+                    .http
+                    .request(method.clone(), format!("{}{path}", self.base))
+                    .query(query)
+                    .header("x-api-key", &self.keys.api_key)
+                    .header("x-user-key", &self.keys.user_key)
+                    .header("x-request-id", &id)
+                    .header("accept", "application/json");
+                if let Some(b) = body {
+                    req = req
+                        .header("content-type", "application/json")
+                        .body(b.to_string());
+                }
+                req.send()
+            })
             .await
             .map_err(|e| ExchangeError::Http(e.without_url().to_string()))?;
-        Ok(Reply { status, body })
+            let status = res.status().as_u16();
+            if status == 429 {
+                let wait = res
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse().ok())
+                    .map_or(BACKOFF, Duration::from_secs);
+                limiter.block_for(wait);
+                metrics::counter!(crate::metrics::RATE_LIMITED).increment(1);
+                if tries < TRIES_429 {
+                    tracing::warn!(
+                        path,
+                        wait_secs = wait.as_secs(),
+                        "eToro rate limit (429); waiting, then retrying"
+                    );
+                    continue;
+                }
+            }
+            let body = res
+                .text()
+                .await
+                .map_err(|e| ExchangeError::Http(e.without_url().to_string()))?;
+            return Ok(Reply { status, body });
+        }
     }
 }
 
@@ -329,5 +351,77 @@ mod tests {
         .await;
         assert_eq!(r, Err("drop 3".to_owned()));
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// A local server answering each connection with the next canned
+    /// status (and `Connection: close`), counting the requests it served.
+    fn serve(statuses: Vec<u16>) -> (String, std::thread::JoinHandle<usize>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut served = 0;
+            for status in statuses {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf);
+                let (reason, body) = if status == 429 {
+                    ("Too Many Requests", r#"{"errorCode":"TooManyRequests"}"#)
+                } else {
+                    ("OK", r#"{"ok":true}"#)
+                };
+                let reply = format!(
+                    "HTTP/1.1 {status} {reason}\r\nRetry-After: 0\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                conn.write_all(reply.as_bytes()).unwrap();
+                served += 1;
+            }
+            served
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    fn client(base: &str) -> EtoroClient {
+        EtoroClient::new(
+            base,
+            EtoroKeys::new("k", "u"),
+            Account::Demo,
+            Duration::from_secs(5),
+        )
+    }
+
+    /// A 429 (Retry-After 0) is waited out and sent again: the second
+    /// answer comes back. Requests are a second apart (the per-second cap).
+    #[tokio::test]
+    async fn a_429_is_retried_after_the_wait() {
+        let (base, server) = serve(vec![429, 200]);
+        let started = std::time::Instant::now();
+        let body = client(&base).get(Pool::Info, "/x", &[]).await.unwrap();
+        assert_eq!(body, r#"{"ok":true}"#);
+        assert_eq!(server.join().unwrap(), 2);
+        assert!(
+            started.elapsed() >= Duration::from_millis(900),
+            "paced a second apart"
+        );
+    }
+
+    /// Three 429s in a row: the third comes back as the error.
+    #[tokio::test]
+    async fn three_429s_give_up() {
+        let (base, server) = serve(vec![429, 429, 429]);
+        let err = client(&base).get(Pool::Info, "/x", &[]).await.unwrap_err();
+        assert!(err.to_string().contains("429"), "{err}");
+        assert_eq!(server.join().unwrap(), 3);
+    }
+
+    #[test]
+    fn each_pool_allows_its_minute_budget_but_one_request_a_second() {
+        let windows: Vec<(u64, u64)> = limiter(60)
+            .limits()
+            .iter()
+            .map(|l| (l.window.as_secs(), l.budget))
+            .collect();
+        assert_eq!(windows, vec![(60, 48), (1, 1)]);
     }
 }

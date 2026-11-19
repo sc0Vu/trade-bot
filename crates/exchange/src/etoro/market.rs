@@ -1,7 +1,8 @@
 //! eToro instruments and candles.
 //!
-//! - [`EtoroClient::instrument`]: `GET /api/v2/market-data/instruments?
-//!   symbols=` (exact symbol; case-insensitive), then the account's
+//! - [`EtoroClient::instruments`] (and `instrument` for one): `GET
+//!   /api/v2/market-data/instruments?symbols=` (exact symbols, a list, one
+//!   request per 50; case-insensitive), then the account's
 //!   eligibility (`POST /api/v2/trading/info[/demo]/eligibility`) for the
 //!   minimum exposure, unit type and whether the real asset can be bought
 //!   (`leverageConfigs`: settlement `real`, direction `long`, leverage 1).
@@ -124,38 +125,62 @@ impl EtoroClient {
         parse_tradable(&body, id)
     }
 
-    /// `symbol` as a tradable instrument for this account (module docs).
+    /// `symbol` as a tradable instrument for this account (module docs);
+    /// [`instruments`](Self::instruments) for one.
     pub async fn instrument(&self, symbol: &Symbol) -> Result<EtoroInstrument, ExchangeError> {
-        let (id, kind, _) = self.lookup(symbol).await?;
-        let path = self.account().path(
-            "/api/v2/trading/info/eligibility",
-            "/api/v2/trading/info/demo/eligibility",
-        );
-        let reply = self
-            .post(
-                Pool::Info,
-                &path,
-                &serde_json::json!({"instrumentIds": [id], "currency": "USD"}),
-                &uuid::Uuid::new_v4().to_string(),
-            )
-            .await?;
-        let body = ok(&path, reply)?;
-        let found = parse_instrument(&body, symbol, id, kind)?;
-        // Orders, fees and the books are in USD: an instrument priced in
-        // another currency (BARC.L in pence, 7203.T in yen) would mix them.
-        let rates = self
-            .get(
-                Pool::MarketData,
-                "/api/v1/market-data/instruments/rates",
-                &[("instrumentIds", id.to_string())],
-            )
-            .await?;
-        if !usd_priced(&rates, id)? {
-            return Err(ExchangeError::Rejected(
-                "this eToro instrument is priced in a currency other than USD (not supported yet)",
-            ));
+        self.instruments(std::slice::from_ref(symbol))
+            .await?
+            .pop()
+            .ok_or_else(|| unknown(symbol))
+    }
+
+    /// `symbols` as tradable instruments for this account, in order, in
+    /// three requests per [`BATCH`] symbols (the lookup, the eligibility and
+    /// the rates all take lists; checked on demo 2026-11-19), instead of
+    /// three per symbol: a startup with many symbols otherwise bursts past
+    /// eToro's rate limits.
+    pub async fn instruments(
+        &self,
+        symbols: &[Symbol],
+    ) -> Result<Vec<EtoroInstrument>, ExchangeError> {
+        let mut out = Vec::with_capacity(symbols.len());
+        for chunk in symbols.chunks(BATCH) {
+            let list: Vec<String> = chunk.iter().map(Symbol::to_string).collect();
+            let body = self
+                .get(
+                    Pool::MarketData,
+                    "/api/v2/market-data/instruments",
+                    &[("symbols", list.join(","))],
+                )
+                .await?;
+            let found = parse_lookup(&body, chunk)?;
+            let ids: Vec<i64> = found.iter().map(|(_, id, _)| *id).collect();
+            let path = self.account().path(
+                "/api/v2/trading/info/eligibility",
+                "/api/v2/trading/info/demo/eligibility",
+            );
+            let reply = self
+                .post(
+                    Pool::Info,
+                    &path,
+                    &serde_json::json!({"instrumentIds": ids, "currency": "USD"}),
+                    &uuid::Uuid::new_v4().to_string(),
+                )
+                .await?;
+            let eligibility = ok(&path, reply)?;
+            // Orders, fees and the books are in USD: an instrument priced in
+            // another currency (BARC.L in pence, 7203.T in yen) would mix them.
+            let ids_text: Vec<String> = ids.iter().map(i64::to_string).collect();
+            let rates = self
+                .get(
+                    Pool::MarketData,
+                    "/api/v1/market-data/instruments/rates",
+                    &[("instrumentIds", ids_text.join(","))],
+                )
+                .await?;
+            out.extend(assemble(&found, &eligibility, &rates)?);
         }
-        Ok(found)
+        Ok(out)
     }
 
     /// Closed candles of eToro instrument `id` (ours: `instrument`) with
@@ -239,6 +264,59 @@ fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Symbols per batched instrument lookup.
+pub const BATCH: usize = 50;
+
+/// eToro's id and type for each of `symbols` from one instruments reply
+/// (exact symbol, ignoring case), in order; one missing = unknown.
+pub(crate) fn parse_lookup(
+    body: &str,
+    symbols: &[Symbol],
+) -> Result<Vec<(Symbol, i64, String)>, ExchangeError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| decode(format!("instruments: {e}")))?;
+    let results = v["results"]
+        .as_array()
+        .ok_or_else(|| decode("instruments: no results"))?;
+    symbols
+        .iter()
+        .map(|symbol| {
+            let hit = results
+                .iter()
+                .find(|r| {
+                    r["symbol"]
+                        .as_str()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(symbol.as_str()))
+                })
+                .ok_or_else(|| unknown(symbol))?;
+            let id = hit["instrumentId"]
+                .as_i64()
+                .ok_or_else(|| decode("instrumentId"))?;
+            let kind = hit["type"].as_str().unwrap_or_default().to_owned();
+            Ok((symbol.clone(), id, kind))
+        })
+        .collect()
+}
+
+/// The instruments of one batch from its eligibility and rates replies.
+pub(crate) fn assemble(
+    found: &[(Symbol, i64, String)],
+    eligibility: &str,
+    rates: &str,
+) -> Result<Vec<EtoroInstrument>, ExchangeError> {
+    found
+        .iter()
+        .map(|(symbol, id, kind)| {
+            let inst = parse_instrument(eligibility, symbol, *id, kind.clone())?;
+            if !usd_priced(rates, *id)? {
+                return Err(ExchangeError::Rejected(
+                    "this eToro instrument is priced in a currency other than USD (not supported yet)",
+                ));
+            }
+            Ok(inst)
+        })
+        .collect()
 }
 
 /// An eligibility reply → the instrument (module docs).
@@ -644,5 +722,54 @@ mod tests {
         assert!(usd_priced(body, 1001).unwrap());
         assert!(!usd_priced(body, 2013).unwrap());
         assert!(usd_priced(body, 5).is_err());
+    }
+
+    /// One lookup, one eligibility and one rates reply for three symbols:
+    /// each instrument comes out in the order asked, matched by id; a
+    /// symbol missing from the lookup is unknown; a non-USD one refused.
+    #[test]
+    fn a_batch_resolves_every_symbol_from_three_replies() {
+        let sym = |s: &str| -> Symbol { s.parse().unwrap() };
+        let lookup = r#"{"results":[
+            {"symbol":"MSFT","instrumentId":1004,"type":"Stocks"},
+            {"symbol":"AAPL","instrumentId":1001,"type":"Stocks"},
+            {"symbol":"QQQ","instrumentId":3006,"type":"ETF"}]}"#;
+        let found = parse_lookup(lookup, &[sym("AAPL"), sym("qqq"), sym("MSFT")]).unwrap();
+        let ids: Vec<i64> = found.iter().map(|(_, id, _)| *id).collect();
+        assert_eq!(ids, vec![1001, 3006, 1004]);
+        assert!(parse_lookup(lookup, &[sym("AAPL"), sym("NOPE")]).is_err());
+
+        let elig = |id: i64, sym: &str| {
+            format!(
+                r#"{{"instrumentId":{id},"symbol":"{sym}","minPositionExposure":10.0,"allowOpenPosition":true,"unitsQuantityType":"fractional","leverageConfigs":[{{"settlementType":"real","direction":"long","leverageValues":[1]}}]}}"#
+            )
+        };
+        let eligibility = format!(
+            r#"{{"currency":"usd","eligibilities":[{},{},{}]}}"#,
+            elig(1004, "MSFT"),
+            elig(3006, "QQQ"),
+            elig(1001, "AAPL")
+        );
+        let rate = |id: i64, c: &str| {
+            format!(
+                r#"{{"instrumentID":{id},"ask":1.0,"conversionRateAsk":{c},"conversionRateBid":{c}}}"#
+            )
+        };
+        let usd = format!(
+            r#"{{"rates":[{},{},{}]}}"#,
+            rate(1001, "1.0"),
+            rate(3006, "1.0"),
+            rate(1004, "1.0")
+        );
+        let got = assemble(&found, &eligibility, &usd).unwrap();
+        let names: Vec<String> = got.iter().map(|e| e.instrument.id.to_string()).collect();
+        assert_eq!(names, vec!["etoro:AAPL", "etoro:QQQ", "etoro:MSFT"]);
+        let pence = format!(
+            r#"{{"rates":[{},{},{}]}}"#,
+            rate(1001, "1.0"),
+            rate(3006, "0.013"),
+            rate(1004, "1.0")
+        );
+        assert!(assemble(&found, &eligibility, &pence).is_err());
     }
 }
