@@ -150,18 +150,25 @@ pub(crate) fn one_quote<'a>(
 /// True on the candle that completes close time `c.close_time` for every
 /// coin in `coins` still trading (the last of them to arrive). A coin past
 /// its delisting, or halted, sends no candles, so it isn't waited for:
-/// waiting would freeze every multi-coin strategy with it in its list.
+/// waiting would freeze every multi-coin strategy with it in its list. Nor
+/// is a coin closed for the session once its candles have stopped coming
+/// (newest over a bar old): a stock overnight doesn't hold up crypto.
 /// Shared by the multi-coin strategies.
 pub(crate) fn completes<'a>(
     ctx: &Context,
     c: &Candle,
     mut coins: impl Iterator<Item = &'a InstrumentId>,
 ) -> bool {
+    let bar = c.interval.as_millis();
     coins.all(|id| {
+        let last = ctx.last_candle(id).map(|l| l.close_time);
         !ctx.tradable(id)
-            || ctx
-                .last_candle(id)
-                .is_some_and(|l| l.close_time == c.close_time)
+            || last == Some(c.close_time)
+            // Closed for the session and its bars have stopped coming (its
+            // newest is over a bar older than this one): don't wait. A
+            // daily bar closing as the market does still comes: waited for.
+            || (ctx.closed(id)
+                && last.is_some_and(|l| l.as_millis() < c.close_time.as_millis() - bar))
     })
 }
 
@@ -497,5 +504,33 @@ mod tests {
         assert!(!completes(&ctx, &c, coins.iter()));
         driver::set_trading(&mut ctx, coins[0].clone(), false);
         assert!(completes(&ctx, &c, coins.iter()));
+    }
+
+    /// Two coins, hourly bars. BTC's bar of hour 5 arrives:
+    /// - ETH closed for the session, its newest bar from hour 2 (over a bar
+    ///   old): its bars stopped coming, BTC doesn't wait → complete;
+    /// - ETH closed but its newest bar from hour 4 (one bar old: a bar
+    ///   closing as the market does may still come) → waited for;
+    /// - ETH open with the hour-4 bar → waited for, as before.
+    #[test]
+    fn a_closed_coin_is_waited_for_only_while_its_bars_still_come() {
+        use crate::builtin::portfolio::tests::{eth_candle, ethusdt};
+        let check = |eth_hour: i64, closed: bool| {
+            let mut ctx = driver::new(vec![btcusdt(), ethusdt()], Params::default(), 10);
+            driver::push_candle(&mut ctx, eth_candle(eth_hour, "10"));
+            if closed {
+                driver::set_session(&mut ctx, ethusdt().id.clone(), false);
+            }
+            let c = candle(5, "100");
+            driver::push_candle(&mut ctx, c.clone());
+            completes(
+                &ctx,
+                &c,
+                [btcusdt().id.clone(), ethusdt().id.clone()].iter(),
+            )
+        };
+        assert!(check(2, true), "closed, bars stopped: don't wait");
+        assert!(!check(4, true), "closed, a bar may still come: wait");
+        assert!(!check(4, false), "open: wait");
     }
 }

@@ -284,6 +284,17 @@ async fn run_inner<P: Provider + ?Sized>(
             }
             driver::set_trading(&mut ctx, instrument.clone(), *trading);
         }
+        if let MarketEvent::MarketSession {
+            instrument, open, ..
+        } = &event
+        {
+            if *open {
+                tracing::info!(%instrument, "market open");
+            } else {
+                tracing::info!(%instrument, "market closed: orders wait for the open");
+            }
+            driver::set_session(&mut ctx, instrument.clone(), *open);
+        }
         driver::set_now(&mut ctx, ts);
         // A backfilled candle is history like any other; whether it is a
         // decision is the strategy's `on_event` (the default says no).
@@ -1675,6 +1686,24 @@ mod tests {
         let provider = TestProvider::new(events, dec!(0), dec!(0));
         let (mut s, params) = buy_and_hold("1000");
         let r = run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        assert_eq!(r.fills.len(), 1);
+    }
+
+    /// A market closed for the session isn't a halt: buy_and_hold's buy
+    /// goes out while closed and fills (the venue fills it at the open, as
+    /// the paper broker fills at the next bar's open), no rejection.
+    #[tokio::test]
+    async fn orders_go_out_while_the_market_is_closed() {
+        let mut events = vec![MarketEvent::MarketSession {
+            instrument: btcusdt().id.clone(),
+            open: false,
+            ts: Timestamp::from_millis(0),
+        }];
+        events.extend(flat_bars(0, 3));
+        let provider = TestProvider::new(events, dec!(0), dec!(0));
+        let (mut s, params) = buy_and_hold("1000");
+        let r = run(&provider, s.as_mut(), params, &config()).await.unwrap();
+        assert!(r.rejections.is_empty(), "{:?}", r.rejections);
         assert_eq!(r.fills.len(), 1);
     }
 

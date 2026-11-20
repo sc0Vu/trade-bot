@@ -242,6 +242,18 @@ pub enum MarketEvent {
         trading: bool,
         ts: Timestamp,
     },
+    /// `instrument`'s market closed for the session (`open: false`: a stock
+    /// overnight or at the weekend) or open again, at a venue that takes
+    /// orders while closed and fills them at the open (eToro: status
+    /// "WaitingForMarket", demo 2026-11-20). Unlike a halt, orders are
+    /// allowed: they fill at the open, where a backtest fills them too.
+    /// Strategies still decide on it and rank it, but stop waiting for its
+    /// candles once they have stopped coming. `ts` is when the bot learned it.
+    MarketSession {
+        instrument: InstrumentId,
+        open: bool,
+        ts: Timestamp,
+    },
     /// A perpetual's mark-price bar (the venue's index-based fair price,
     /// what liquidation is checked against), delivered just before the
     /// trade bar of the same close time. Strategies ignore it by default;
@@ -275,6 +287,7 @@ impl MarketEvent {
             | Self::SessionClose { ts, .. }
             | Self::Delisting { ts, .. }
             | Self::TradingStatus { ts, .. }
+            | Self::MarketSession { ts, .. }
             | Self::Funding { ts, .. } => *ts,
             Self::CorporateAction(a) => match *a {},
         }

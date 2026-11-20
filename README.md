@@ -565,10 +565,13 @@ request whose connection fails before eToro answers is retried twice
 with the same request id, which eToro deduplicates.
 
 Stocks keep market hours. The bot asks eToro every minute whether each
-instrument can be traded now and treats a closed market like a halt: no
-orders on it until it opens. A single-stock strategy waits overnight; a
-strategy over several instruments (`etoro:AAPL` with `etoro:BTC`, say)
-keeps trading the ones that are open. `etoro:AAPL` trades eToro's extended
+instrument can be traded now. A closed market isn't treated as a halt:
+eToro accepts orders while closed and fills them when the market opens
+(the order shows as "waiting for market"), which is where a backtest
+fills them too. So a daily strategy deciding after the close still
+trades, at the next open; and a strategy over several instruments
+(`etoro:AAPL` with `etoro:BTC`, say) stops waiting for a closed stock's
+bars and keeps trading the ones that are open. `etoro:AAPL` trades eToro's extended
 hours; `etoro:AAPL.RTH` regular hours only. Only USD-priced instruments are
 supported (a London or Tokyo stock is refused). On a real account US
 stocks need a W-8BEN on file with eToro; declare it with `[etoro]

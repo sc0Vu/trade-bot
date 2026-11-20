@@ -25,6 +25,8 @@ pub struct Context {
     history_len: usize,
     delisting: HashMap<InstrumentId, Timestamp>,
     halted: std::collections::HashSet<InstrumentId>,
+    /// Closed for the session (`MarketEvent::MarketSession`).
+    closed: std::collections::HashSet<InstrumentId>,
     params: Params,
     outbox: Vec<Signal>,
 }
@@ -108,8 +110,16 @@ impl Context {
         self.halted.contains(id)
     }
 
+    /// Whether `id`'s market is closed for the session
+    /// (`MarketEvent::MarketSession`): orders are still taken and wait for
+    /// the open; no candles come while it stays closed (but a bar that
+    /// closes as the market does, a daily bar, still arrives).
+    pub fn closed(&self, id: &InstrumentId) -> bool {
+        self.closed.contains(id)
+    }
+
     /// Whether an order on `id` can be placed now: neither delisted nor
-    /// halted.
+    /// halted. A closed market can be traded (the order waits for the open).
     pub fn tradable(&self, id: &InstrumentId) -> bool {
         !self.delisted(id) && !self.halted(id)
     }
@@ -142,6 +152,7 @@ pub mod driver {
             history_len: history_len.max(1),
             delisting: HashMap::new(),
             halted: std::collections::HashSet::new(),
+            closed: std::collections::HashSet::new(),
             params,
             outbox: Vec::new(),
         }
@@ -190,6 +201,15 @@ pub mod driver {
     }
 
     /// Records whether `id` is trading (`false`: halted).
+    /// Records a market session closing (`open: false`) or opening.
+    pub fn set_session(ctx: &mut Context, id: InstrumentId, open: bool) {
+        if open {
+            ctx.closed.remove(&id);
+        } else {
+            ctx.closed.insert(id);
+        }
+    }
+
     pub fn set_trading(ctx: &mut Context, id: InstrumentId, trading: bool) {
         if trading {
             ctx.halted.remove(&id);

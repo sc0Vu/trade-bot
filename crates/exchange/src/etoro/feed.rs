@@ -191,11 +191,14 @@ impl TradableSource for EtoroClient {
 }
 
 /// A feed that also reports when each instrument's market opens and
-/// closes, as `MarketEvent::TradingStatus` (`trading: false` while
-/// closed). The engine then treats a closed market like a halt: risk
-/// refuses orders on it, single-coin strategies wait, multi-coin ones
-/// trade the instruments that are open (a stock sleeps overnight while
-/// crypto keeps going). Polled before the first event and every `every`;
+/// closes, as `MarketEvent::MarketSession` (`open: false` while closed).
+/// A closed market isn't a halt: eToro takes orders then and fills them at
+/// the open ("WaitingForMarket", demo 2026-11-20), which is where a
+/// backtest fills them too, so strategies keep deciding (a daily bar closes
+/// after the US market does: refusing orders then meant a daily stock
+/// strategy never traded live). Multi-coin strategies stop waiting for a
+/// closed instrument's bars once they stop coming (a stock sleeps
+/// overnight while crypto keeps going). Polled before the first event and every `every`;
 /// changes only, the first poll reporting markets already closed; stamped
 /// with the next market event's time and delivered before it. A failed
 /// poll is a warning: the last known state stands.
@@ -250,11 +253,11 @@ impl MarketData for MarketHours {
                                 tracing::info!(instrument = %id, "eToro market open");
                             } else {
                                 self.closed.insert(id.clone());
-                                tracing::info!(instrument = %id, "eToro market closed: no orders until it opens");
+                                tracing::info!(instrument = %id, "eToro market closed: orders wait for the open");
                             }
-                            self.queue.push_back(MarketEvent::TradingStatus {
+                            self.queue.push_back(MarketEvent::MarketSession {
                                 instrument: id.clone(),
-                                trading: open,
+                                open,
                                 ts: event.ts(),
                             });
                         }
@@ -600,8 +603,8 @@ mod tests {
         let mut out = Vec::new();
         while let Some(e) = w.next().await.unwrap() {
             out.push(match e {
-                MarketEvent::TradingStatus { trading, ts, .. } => {
-                    format!("status {trading} @{}", ts.as_millis() / 3_600_000)
+                MarketEvent::MarketSession { open, ts, .. } => {
+                    format!("status {open} @{}", ts.as_millis() / 3_600_000)
                 }
                 MarketEvent::Candle(c) => format!("bar {}", c.open_time.as_millis() / 3_600_000),
                 _ => unreachable!(),

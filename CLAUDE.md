@@ -242,6 +242,9 @@ enum MarketEvent { Candle(Candle), Quote(Quote),
                    CorporateAction(CorpAction),
                    Delisting { instrument, at: Option<Timestamp>, ts },
                    TradingStatus { instrument, trading: bool, ts } /*, Expiry deferred */ }
+// MarketSession { instrument, open, ts }: scheduled session close/open at a
+// venue that queues orders while closed (eToro); ctx.closed(id); orders allowed
+// (tradable unchanged), still ranked; multi-coin stops waiting once its bars stop.
 // TradingStatus: venue halt/resume, no schedule (ctx.halted(id); ctx.tradable
 // = !delisted && !halted). While halted: risk + PaperBroker refuse every order
 // on it (resting kept), engine exit pauses, multi-coin strategies don't wait
@@ -660,8 +663,12 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    yen). Market hours: `feed::MarketHours` wraps the feed, polls each
    instrument's `isCurrentlyTradable` (`/api/v1/market-data/search`;
    `isExchangeOpen` ≠ open: false for BTC) before the first event + every
-   `STATUS_POLL` (60 s) → `TradingStatus` on change (closed = halted: risk
-   refuses, single-coin waits, multi-coin trades the open ones), stamped
+   `STATUS_POLL` (60 s) → `MarketSession { open }` on change (closed ≠
+   halted: eToro queues orders while closed, status 11 WaitingForMarket,
+   filled at the open = backtest's next open, demo 2026-11-20; ctx.closed;
+   `completes` skips a closed coin only when its newest bar is > 1 bar
+   older than the deciding one: daily RTH bars closing after the market
+   are still waited for, overnight 5m stocks don't hold up crypto), stamped
    with the next event; poll failure keeps last state. `AAPL` = extended
    hours, `AAPL.RTH` = regular hours. Config `[etoro] w8ben_signed`
    (default false; etoro venue only): real account + eligibility

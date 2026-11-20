@@ -1,6 +1,6 @@
 # eToro demo account: hold the 2 strongest of four large US stocks / ETFs
-# (60-day return), half the capital each. Markets that are closed are
-# treated as halted: no orders on them until they open.
+# (60-day return), half the capital each. Daily bars close after the US
+# market does: orders placed then wait on eToro and fill at the next open.
 #
 #   cargo run -p cli -- run --paper --config config/examples/etoro/top_k_momentum-stocks.toml
 #

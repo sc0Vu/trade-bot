@@ -491,9 +491,12 @@ every position eToro opened carried.
 Fills are polled over REST. Close fees come from eToro's private
 WebSocket, the only place it reports them. A triggered MIT runs under a
 new order id, so its fill is found through the position it opened. Bars
-are polled over REST (eToro's candle channel is refused); a closed market
-is reported as a halt (`TradingStatus`), so single-coin strategies wait
-and multi-coin ones trade what is open. Reconcile at start and exit
+are polled over REST (eToro's candle channel is refused). A closed market
+is reported as a session (`MarketSession`), not a halt: eToro takes
+orders while closed and fills them at the open, where a backtest fills
+them too, so strategies keep deciding (a daily stock bar closes after the
+market does); multi-coin strategies stop waiting for a closed stock's
+bars once they stop coming, so crypto keeps trading overnight. Reconcile at start and exit
 cancels waiting orders, clears our take-profits, and refuses to start if
 the books and the account hold different units of an instrument. During
 the run the same comparison runs once per close time while nothing of
