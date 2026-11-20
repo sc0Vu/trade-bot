@@ -33,7 +33,19 @@ pub struct KlineStream {
     interval: Interval,
     stale_after: std::time::Duration,
     deadline: tokio::time::Instant,
+    /// No frame at all for this long: the connection is presumed dead.
+    silent_after: std::time::Duration,
+    /// When the last frame (of any kind) arrived.
+    heard: tokio::time::Instant,
 }
+
+/// How long a stream may send nothing at all (no kline update, no ping)
+/// before the connection counts as dead. Binance pushes the forming bar
+/// every 2 s and pings regularly, so silence means a dead connection: a
+/// laptop that slept or changed networks. Unlike [`stale_after`] it doesn't
+/// grow with the interval: at 4h bars a dead socket would otherwise go
+/// unnoticed for over 8 hours of awake time.
+pub const SILENT_AFTER: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// How long a feed may go without a closed candle before it counts as
 /// stalled: two bar lengths plus a minute for Binance's publishing delay
@@ -83,7 +95,16 @@ impl KlineStream {
             interval,
             stale_after: stale,
             deadline: tokio::time::Instant::now() + stale,
+            silent_after: SILENT_AFTER,
+            heard: tokio::time::Instant::now(),
         })
+    }
+
+    /// Overrides the silence limit (tests).
+    #[cfg(test)]
+    fn with_silent_after(mut self, d: std::time::Duration) -> Self {
+        self.silent_after = d;
+        self
     }
 
     /// Overrides the stall limit (tests).
@@ -99,16 +120,28 @@ impl KlineStream {
 impl MarketData for KlineStream {
     async fn next(&mut self) -> Result<Option<MarketEvent>, ExchangeError> {
         loop {
-            let msg = tokio::time::timeout_at(self.deadline, self.socket.next())
-                .await
-                .map_err(|_| {
-                    ExchangeError::Feed(format!(
-                        "no closed candle for {}s; feed stalled",
-                        self.stale_after.as_secs()
-                    ))
-                })?
-                .ok_or_else(|| ExchangeError::Feed("websocket closed".into()))?
-                .map_err(|e| ExchangeError::Feed(e.to_string()))?;
+            let silent_at = self.heard + self.silent_after;
+            let msg =
+                match tokio::time::timeout_at(self.deadline.min(silent_at), self.socket.next())
+                    .await
+                {
+                    Err(_) if tokio::time::Instant::now() >= self.deadline => {
+                        return Err(ExchangeError::Feed(format!(
+                            "no closed candle for {}s; feed stalled",
+                            self.stale_after.as_secs()
+                        )));
+                    }
+                    Err(_) => {
+                        return Err(ExchangeError::Feed(format!(
+                            "websocket silent for {}s; connection presumed dead",
+                            self.silent_after.as_secs()
+                        )));
+                    }
+                    Ok(m) => m
+                        .ok_or_else(|| ExchangeError::Feed("websocket closed".into()))?
+                        .map_err(|e| ExchangeError::Feed(e.to_string()))?,
+                };
+            self.heard = tokio::time::Instant::now();
             match msg {
                 Message::Text(text) => {
                     if let Some(c) = parse_kline_message(&text, &self.by_symbol, self.interval)? {
@@ -226,6 +259,30 @@ mod tests {
         let started = std::time::Instant::now();
         let err = feed.next().await.unwrap_err();
         assert!(err.to_string().contains("stalled"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        server.abort();
+    }
+
+    /// A server that accepts the WebSocket and then sends nothing at all
+    /// (a dead connection): `next` fails at the silence limit, long before
+    /// the stall limit (an hour here).
+    #[tokio::test]
+    async fn a_silent_connection_is_an_error_whatever_the_interval() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let _ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let ids: Vec<InstrumentId> = vec!["binance:BTCUSDT".parse().unwrap()];
+        let mut feed = KlineStream::connect(&format!("ws://{addr}"), &ids, Interval::H1)
+            .await
+            .unwrap()
+            .with_silent_after(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let err = feed.next().await.unwrap_err();
+        assert!(err.to_string().contains("silent"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(2));
         server.abort();
     }

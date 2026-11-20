@@ -414,7 +414,10 @@ ABI — compiler mismatch UB).
    rest left to stream (warm-up fetches 60 extra); first connect warms up `history_len`
    bars as `Backfill`; no closed candle within
    `ws::stale_after` = 2×interval + 60s → `Feed` "stalled" error, so half-open
-   socket can't leave bot running blind)
+   socket can't leave bot running blind; plus `ws::SILENT_AFTER` = 90 s with no
+   frame at all (Binance pushes the forming bar every 2 s; MAX answers the
+   30 s pings) → "silent" error, whatever the interval: a laptop that slept
+   or changed networks reconnects within minutes, not 2 bars of awake time)
    + `BinanceBroker` (signed REST via `SignedClient`; key checked at startup
 by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candle; `Transport`/`Clock`
    traits for no-network tests). Orders carry run tag + our `OrderId`

@@ -41,6 +41,11 @@ pub struct MaxKlineStream {
     deadline: Instant,
     ping_every: Duration,
     next_ping: Instant,
+    /// When the last frame (of any kind, a pong included) arrived; nothing
+    /// for [`crate::binance::ws::SILENT_AFTER`] = a dead connection (MAX
+    /// answers the pings sent every `ping_every`).
+    heard: Instant,
+    silent_after: Duration,
 }
 
 impl MaxKlineStream {
@@ -93,6 +98,8 @@ impl MaxKlineStream {
             deadline: now + stale,
             ping_every,
             next_ping: now + ping_every,
+            heard: now,
+            silent_after: crate::binance::ws::SILENT_AFTER,
         })
     }
 }
@@ -101,12 +108,19 @@ impl MaxKlineStream {
 impl MarketData for MaxKlineStream {
     async fn next(&mut self) -> Result<Option<MarketEvent>, ExchangeError> {
         loop {
-            let wake = self.deadline.min(self.next_ping);
+            let silent_at = self.heard + self.silent_after;
+            let wake = self.deadline.min(self.next_ping).min(silent_at);
             let msg = match tokio::time::timeout_at(wake, self.socket.next()).await {
                 Err(_) if Instant::now() >= self.deadline => {
                     return Err(ExchangeError::Feed(format!(
                         "no closed candle for {}s; feed stalled",
                         self.stale_after.as_secs()
+                    )));
+                }
+                Err(_) if Instant::now() >= silent_at => {
+                    return Err(ExchangeError::Feed(format!(
+                        "websocket silent for {}s (no pong either); connection presumed dead",
+                        self.silent_after.as_secs()
                     )));
                 }
                 Err(_) => {
@@ -120,6 +134,7 @@ impl MarketData for MaxKlineStream {
                 Ok(None) => return Err(ExchangeError::Feed("websocket closed".into())),
                 Ok(Some(m)) => m.map_err(|e| ExchangeError::Feed(e.to_string()))?,
             };
+            self.heard = Instant::now();
             match msg {
                 Message::Text(text) => {
                     if let Some(c) = parse_kline_message(&text, &self.by_market, self.interval)? {
@@ -369,6 +384,37 @@ mod tests {
             panic!("no candle");
         };
         assert_eq!(c.close, Price::new(dec!(81410)));
+        server.abort();
+    }
+
+    /// A server that takes the subscription, then neither sends nor
+    /// answers pings (a dead connection): `next` fails at the silence
+    /// limit, not at the stall limit (two minutes at 1m bars).
+    #[tokio::test]
+    async fn a_connection_that_stops_answering_pings_is_an_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let _sub = ws.next().await;
+            // Never read again: no pong goes back.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let ids = vec!["max:BTCUSDT".parse().unwrap()];
+        let mut feed = MaxKlineStream::connect_with(
+            &format!("ws://{addr}"),
+            &ids,
+            Interval::M1,
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap();
+        feed.silent_after = Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let err = feed.next().await.unwrap_err();
+        assert!(err.to_string().contains("silent"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
         server.abort();
     }
 
