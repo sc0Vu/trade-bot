@@ -66,8 +66,18 @@ impl EtoroFeed {
 
     /// Queues `bars` (any instruments) that are new, in order; `backfill`
     /// marks history.
+    /// Queues the bars not yet delivered, in time order. A warm-up is all
+    /// `Backfill`; otherwise only each instrument's newest new bar is a
+    /// `Candle` (a decision) and older ones caught up after a gap (the
+    /// computer slept, eToro was down) are `Backfill`: history, never a
+    /// decision on a stale close. As the Binance feed treats a reconnect.
     fn take(&mut self, mut bars: Vec<Candle>, backfill: bool) {
         bars.sort_by(|a, b| (a.close_time, &a.instrument).cmp(&(b.close_time, &b.instrument)));
+        let mut newest: HashMap<InstrumentId, Timestamp> = HashMap::new();
+        for c in &bars {
+            let t = newest.entry(c.instrument.clone()).or_insert(c.close_time);
+            *t = (*t).max(c.close_time);
+        }
         for c in bars {
             if self
                 .last
@@ -83,10 +93,11 @@ impl EtoroFeed {
             }
             self.last.insert(c.instrument.clone(), c.close_time);
             self.newest = Some(c.close_time);
-            self.queue.push_back(if backfill {
-                MarketEvent::Backfill(c)
-            } else {
+            let decision = !backfill && newest.get(&c.instrument) == Some(&c.close_time);
+            self.queue.push_back(if decision {
                 MarketEvent::Candle(c)
+            } else {
+                MarketEvent::Backfill(c)
             });
         }
     }
@@ -98,6 +109,21 @@ impl EtoroFeed {
         }
         Ok(all)
     }
+}
+
+/// Longest single sleep while waiting for a boundary: the wall clock is
+/// re-read at least this often.
+const WAIT_STEP: Duration = Duration::from_secs(30);
+
+/// When to poll after `now` (ms): `lag` past the next multiple of `bar`.
+fn next_poll_at(now: i64, bar: i64, lag: Duration) -> i64 {
+    (now.div_euclid(bar) + 1) * bar + i64::try_from(lag.as_millis()).unwrap_or(0)
+}
+
+/// How long to sleep next while waiting for `target` (ms); `None` once due.
+fn wait_step(now: i64, target: i64) -> Option<Duration> {
+    let left = u64::try_from(target - now).ok().filter(|l| *l > 0)?;
+    Some(Duration::from_millis(left).min(WAIT_STEP))
 }
 
 fn now_ms() -> i64 {
@@ -119,11 +145,15 @@ impl MarketData for EtoroFeed {
                 self.warmed = true;
                 continue;
             }
-            let bar = self.interval.as_millis();
-            let now = now_ms();
-            let next = (now.div_euclid(bar) + 1) * bar;
-            let wait = u64::try_from(next - now).unwrap_or(0);
-            tokio::time::sleep(Duration::from_millis(wait) + self.lag).await;
+            // Wait for the next boundary by the wall clock, in short steps:
+            // a timer for the whole wait counts only time the computer is
+            // awake (macOS), so a laptop asleep overnight polled hours or
+            // days late (2026-11-20: a daily run saw no bar for 14 h). After
+            // a sleep this polls at once and catches up.
+            let target = next_poll_at(now_ms(), self.interval.as_millis(), self.lag);
+            while let Some(step) = wait_step(now_ms(), target) {
+                tokio::time::sleep(step).await;
+            }
             match self.poll(POLL_BARS).await {
                 Ok(bars) => {
                     self.failing_since = None;
@@ -470,6 +500,60 @@ mod tests {
                 .collect();
         assert_eq!(got, want);
         assert!(matches!(f.queue[4], MarketEvent::Candle(_)));
+    }
+
+    /// Three new daily bars caught up in one poll (the computer slept two
+    /// days): the two older are history, only the newest per instrument is
+    /// a decision.
+    #[test]
+    fn bars_caught_up_after_a_gap_are_history_but_the_newest() {
+        let mut f = feed();
+        f.take(vec![bar("BTC", 1), bar("AAPL", 1)], true);
+        f.queue.clear();
+        f.take(
+            vec![bar("BTC", 2), bar("BTC", 3), bar("BTC", 4), bar("AAPL", 4)],
+            false,
+        );
+        let kinds: Vec<(String, i64, bool)> = f
+            .queue
+            .iter()
+            .map(|e| {
+                let (s, i) = ts(e);
+                (s, i, matches!(e, MarketEvent::Candle(_)))
+            })
+            .collect();
+        let want: Vec<(String, i64, bool)> = [
+            ("BTC", 2, false),
+            ("BTC", 3, false),
+            ("AAPL", 4, true),
+            ("BTC", 4, true),
+        ]
+        .iter()
+        .map(|(s, i, c)| ((*s).to_owned(), *i, *c))
+        .collect();
+        assert_eq!(kinds, want);
+    }
+
+    /// Daily bars: at 20:01 the next poll is 00:00:05 the next day. Waiting
+    /// sleeps at most 30 s at a time against the wall clock, and nothing once
+    /// due; woken hours late (the computer slept), it polls at once.
+    #[test]
+    fn waits_follow_the_wall_clock_in_short_steps() {
+        const DAY: i64 = 86_400_000;
+        let now = 2 * DAY + 20 * 3_600_000 + 60_000;
+        let target = next_poll_at(now, DAY, Duration::from_secs(5));
+        assert_eq!(target, 3 * DAY + 5_000);
+        assert_eq!(wait_step(now, target), Some(Duration::from_secs(30)));
+        assert_eq!(
+            wait_step(target - 2_000, target),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(wait_step(target, target), None);
+        assert_eq!(
+            wait_step(target + 9 * 3_600_000, target),
+            None,
+            "slept past it"
+        );
     }
 
     struct Script(std::sync::Mutex<VecDeque<Result<bool, ExchangeError>>>);

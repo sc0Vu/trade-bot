@@ -579,7 +579,10 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    testnet/demo), real = live gate's three locks; books
    `data/<network>-etoro.db`, state + API as spot. `EtoroFeed` polls
    (warm-up `recent(history_len)` as Backfill; then `LAG` 5 s after each
-   boundary, newest 5 closed bars, new ones as Candle; closed market = no
+   boundary by the wall clock (sleeps ≤ 30 s at a time: a
+   whole-wait timer stalls while a Mac sleeps — 2026-11-20 a daily run got
+   no bar for 14 h), newest 5 closed bars, only the newest new one per
+   instrument as Candle (older caught-up ones Backfill); closed market = no
    bar, not a stall; late bar older than delivered = dropped; failing >
    max_outage = error). `EtoroBroker` (via `EtoroApi`, testable): accepts
    what `TouchFillModel::accepts` does (backtest = live); buy = open
