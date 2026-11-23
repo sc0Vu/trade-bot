@@ -8,16 +8,13 @@
 //! deciding close, lot-rounded. Where the instrument can't be shorted
 //! (spot), down means flat: long-only `tsmom` per coin.
 //!
-//! Trading: a flip closes first, reduce-only, and opens the other side at
-//! the next decision. One order for both would need margin for the whole
-//! flip; after a loss the broker refuses it and the losing position stays
-//! open, refused bar after bar (seen in a 2023 backtest: a short held
-//! through a rally). A reduce-only close needs no margin, so the exit
-//! always goes. Exits and size cuts are reduce-only too; a same-side
-//! resize happens only when the target is more than `band` (fraction of
-//! the target) away, so vol drift doesn't trade every bar. Sizes come from
-//! `capital`, not the wallet (invariant 5): keep `capital` below what the
-//! wallet can margin after losses, or entries are refused. Dust counts as
+//! Trading (`builtin::signed`, shared): a flip closes first, reduce-only,
+//! and opens the other side at the next decision, so a refused flip never
+//! strands a losing position; exits and size cuts are reduce-only; a
+//! same-side resize happens only beyond `band` (fraction of the target), so
+//! vol drift doesn't trade every bar. Sizes come from `capital`, not the
+//! wallet (invariant 5): keep `capital` below what the wallet can margin
+//! after losses, or entries are refused. Dust counts as
 //! flat; no decision on a coin while an order on it is working or
 //! cancelling. Stateless. Leverage and margin are the broker's.
 //!
@@ -30,9 +27,7 @@
 
 use crate::indicator;
 use crate::{Context, Params, Strategy, StrategyError, StrategyRegistration, exact_decimal};
-use bot_core::{
-    Candle, Decimal, Instrument, InstrumentId, Notional, OrderKind, Qty, Side, Signal, Size,
-};
+use bot_core::{Candle, Decimal, Instrument, InstrumentId, Notional, Signal};
 use rust_decimal::MathematicalOps;
 use serde::Deserialize;
 
@@ -180,67 +175,10 @@ impl Strategy for TsmomLongShort {
         let Some(target) = self.target(ctx, inst, c) else {
             return Vec::new();
         };
-        // Held, signed; dust (no order the venue would take) is flat.
-        let raw = ctx.position(coin).qty().get();
-        let units = inst.round_qty(Qty::new(raw.abs()));
-        let closing = if raw.is_sign_negative() {
-            Side::Buy
-        } else {
-            Side::Sell
-        };
-        let held = if inst.check_market(units, c.close, closing).is_ok() {
-            if raw.is_sign_negative() {
-                -units.get()
-            } else {
-                units.get()
-            }
-        } else {
-            Decimal::ZERO
-        };
-        let delta = target - held;
-        if delta.is_zero() {
-            return Vec::new();
-        }
-        let same_side = held.is_zero()
-            || target.is_zero()
-            || (held > Decimal::ZERO) == (target > Decimal::ZERO);
-        let entering = held.is_zero();
-        let flipping = !same_side;
-        // Same side, not entering: resize only beyond the band.
-        if same_side && !entering && !target.is_zero() && delta.abs() <= self.p.band * target.abs()
-        {
-            return Vec::new();
-        }
-        // A flip closes the whole position now; the new side opens at the
-        // next decision, from flat.
-        let delta = if flipping { -held } else { delta };
-        let side = if delta > Decimal::ZERO {
-            Side::Buy
-        } else {
-            Side::Sell
-        };
-        let qty = Qty::new(delta.abs());
-        if inst.check_market(qty, c.close, side).is_err() {
-            return Vec::new();
-        }
-        // Toward zero (exit, cut, a flip's close) is reduce-only; entries
-        // and same-side growth open.
-        let reducing = !entering && (flipping || target.abs() < held.abs());
-        vec![if reducing {
-            Signal::Reduce {
-                instrument: coin.clone(),
-                side,
-                qty,
-                kind: OrderKind::Market,
-            }
-        } else {
-            Signal::Submit {
-                instrument: coin.clone(),
-                side,
-                size: Size::Base(qty),
-                kind: OrderKind::Market,
-            }
-        }]
+        let held = super::signed::held(inst, ctx.position(coin).qty().get(), c);
+        super::signed::step(inst, c, held, target, self.p.band)
+            .into_iter()
+            .collect()
     }
 }
 
@@ -249,7 +187,7 @@ mod tests {
     use super::*;
     use crate::builtin::test_support::{btcusdt, candle};
     use crate::{build, driver, names};
-    use bot_core::{AssetClass, InstrumentSpec, Position};
+    use bot_core::{AssetClass, InstrumentSpec, OrderKind, Position, Qty, Side, Size};
     use rust_decimal_macros::dec;
 
     /// target_vol 10 (1000%) so `max_weight` binds and sizes are exact:
