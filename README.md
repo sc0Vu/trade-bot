@@ -66,7 +66,17 @@ These rules are invariants in the code, not just conventions:
 
 ## Quick start
 
-Prebuilt binaries for Linux (x86_64, arm64; glibc 2.35+), macOS (Apple
+On Linux or macOS, install the latest release (checksum verified, into
+`~/.local/bin`; the example configs and scripts go to
+`~/.local/share/trade-bot`):
+
+```sh
+curl -fsSL https://sc0vu.github.io/trade-bot/install.sh | sh
+```
+
+The script is [`site/install.sh`](site/install.sh); `VERSION=0.1.3` pins a
+release, `INSTALL_DIR` / `SHARE_DIR` move it. Or by hand: prebuilt
+binaries for Linux (x86_64, arm64; glibc 2.35+), macOS (Apple
 silicon, Intel) and Windows (x86_64) are on the
 [releases page](https://github.com/sc0Vu/trade-bot/releases). Each archive
 holds `trade-bot`, which is the same program as `cargo run -p cli --`

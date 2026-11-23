@@ -231,7 +231,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
         and crypto, and MAX, with exact decimal money and no lookahead.</p>
       <div class="cta">
         <a class="btn primary" href="https://github.com/sc0Vu/trade-bot">View on GitHub</a>
-        <a class="btn" href="https://github.com/sc0Vu/trade-bot/releases">Download a release</a>
+        <a class="btn" href="#start">Install</a>
         <a class="btn" href="https://github.com/sc0Vu/trade-bot/blob/main/doc/architecture.md">Architecture</a>
       </div>
     </div>
@@ -251,7 +251,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
     <div class="stat" role="listitem"><b>0</b><span>floats in money: every price is a Decimal</span></div>
     <div class="stat" role="listitem"><b>3</b><span>separate locks before a real order</span></div>
   </div>
-  <p class="status"><strong>Status: v1.</strong> Backtesting and paper trading are the supported paths: Binance testnet
+  <p class="status"><strong>Status: v1 (release v0.1.3).</strong> Backtesting and paper trading are the supported paths: Binance testnet
     or Demo Trading, eToro's demo account, paper on Binance futures or MAX live bars. Real-money trading is behind three
     separate locks and has not been exercised against mainnet. No strategy here has a demonstrated edge: backtest
     results come from a stated fill model and are not a promise.</p>
@@ -279,8 +279,9 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
       <div class="venue">
         <h3>eToro</h3>
         <p class="what">Stocks and crypto as the real asset, demo or real account. Market orders,
-          market-if-touched buys, take-profit sells; market hours respected; exact fees from the private
-          WebSocket feed.</p>
+          market-if-touched buys, take-profit sells; an order placed while the market is closed waits for the open,
+          as the backtest assumes; requests paced within eToro's limits; exact fees from the private WebSocket
+          feed.</p>
         <div class="caps"><span class="cap ok">backtest</span><span class="cap ok">demo account</span><span class="cap no">CFD shorts</span><span class="cap part">live: not run on real money</span></div>
       </div>
       <div class="venue">
@@ -454,11 +455,14 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
   <div class="wrap">
     <div class="kicker">Five minutes</div>
     <h2>Quick start</h2>
-    <p class="sub">Prebuilt binaries for Linux, macOS and Windows are on the
-      <a href="https://github.com/sc0Vu/trade-bot/releases">releases page</a>. Building from source needs only
-      <code>rustup</code>; the toolchain is pinned. Keys always come from the environment.</p>
+    <p class="sub">Install a prebuilt binary (Linux, macOS, Windows) from the
+      <a href="https://github.com/sc0Vu/trade-bot/releases">releases page</a>, or build from source with
+      <code>rustup</code> (the toolchain is pinned; there, <code>trade-bot …</code> is <code>cargo run -p cli -- …</code>
+      and <code>make</code> has shortcuts). Keys always come from the environment.</p>
     <div class="tabs" role="tablist" aria-label="Quick start">
-      <button class="tab" role="tab" aria-selected="true" aria-controls="p-bt" id="t-bt">backtest</button>
+      <button class="tab" role="tab" aria-selected="true" aria-controls="p-in" id="t-in">install</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-st" id="t-st">strategies</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-bt" id="t-bt">backtest</button>
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-bn" id="t-bn">binance paper</button>
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-pp" id="t-pp">perpetuals</button>
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-et" id="t-et">etoro demo</button>
@@ -468,7 +472,26 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
     <div class="term">
       <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~/trade-bot</span></div>
       <button class="copy" type="button">copy</button>
-<div class="panel" role="tabpanel" id="p-bt" aria-labelledby="t-bt"><pre><span class="c"># cache public history (no key needed), then backtest on it</span>
+<div class="panel" role="tabpanel" id="p-in" aria-labelledby="t-in"><pre><span class="c"># Linux / macOS: latest release, checksum verified, into ~/.local/bin</span>
+<span class="p">$ </span>curl -fsSL https://sc0vu.github.io/trade-bot/install.sh | sh
+<span class="p">$ </span>trade-bot --version
+<span class="c"># or by hand: pick your archive on the releases page, check it, unpack it</span>
+<span class="p">$ </span>shasum -a 256 -c SHA256SUMS --ignore-missing
+<span class="p">$ </span>tar xzf trade_bot_&lt;os&gt;_&lt;arch&gt;.&lt;version&gt;.tar.gz
+<span class="c"># Windows: unzip trade_bot_windows_amd64.&lt;version&gt;.zip and run trade-bot.exe</span></pre></div>
+<div class="panel" role="tabpanel" id="p-st" aria-labelledby="t-st" hidden><pre><span class="c"># 28 built-ins, each with a runnable example (installed under ~/.local/share/trade-bot)</span>
+<span class="p">$ </span>ls config/examples/                     <span class="c"># sma_trend.toml, top_k_momentum.toml, …</span>
+<span class="p">$ </span>cp config/examples/sma_trend.toml my.toml
+<span class="c"># edit [strategy.params] in my.toml: coin, sma_period, quote_amount, fee, slippage_bps</span>
+<span class="c"># 1. backtest it against buy-and-hold (p.toml = just the params table)</span>
+<span class="p">$ </span>trade-bot fetch-data --symbol BTCUSDT --interval 4h --from 2024-01-01
+<span class="p">$ </span>trade-bot backtest --strategy sma_trend --params p.toml --symbol BTCUSDT \
+    --interval 4h --from 2024-06-01 --to 2026-11-01 --slippage-bps 5
+<span class="c"># 2. then paper trade it (Binance testnet by default)</span>
+<span class="p">$ </span>trade-bot run --paper --config my.toml
+<span class="c"># your own: a Rhai script (name = "rhai"), see doc/scripting.md,</span>
+<span class="c"># or a Rust built-in, see doc/builtin-strategies.md</span></pre></div>
+<div class="panel" role="tabpanel" id="p-bt" aria-labelledby="t-bt" hidden><pre><span class="c"># cache public history (no key needed), then backtest on it</span>
 <span class="p">$ </span>make fetch-data SYMBOL=BTCUSDT FROM=2024-01-01
 <span class="p">$ </span>make backtest STRATEGY=buy_and_hold SYMBOL=BTCUSDT \
     FROM=2024-01-01 TO=2024-06-01 SLIPPAGE_BPS=5 PARAMS=my-params.toml</pre></div>
