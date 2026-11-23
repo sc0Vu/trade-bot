@@ -26,6 +26,16 @@
     color-scheme: light;
   }
 }
+:root[data-theme="light"] {
+  --bg: #f7f8fa; --bg2: #eef1f5; --surface: #ffffff; --surface2: #f3f5f8; --text: #0f1720; --muted: #4f5d6e;
+  --faint: #8492a3; --line: #e1e6ed; --line2: #ccd4de;
+  --up: #059669; --down: #dc2626; --accent: #059669; --accent2: #2563eb; --warn: #b45309;
+  --glow: rgba(5, 150, 105, .10);
+  color-scheme: light;
+}
+.theme-toggle { margin-left: 14px; width: 34px; height: 32px; border-radius: 8px; border: 1px solid var(--line2);
+  background: transparent; color: var(--text); font-size: 16px; line-height: 1; cursor: pointer; }
+.theme-toggle:hover { background: var(--surface2); }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
@@ -203,6 +213,10 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
   .search { margin-left: 0; flex: 1 1 100%; }
 }
 </style>
+<script>
+  // Theme before first paint: saved choice, else the system's.
+  try { const t = localStorage.getItem("trade-bot-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}
+</script>
 </head>
 <body>
 
@@ -216,6 +230,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
       <a href="#strategies">Strategies</a>
       <a href="#start">Quick start</a>
       <a class="gh" href="https://github.com/sc0Vu/trade-bot">GitHub ↗</a>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch theme">☾</button>
     </nav>
   </div>
 </header>
@@ -636,6 +651,17 @@ params = { coins = ["QQQ", "MSFT", "META"], k = 1, lookback = 60, … }
     catch { copy.textContent = 'select & copy'; }
     setTimeout(() => (copy.textContent = 'copy'), 1600);
   });
+})();
+</script>
+<script>
+(() => {
+  // Light/dark toggle: flips the current look, remembered in this browser.
+  const btn = document.getElementById("theme-toggle"), root = document.documentElement;
+  const dark = () => root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  const show = () => { const d = dark(); btn.textContent = d ? "☀" : "☾"; btn.setAttribute("aria-label", d ? "Switch to light theme" : "Switch to dark theme"); btn.title = btn.getAttribute("aria-label"); };
+  btn.addEventListener("click", () => { root.dataset.theme = dark() ? "light" : "dark"; try { localStorage.setItem("trade-bot-theme", root.dataset.theme); } catch {} show(); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", show);
+  show();
 })();
 </script>
 </body>

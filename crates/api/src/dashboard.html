@@ -10,12 +10,20 @@
     --accent: #2563eb; --good: #15803d; --bad: #b91c1c; --warn: #b45309;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
+  :root { color-scheme: light; }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: #0f1216; --panel: #171b21; --ink: #e6e9ed; --muted: #98a2ae; --line: #2a3038;
-      --accent: #60a5fa; --good: #4ade80; --bad: #f87171; --warn: #fbbf24;
+      --accent: #60a5fa; --good: #4ade80; --bad: #f87171; --warn: #fbbf24; color-scheme: dark;
     }
   }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --panel: #171b21; --ink: #e6e9ed; --muted: #98a2ae; --line: #2a3038;
+    --accent: #60a5fa; --good: #4ade80; --bad: #f87171; --warn: #fbbf24; color-scheme: dark;
+  }
+  .theme-toggle { width: 32px; height: 30px; border-radius: 6px; border: 1px solid var(--line); background: transparent;
+                  color: var(--ink); font-size: 15px; line-height: 1; cursor: pointer; }
+  .theme-toggle:hover { background: var(--bg); }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
          font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
@@ -51,6 +59,10 @@
   .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
   @media (max-width: 900px) { .two { grid-template-columns: minmax(0, 1fr); } }
 </style>
+<script>
+  // Theme before first paint: saved choice, else the system's.
+  try { const t = localStorage.getItem("trade-bot-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}
+</script>
 </head>
 <body>
 <header>
@@ -58,6 +70,7 @@
   <span class="pill" id="strategy">…</span>
   <span class="pill" id="network">…</span>
   <span id="state">connecting…</span>
+  <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch theme">☾</button>
 </header>
 <main>
   <section id="auth">
@@ -241,6 +254,17 @@ $("save").addEventListener("click", () => {
 });
 refresh();
 setInterval(refresh, 5000);
+</script>
+<script>
+(() => {
+  // Light/dark toggle: flips the current look, remembered in this browser.
+  const btn = document.getElementById("theme-toggle"), root = document.documentElement;
+  const dark = () => root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  const show = () => { const d = dark(); btn.textContent = d ? "☀" : "☾"; btn.setAttribute("aria-label", d ? "Switch to light theme" : "Switch to dark theme"); btn.title = btn.getAttribute("aria-label"); };
+  btn.addEventListener("click", () => { root.dataset.theme = dark() ? "light" : "dark"; try { localStorage.setItem("trade-bot-theme", root.dataset.theme); } catch {} show(); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", show);
+  show();
+})();
 </script>
 </body>
 </html>
