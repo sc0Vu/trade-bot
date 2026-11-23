@@ -11,6 +11,7 @@ mod logging;
 mod service;
 mod shutdown;
 mod state;
+mod sweep;
 mod symbols;
 mod telemetry;
 
@@ -52,6 +53,9 @@ enum Command {
     FetchData(FetchArgs),
     /// Replay cached klines through the engine with a paper broker.
     Backtest(Box<BacktestArgs>),
+    /// Walk-forward test of a parameter grid: pick the best combination on
+    /// each train window, score only that pick on the unseen window after.
+    Sweep(Box<sweep::SweepArgs>),
     /// Trade on Binance: testnet or demo (`--paper`), mainnet only behind
     /// the live gate.
     Run(RunArgs),
@@ -730,7 +734,7 @@ fn data_url(venue: Venue) -> &'static str {
     }
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 struct BacktestArgs {
     /// Registered strategy name.
     #[arg(long)]
@@ -1350,6 +1354,16 @@ async fn real_main() -> anyhow::Result<()> {
         Command::Backtest(a) => {
             init_logging(&config::log_filter(rust_log, None, "warn"));
             backtest(*a).await
+        }
+        Command::Sweep(a) => {
+            init_logging(&config::log_filter(rust_log, None, "warn"));
+            let result = sweep::run(&a).await?;
+            for n in &result.notes {
+                eprintln!("{n}");
+            }
+            println!("{result}");
+            println!("(model output under the stated fill model; unverified against live)");
+            Ok(())
         }
     }
 }

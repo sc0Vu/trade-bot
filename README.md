@@ -291,6 +291,45 @@ nobody announced, like LUNA's or FTT's in 2022), or a gap longer than
 at its last price, as it did for real holders. A symbol the venue later
 reused for another coin is never spliced onto the first.
 
+### Tuning without fooling yourself: `sweep`
+
+Pick a strategy's parameters by backtesting them on the same period and
+the best result measures the fit to that past, not the strategy. `sweep`
+tests a parameter grid walk-forward: on each train window it backtests
+every combination and picks the best; it then scores only that pick on the
+window right after, which the pick never saw. Windows advance by the test
+length. The grid is the params file plus a `[sweep]` table:
+
+```toml
+coin = "BTCUSDT"
+quote_amount = "900"
+fee = "0.001"
+slippage_bps = "5"
+[sweep]                      # every combination: 4 × 3 = 12
+sma_period = [20, 50, 100, 200]
+band_pct = ["0", "0.01", "0.03"]
+```
+
+```sh
+cargo run -p cli -- sweep --strategy sma_trend --params grid.toml --symbol BTCUSDT \
+    --interval 4h --from 2022-01-01 --to 2026-11-01 --slippage-bps 5 \
+    --train-days 365 --test-days 90 [--objective sharpe|return|calmar]
+```
+
+It takes every `backtest` flag. The report lists each window's pick, its
+train score, and its test return and drawdown next to the *median*
+combination's test return, then the out-of-sample results chained. If
+the pick doesn't beat the median, choosing parameters added nothing over
+choosing at random. The run above (measured 2026-11-23, model output):
+the picks chained to +106%, the median combination to +110%, and the
+picks' mean return fell from +38.5% on train windows to +7.0% on test
+windows. sma_trend's parameters, tuned on the past year, don't carry
+forward. Each window is its own backtest from `--initial-cash`: a holding
+is marked at the window's last close, not sold, so the chained figure
+approximates one continuous run. At most `--max-combos` (200)
+combinations: each costs two backtests per window, and more of them make
+a lucky fit likelier.
+
 `--earn-ratio 0.1` holds 10% of the cash back, as a live run sweeping that
 share into Binance Simple Earn would (a strategy sees the same refusals);
 `--earn-apr 0.04` values its interest at an assumed 4% a year. Binance's

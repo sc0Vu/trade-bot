@@ -759,6 +759,14 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    running peak (starts at initial cash). `min_cash` = lowest cash after each
    instant's fills (same ts = simultaneous; replay order must not decide
    it); report ledger independent of broker → negative = broker let overspend through (bug).
+   Walk-forward (`cli::sweep`, `trade-bot sweep` = backtest flags + `--train-days`
+   `--test-days` `--objective sharpe|return|calmar` `--max-combos` 200): params
+   file + `[sweep]` (top-level key = array; cartesian, first key slowest);
+   rolling windows step = test length, short tail dropped; every combo on
+   train + test via `backtest_report`; pick = best train score (tie →
+   earliest, unscored never; none → cash 0%); report per window pick vs
+   median combo's test return, chained Π(1+r)−1 (each window flat from
+   initial cash, holdings marked not sold: approximation), train → test gap.
    `BacktestProvider` takes `initial_cash` = PaperBroker balance (first
    instrument's quote; other-quoted orders refused) = report start. Closed trade = sell; win = realized
    delta > 0. Sharpe = mean/sample-sd of per-bar equity returns × √(bars/yr,
@@ -1205,7 +1213,7 @@ crates/
   storage/     SeaORM entities + repositories
   api/         read-only HTTP API (axum): /status /positions /open-orders /orders /trades;
                no write route ever (orders only from strategy via risk)
-  cli/         binary: run | backtest | fetch-data | migrate | console
+  cli/         binary: run | backtest | sweep | fetch-data | migrate | console
                (`console`: axum on loopback only, page `console.html` embedded;
                catalog / scripts get+put / example params / check / lookahead
                (`check_lookahead`) / restart (`check_restart`; both 10 cuts,

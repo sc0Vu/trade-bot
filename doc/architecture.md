@@ -338,6 +338,14 @@ Regression tests (`crates/backtest/tests/ratio_hop*.rs`, `sma_trend.rs`)
 replay small hand-built fixtures and assert values worked out by hand, so a
 refactor can't silently change P&L.
 
+Parameters are tuned walk-forward (`trade-bot sweep`, `crates/cli/src/sweep.rs`):
+the range is cut into rolling train/test windows; every combination of a
+`[sweep]` grid is backtested on each train window, the best (by Sharpe,
+return or return/drawdown) is scored on the following, unseen test window,
+and the report sets that pick against the median combination there. Only
+test windows count, so a fit to the past shows up as a train → test gap
+instead of a headline number.
+
 ## Binance
 
 **Networks.** `exchange.network` selects the hosts:

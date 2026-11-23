@@ -502,6 +502,9 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
 <span class="p">$ </span>trade-bot fetch-data --symbol BTCUSDT --interval 4h --from 2024-01-01
 <span class="p">$ </span>trade-bot backtest --strategy sma_trend --params p.toml --symbol BTCUSDT \
     --interval 4h --from 2024-06-01 --to 2026-11-01 --slippage-bps 5
+<span class="c"># tune walk-forward: [sweep] sma_period = [20, 50, 100] in p.toml; only unseen windows count</span>
+<span class="p">$ </span>trade-bot sweep --strategy sma_trend --params p.toml --symbol BTCUSDT --interval 4h \
+    --from 2022-01-01 --to 2026-11-01 --slippage-bps 5 --train-days 365 --test-days 90
 <span class="c"># 2. then paper trade it (Binance testnet by default)</span>
 <span class="p">$ </span>trade-bot run --paper --config my.toml
 <span class="c"># your own: a Rhai script (name = "rhai"), see doc/scripting.md,</span>
