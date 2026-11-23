@@ -45,6 +45,24 @@ impl SqlStore {
         Ok(store)
     }
 
+    /// A fresh, migrated database in memory, gone when the store is
+    /// dropped: the read-only API's books for a run whose broker keeps the
+    /// real ones (a local paper run), filled by the caller. One connection:
+    /// each SQLite connection to `:memory:` is a separate database.
+    pub async fn in_memory() -> Result<Self, StorageError> {
+        let mut opts = sea_orm::ConnectOptions::new("sqlite::memory:");
+        opts.max_connections(1)
+            .min_connections(1)
+            .sqlx_logging(false);
+        let db = Database::connect(opts)
+            .await
+            .map_err(StorageError::backend)?;
+        Migrator::up(&db, None)
+            .await
+            .map_err(StorageError::backend)?;
+        Ok(Self { db })
+    }
+
     /// Ties this database to `network` (`testnet`, `demo`, `live`): the
     /// first call stamps it, later calls must name the same network or get
     /// [`StorageError::WrongNetwork`]. Holdings from fake-money fills must

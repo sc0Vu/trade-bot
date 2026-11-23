@@ -8,6 +8,7 @@ mod console;
 mod date;
 mod gate;
 mod logging;
+mod paper_books;
 mod service;
 mod shutdown;
 mod state;
@@ -257,23 +258,16 @@ async fn run_max_paper(cfg: config::Config) -> anyhow::Result<()> {
         },
         cfg.whitelist.clone(),
     );
-    if cfg.api.enabled {
-        tracing::warn!("api is not available on a MAX paper run (no order database); not started");
-    }
-    let params = Params::new(cfg.strategy.params);
+    let params = Params::new(cfg.strategy.params.clone());
     let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
     let engine_cfg = EngineConfig {
-        whitelist: cfg.whitelist,
+        whitelist: cfg.whitelist.clone(),
         history_len: cfg.engine.history_len,
         delist_exit: cfg.engine.delist_exit(),
         kill_switch: cfg.engine.kill_switch(),
     };
     telemetry::start(&cfg.metrics);
-    let mut observer = telemetry::RunObserver {
-        include_money: cfg.metrics.include_money,
-        live: None,
-        state: None,
-    };
+    let mut observer = paper_observer(&cfg).await?;
     tracing::info!(
         provider = provider.id(),
         strategy = %cfg.strategy.name,
@@ -292,9 +286,9 @@ async fn run_max_paper(cfg: config::Config) -> anyhow::Result<()> {
 
 /// A USDⓈ-M paper run: live futures prices and funding, the local perp
 /// broker with `[paper]` costs and `[perp]` margin; brackets read from
-/// the account (signed, keys from env). Like MAX paper: no db, no API, no
-/// state resume (the broker starts flat), nothing sent to Binance but
-/// data requests.
+/// the account (signed, keys from env). Like MAX paper: no db (the API,
+/// if on, reads in-memory books fed from the run), no state resume (the
+/// broker starts flat), nothing sent to Binance but data requests.
 async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
     use exchange::binance::usdm_paper::{UsdmPaperConfig, UsdmPaperProvider};
     let paper = cfg
@@ -337,25 +331,16 @@ async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
         },
         cfg.whitelist.clone(),
     );
-    if cfg.api.enabled {
-        tracing::warn!(
-            "api is not available on a perpetual paper run (no order database); not started"
-        );
-    }
-    let params = Params::new(cfg.strategy.params);
+    let params = Params::new(cfg.strategy.params.clone());
     let mut strategy = strategy::build(&cfg.strategy.name, &params)?;
     let engine_cfg = EngineConfig {
-        whitelist: cfg.whitelist,
+        whitelist: cfg.whitelist.clone(),
         history_len: cfg.engine.history_len,
         delist_exit: cfg.engine.delist_exit(),
         kill_switch: cfg.engine.kill_switch(),
     };
     telemetry::start(&cfg.metrics);
-    let mut observer = telemetry::RunObserver {
-        include_money: cfg.metrics.include_money,
-        live: None,
-        state: None,
-    };
+    let mut observer = paper_observer(&cfg).await?;
     tracing::info!(
         provider = provider.id(),
         strategy = %cfg.strategy.name,
@@ -371,6 +356,65 @@ async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
     };
     let killed = finish_run(outcome?);
     tripped(killed)
+}
+
+/// Serves the read-only API (and its dashboard, if asked) over `books`
+/// when `[api]` enables it; the sender for the live view, or `None` when
+/// off. A bind failure is a warning: the API never stops trading.
+async fn serve_api(
+    cfg: &config::Config,
+    books: Arc<dyn api::ApiBooks>,
+    network: &str,
+    token: Option<String>,
+) -> Option<tokio::sync::watch::Sender<Option<engine::Snapshot>>> {
+    if !cfg.api.enabled {
+        return None;
+    }
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    let state = api::ApiState {
+        info: api::RunInfo {
+            network: network.to_owned(),
+            strategy: cfg.strategy.name.clone(),
+            started_at: now(),
+        },
+        live: rx,
+        books,
+        token,
+        dashboard: cfg.api.dashboard,
+    };
+    match api::serve(cfg.api.listen, state).await {
+        Ok(addr) if cfg.api.dashboard => {
+            tracing::info!(%addr, url = %format!("http://{addr}/"), "API listening; dashboard at /")
+        }
+        Ok(addr) => tracing::info!(%addr, "API listening"),
+        Err(e) => {
+            tracing::warn!(error = %e, listen = %cfg.api.listen, "API not started; trading continues");
+        }
+    }
+    Some(tx)
+}
+
+/// The observer of a local paper run (no database): metrics, and the API
+/// over in-memory books fed from its snapshots ([`paper_books`]); network
+/// shown as `paper`. No state saved: the broker starts flat every run.
+async fn paper_observer(cfg: &config::Config) -> anyhow::Result<telemetry::RunObserver> {
+    let mut observer = telemetry::RunObserver {
+        include_money: cfg.metrics.include_money,
+        live: None,
+        state: None,
+        paper: None,
+    };
+    if cfg.api.enabled {
+        let token = config::api_token(&cfg.api, std::env::var(config::API_TOKEN_VAR).ok())?;
+        let books = Arc::new(
+            SqlStore::in_memory()
+                .await
+                .context("the API's in-memory books")?,
+        );
+        observer.live = serve_api(cfg, books.clone(), "paper", token).await;
+        observer.paper = Some(paper_books::Recorder::start(books));
+    }
+    Ok(observer)
 }
 
 /// What a run with books observes: saved strategy state (loaded for
@@ -396,37 +440,13 @@ async fn observe_run(
         now,
     );
     telemetry::start(&cfg.metrics);
-    let live = if cfg.api.enabled {
-        let (tx, rx) = tokio::sync::watch::channel(None);
-        let state = api::ApiState {
-            info: api::RunInfo {
-                network: config::network_name(network).to_owned(),
-                strategy: cfg.strategy.name.clone(),
-                started_at: now(),
-            },
-            live: rx,
-            books,
-            token: api_token,
-            dashboard: cfg.api.dashboard,
-        };
-        match api::serve(cfg.api.listen, state).await {
-            Ok(addr) if cfg.api.dashboard => {
-                tracing::info!(%addr, url = %format!("http://{addr}/"), "API listening; dashboard at /")
-            }
-            Ok(addr) => tracing::info!(%addr, "API listening"),
-            Err(e) => {
-                tracing::warn!(error = %e, listen = %cfg.api.listen, "API not started; trading continues");
-            }
-        }
-        Some(tx)
-    } else {
-        None
-    };
+    let live = serve_api(cfg, books, config::network_name(network), api_token).await;
     Ok((
         telemetry::RunObserver {
             include_money: cfg.metrics.include_money,
             live,
             state: Some(saver),
+            paper: None,
         },
         resume,
     ))

@@ -108,6 +108,11 @@ pub struct Snapshot {
     pub last_candles: Vec<Candle>,
     /// The strategy's [`Strategy::save_state`] after this event.
     pub strategy_state: Option<serde_json::Value>,
+    /// Fills settled at this event, in settle order: for an observer that
+    /// keeps its own record (a paper run's API books). Not serialized:
+    /// `fills` counts them all.
+    #[serde(skip)]
+    pub new_fills: Vec<bot_core::Fill>,
 }
 
 /// Watches a run from outside. Called after every event has been fully
@@ -232,6 +237,7 @@ async fn run_inner<P: Provider + ?Sized>(
         }
 
         let mut fills = run.broker.settle(&event).await?;
+        let first_fill = run.report.fills.len();
         if !recovered.is_empty() && !matches!(event, MarketEvent::Backfill(_)) {
             let mut late = std::mem::take(&mut recovered);
             late.append(&mut fills);
@@ -343,6 +349,7 @@ async fn run_inner<P: Provider + ?Sized>(
                     .filter_map(|id| ctx.last_candle(id).cloned())
                     .collect(),
                 strategy_state: strategy.save_state(),
+                new_fills: run.report.fills[first_fill..].to_vec(),
             });
         }
     }
@@ -1064,6 +1071,12 @@ mod tests {
         let last = keep.0.last().unwrap();
         assert_eq!(last.events, 3);
         assert_eq!(last.fills, 1);
+        // The one fill (the buy decided at c0, filled at c1's open) is
+        // carried by c1's snapshot alone: an observer recording
+        // `new_fills` sees each fill once.
+        let carried: Vec<usize> = keep.0.iter().map(|s| s.new_fills.len()).collect();
+        assert_eq!(carried, [0, 1, 0]);
+        assert_eq!(keep.0[1].new_fills, r.fills);
         assert_eq!(last.positions, r.positions);
         assert!(last.open_orders.is_empty());
         assert_eq!(last.last_candles, vec![three_candles_last()]);

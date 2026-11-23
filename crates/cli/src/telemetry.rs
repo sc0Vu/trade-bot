@@ -59,6 +59,8 @@ pub struct RunObserver {
     pub live: Option<tokio::sync::watch::Sender<Option<Snapshot>>>,
     /// Saves the strategy's state when it changes.
     pub state: Option<crate::state::Saver>,
+    /// A local paper run's API books, fed from each snapshot.
+    pub paper: Option<crate::paper_books::Recorder>,
 }
 
 /// Exporter-only conversion: a gauge is display and alerting, never read
@@ -75,6 +77,9 @@ impl Observer for RunObserver {
         }
         if let Some(saver) = &self.state {
             saver.publish(&s.strategy_state);
+        }
+        if let Some(books) = &mut self.paper {
+            books.publish(s);
         }
         metrics::gauge!(OPEN_ORDERS).set(s.open_orders.len() as f64);
         for c in &s.last_candles {
@@ -124,6 +129,7 @@ mod tests {
                 include_money,
                 live: None,
                 state: None,
+                paper: None,
             }
             .on_snapshot(&snapshot());
         });
@@ -137,6 +143,7 @@ mod tests {
             include_money: false,
             live: Some(tx),
             state: None,
+            paper: None,
         };
         o.on_snapshot(&snapshot());
         assert_eq!(*rx.borrow(), Some(snapshot()));

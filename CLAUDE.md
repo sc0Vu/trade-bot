@@ -193,7 +193,9 @@ every `FUNDING_POLL` (5 min), delivers before the next event stamped with
 its ts; no mark → skipped + warn; failure = warning. Config `[perp]
 { leverage, margin, brackets_from (default demo), clearance }` + `[paper]`
 required, no 1s, no URL overrides; brackets signed via env key at start;
-no db / API / resume (flat broker), like MAX paper.
+no db / resume (flat broker), like MAX paper; `[api]` over in-memory books
+(`cli::paper_books`: `SqlStore::in_memory`, fed from `Snapshot.new_fills` +
+changed positions by a background task; network shown `paper`; `/orders` empty).
 Orders (`binance::usdm_live`, `[perp] fills = "venue"`; default "local" =
 paper above): `UsdmProvider` on `exchange.network`'s futures host (live
 fapi / demo-fapi / testnet.binancefuture.com; ws `/market` path on each;
@@ -552,7 +554,7 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    match venue). MAX: `[paper]` {initial_cash, fee, slippage_bps — strings,
    slippage required} required, no 1s, no rest/ws_url, `mode = "live"` /
    `--live` refused (`gate::decide_max`); `exchange.network` ignored.
-   `cli::run_max_paper`: no creds, no db, no API (warned), no state resume
+   `cli::run_max_paper`: no creds, no db, API over in-memory books (as perp paper), no state resume
    (would contradict a flat broker), no close-out (nothing on MAX).
 1c. **eToro** — `exchange::etoro` (docs api-portal.etoro.com, read
    2026-11-18; OpenAPI v1.417.0). A broker: positions, not an order book.
