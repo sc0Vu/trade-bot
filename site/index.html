@@ -261,7 +261,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
   </div>
 
   <div class="stats" role="list">
-    <div class="stat" role="listitem"><b>28</b><span>built-in strategies, plus Rhai scripts</span></div>
+    <div class="stat" role="listitem"><b>29</b><span>built-in strategies, plus Rhai scripts</span></div>
     <div class="stat" role="listitem"><b>4</b><span>venues: Binance spot, USDⓈ-M, eToro, MAX</span></div>
     <div class="stat" role="listitem"><b>0</b><span>floats in money: every price is a Decimal</span></div>
     <div class="stat" role="listitem"><b>3</b><span>separate locks before a real order</span></div>
@@ -453,6 +453,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
           <tr data-k="revert"><td>rsi_reversion</td><td>Ranges: buys oversold, sells overbought.</td><td class="fails">Sustained downtrends (no stop, by design; optional trend filter only gates buys).</td></tr>
           <tr data-k="revert"><td>stochastic</td><td>Turns from the extremes of the recent range (%K crossing %D when oversold / overbought).</td><td class="fails">Trends: the oscillator pins at an extreme; buys early, sells late (no stop).</td></tr>
           <tr data-k="multi trend"><td>momentum_rotation</td><td>Recent winners among several coins keep winning.</td><td class="fails">Sharp reversals, choppy leadership.</td></tr>
+          <tr data-k="multi trend"><td>long_short_momentum<span class="k">shorts</span></td><td>Winners keep beating losers: long the best k coins, short the worst k, equal size, so the market's direction mostly cancels.</td><td class="fails">Coins moving together (a small spread), funding on both legs, four fills per rotation.</td></tr>
           <tr data-k="multi trend"><td>top_k_momentum</td><td>Recent winners keep winning: holds the best k of several coins at 1/k each; optional trend filter, blended lookbacks, inverse-vol weights, scheduled rebalances with a trailing stop.</td><td class="fails">Sharp reversals and churning leadership (each change is a round trip).</td></tr>
           <tr data-k="multi revert"><td>pair_reversion</td><td>Two coins' price ratio returning to its mean: holds the one that is cheap relative to the other.</td><td class="fails">The ratio trends: keeps switching into the coin that keeps getting cheaper.</td></tr>
           <tr data-k="multi risk"><td>rebalance</td><td>Swings that come back: trades fixed weights back after drift, selling rises and buying falls.</td><td class="fails">One-way trends: keeps selling the winner.</td></tr>
@@ -494,7 +495,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
 <span class="p">$ </span>shasum -a 256 -c SHA256SUMS --ignore-missing
 <span class="p">$ </span>tar xzf trade_bot_&lt;os&gt;_&lt;arch&gt;.&lt;version&gt;.tar.gz
 <span class="c"># Windows: unzip trade_bot_windows_amd64.&lt;version&gt;.zip and run trade-bot.exe</span></pre></div>
-<div class="panel" role="tabpanel" id="p-st" aria-labelledby="t-st" hidden><pre><span class="c"># 28 built-ins, each with a runnable example (installed under ~/.local/share/trade-bot)</span>
+<div class="panel" role="tabpanel" id="p-st" aria-labelledby="t-st" hidden><pre><span class="c"># 29 built-ins, each with a runnable example (installed under ~/.local/share/trade-bot)</span>
 <span class="p">$ </span>ls config/examples/                     <span class="c"># sma_trend.toml, top_k_momentum.toml, …</span>
 <span class="p">$ </span>cp config/examples/sma_trend.toml my.toml
 <span class="c"># edit [strategy.params] in my.toml: coin, sma_period, quote_amount, fee, slippage_bps</span>

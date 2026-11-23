@@ -302,6 +302,22 @@ async fn every_strategy_survives_a_restart() {
                 fee = "0.001"
                 slippage_bps = "10""#,
         },
+        // On spot (the harness's broker) the short leg is flat: ranking
+        // and the long leg are what a restart can cut here.
+        Case {
+            strategy: "long_short_momentum",
+            fixture: "top_k_momentum",
+            coins: BTC_ETH_SOL,
+            bars: 12,
+            params: r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"]
+                k = 1
+                lookback = 2
+                rebalance_bars = 2
+                capital = "6000"
+                band = "0.05"
+                fee = "0.001"
+                slippage_bps = "10""#,
+        },
         // Every overlay: the saved rebalance time drives the schedule and
         // the stop's window.
         Case {

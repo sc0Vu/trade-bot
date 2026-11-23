@@ -1,0 +1,52 @@
+# long_short_momentum: cross-sectional momentum, market-neutral. Ranks the
+# coins by return over `lookback` bars; long the best k, short the worst k,
+# each at capital / 2k (flat on spot). Gross = capital, net ~ 0: earns the
+# spread between winners and losers, not the market's direction. Funding on
+# both legs, four taker fills per rotation; edge unverified. Tune it
+# walk-forward, never on one period:
+#
+#   cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT --interval 4h --from 2022-01-01
+#   cargo run -p cli -- sweep --venue binance-usdm --strategy long_short_momentum \
+#       --params grid.toml --symbol BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT \
+#       --interval 4h --from 2022-06-01 --to 2026-11-01 --fee 0.0005 --slippage-bps 2 \
+#       --leverage 2 --train-days 365 --test-days 90
+#
+# (grid.toml = the params below plus e.g. [sweep] lookback = [42, 84, 180]).
+# Paper run: Binance futures prices and funding, local fills and margin.
+# Reads your account's margin brackets: BINANCE_API_KEY / BINANCE_API_SECRET
+# (a demo key works).
+#
+#   cargo run -p cli -- run --paper --config config/examples/long_short_momentum.toml
+
+mode = "paper"
+whitelist = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"]
+
+[exchange]
+venue = "binance-usdm"
+interval = "4h"
+
+[paper]
+initial_cash = "1000"   # USDT wallet
+fee = "0.0005"
+slippage_bps = "2"
+
+[perp]
+leverage = 2            # gross = capital = 1x the wallet: room for losses
+margin = "isolated"
+brackets_from = "demo"
+
+[strategy]
+name = "long_short_momentum"
+
+[strategy.params]
+coins = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"]
+k = 2                   # 2 long, 2 short, 2 flat
+lookback = 84           # 4h bars: 14 days
+rebalance_bars = 6      # rank once a day (00:00 UTC): every bar churns the rank edge
+capital = "1000"        # gross notional: 250 per position
+band = "0.2"            # resize only when 20% off target
+fee = "0.0005"
+slippage_bps = "2"
+
+[engine]
+history_len = 200

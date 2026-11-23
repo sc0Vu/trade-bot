@@ -66,6 +66,7 @@ async fn property(fixture: &str, ids: &[&str], bars: i64, strategy: &str, params
     );
 }
 
+const BTC_ETH_SOL: &[&str] = &["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"];
 const BTC_ETH: &[&str] = &["binance:BTCUSDT", "binance:ETHUSDT"];
 
 async fn single_coin_property(fixture: &str, bars: i64, strategy: &str, params: &str) {
@@ -308,6 +309,26 @@ async fn macd_cross_never_lets_the_future_change_the_past() {
            slow_period = 2
            signal_period = 2
            quote_amount = "1061.1"
+           fee = "0.001"
+           slippage_bps = "10""#,
+    )
+    .await;
+}
+
+/// Spot fixture: the long leg trades, the short leg is flat; the ranking
+/// reads every coin's history at the deciding close only.
+#[tokio::test]
+async fn long_short_momentum_never_lets_the_future_change_the_past() {
+    property(
+        "top_k_momentum",
+        BTC_ETH_SOL,
+        12,
+        "long_short_momentum",
+        r#"coins = ["binance:BTCUSDT", "binance:ETHUSDT", "binance:SOLUSDT"]
+           k = 1
+           lookback = 2
+           capital = "6000"
+           band = "0.05"
            fee = "0.001"
            slippage_bps = "10""#,
     )

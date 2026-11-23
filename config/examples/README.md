@@ -23,6 +23,7 @@ One complete, runnable config per built-in strategy:
 | `ratio_hop.toml` | several coins, rotate when units ratchet up |
 | `grid.toml` | one coin, spot grid |
 | `tsmom_long_short.toml` | time-series momentum long and short on perpetuals (flat on spot) |
+| `long_short_momentum.toml` | cross-sectional momentum, market-neutral: long the best k, short the worst k (perpetuals) |
 | `turn_of_month.toml` | one instrument, held over each month's turn, cash otherwise |
 
 Venue-specific examples live in subdirectories: `etoro/` (US stocks and

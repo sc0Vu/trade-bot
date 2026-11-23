@@ -49,6 +49,7 @@ pub mod funding_carry;
 pub mod grid;
 pub mod ichimoku;
 mod long_flat;
+pub mod long_short_momentum;
 pub mod macd_cross;
 pub mod momentum_rotation;
 pub mod pair_reversion;

@@ -890,6 +890,7 @@ turn_of_month,
 pair_reversion,
 tsmom,
 tsmom_long_short,
+long_short_momentum,
 risk_parity) only
 version;
 buy_and_hold `decided`; dca `last_period` + `buys`; funding_carry `rates`; momentum_rotation
@@ -1091,6 +1092,19 @@ losses (329 in 2022–26); example 2x. Measured BTC perp 4h 2022–Jul 2026
 2x: 2136 (dd 38%) vs hold 1x 997 (65%); 2022 1097 vs 369; 2023–26 2038
 vs 2852.
 
+`long_short_momentum` — cross-sectional momentum, market-neutral, ≥ 2 coins
+(one quote), 1 ≤ `k`, 2k ≤ coins. Only on bars with (close + 1 ms) / interval
+≡ 0 mod `rebalance_bars` (default 1; epoch-aligned: stateless, restart-safe);
+then once per close time all in (`completes`),
+idle on all (`portfolio::idle`): rank tradable, non-delisting coins by close /
+close[`lookback` ago] − 1 (stable: tie → listed first; any lacking history →
+no decision); best k long, worst k short (flat if `!allows_short`), each
+lot(`capital`/(2k) / close); others 0 (delisting closed reduce-only, halted
+skipped); fewer than 2k rankable → as many pairs as fit. Orders via
+`builtin::signed` (shared with tsmom_long_short: flip = reduce-only close
+first, resize only beyond `band`), reductions emitted first. Stateless.
+Restart + lookahead on the 3-coin spot fixture (long leg only).
+
 `turn_of_month` — `long_flat` skeleton, calendar rule. Window (UTC, a bar's
 date = its close time's): bar day > days in month − `enter_days` (1–10) →
 long; else long while fewer than `hold_bars` (1–15) bars of the new month
@@ -1196,7 +1210,7 @@ crates/
   core/        (package `bot-core`: `core` clashes with Rust built-in) Price/Qty/Notional, ids, Instrument, Candle, MarketEvent, Signal, Order, Fill, Position
   strategy/    Strategy trait, Context, inventory registry, `script` (feature `rhai`:
                script strategies), built-ins (atr_breakout, avwap, bollinger_reversion,
-               buy_and_hold, dca, donchian_breakout, dual_ma_cross, funding_carry, grid, ichimoku, macd_cross,
+               buy_and_hold, dca, donchian_breakout, dual_ma_cross, funding_carry, grid, ichimoku, long_short_momentum, macd_cross,
                momentum_rotation, pair_reversion, ratio_hop, rebalance, risk_parity, rsi_reversion,
                sma_long_short, sma_trend, stochastic, supertrend, top_k_momentum, trailing_stop, tsmom, tsmom_long_short, turn_of_month, vol_target,
                volatility_breakout)
