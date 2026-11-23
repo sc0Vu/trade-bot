@@ -10,6 +10,12 @@
 //! | `/orders?limit=N` | the latest journaled orders, newest first |
 //! | `/trades?limit=N` | the latest fills, newest first |
 //!
+//! With [`ApiState::dashboard`], `/` serves a page (the run, positions with
+//! value and P&L at the last close, open orders, latest bars, recent trades
+//! and orders) that reads these routes every 5 s. The page itself holds no
+//! data, so it loads without the token; it asks for the token when the API
+//! answers 401 and keeps it for that browser tab only.
+//!
 //! There is deliberately no route that places, cancels or changes
 //! anything: orders come only from the strategy through risk, and nothing
 //! here can loosen the live gate. Live state arrives over a `watch`
@@ -19,7 +25,7 @@
 use axum::extract::{Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use bot_core::{Fill, InstrumentId, Side, Timestamp};
@@ -57,7 +63,12 @@ pub struct ApiState {
     pub books: Arc<dyn ApiBooks>,
     /// Required bearer token, if any.
     pub token: Option<String>,
+    /// Serve the dashboard page at `/` (`[api] dashboard`).
+    pub dashboard: bool,
 }
+
+/// The dashboard page: one static file, no external scripts.
+const DASHBOARD: &str = include_str!("dashboard.html");
 
 /// Binds `listen` and serves the API in the background. Returns the bound
 /// address (useful with port 0) once listening.
@@ -74,14 +85,21 @@ pub async fn serve(listen: SocketAddr, state: ApiState) -> std::io::Result<Socke
 }
 
 fn router(state: ApiState) -> Router {
-    Router::new()
+    let data = Router::new()
         .route("/status", get(status))
         .route("/positions", get(positions))
         .route("/open-orders", get(open_orders))
         .route("/orders", get(orders))
         .route("/trades", get(trades))
-        .layer(middleware::from_fn_with_state(state.clone(), require_token))
-        .with_state(state)
+        .layer(middleware::from_fn_with_state(state.clone(), require_token));
+    // The page carries no data (it fetches the routes above, with the
+    // token), so it is served outside the token check.
+    let page = if state.dashboard {
+        Router::new().route("/", get(|| async { Html(DASHBOARD) }))
+    } else {
+        Router::new()
+    };
+    data.merge(page).with_state(state)
 }
 
 async fn require_token(State(s): State<ApiState>, req: Request, next: Next) -> Response {
@@ -295,6 +313,7 @@ mod tests {
             live: rx,
             books: db.store.clone(),
             token: token.map(str::to_owned),
+            dashboard: true,
         };
         let addr = serve("127.0.0.1:0".parse().unwrap(), state).await.unwrap();
         (format!("http://{addr}"), tx)
@@ -436,5 +455,48 @@ mod tests {
             .get(),
             MAX_LIMIT
         );
+    }
+
+    /// With the dashboard on, `/` is the page (HTML naming the routes it
+    /// reads), served without the token even when one is set, while the
+    /// data routes still need it.
+    #[tokio::test]
+    async fn the_dashboard_page_needs_no_token_but_its_data_does() {
+        let db = db().await;
+        let (base, _tx) = start(&db, Some("s3cret")).await;
+        let page = reqwest::get(format!("{base}/")).await.unwrap();
+        assert_eq!(page.status().as_u16(), 200);
+        assert!(
+            page.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html")
+        );
+        let html = page.text().await.unwrap();
+        assert!(html.contains("/status") && html.contains("/trades?limit="));
+        let data = reqwest::get(format!("{base}/status")).await.unwrap();
+        assert_eq!(data.status().as_u16(), 401);
+    }
+
+    /// Without it, `/` doesn't exist.
+    #[tokio::test]
+    async fn no_dashboard_unless_asked_for() {
+        let db = db().await;
+        let (tx_unused, rx) = watch::channel(None);
+        drop(tx_unused);
+        let state = ApiState {
+            info: RunInfo {
+                network: "demo".into(),
+                strategy: "sma_trend".into(),
+                started_at: Timestamp::from_millis(1_000),
+            },
+            live: rx,
+            books: db.store.clone(),
+            token: None,
+            dashboard: false,
+        };
+        let addr = serve("127.0.0.1:0".parse().unwrap(), state).await.unwrap();
+        let r = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        assert_eq!(r.status().as_u16(), 404);
     }
 }

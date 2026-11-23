@@ -403,8 +403,12 @@ async fn observe_run(
             live: rx,
             books,
             token: api_token,
+            dashboard: cfg.api.dashboard,
         };
         match api::serve(cfg.api.listen, state).await {
+            Ok(addr) if cfg.api.dashboard => {
+                tracing::info!(%addr, url = %format!("http://{addr}/"), "API listening; dashboard at /")
+            }
             Ok(addr) => tracing::info!(%addr, "API listening"),
             Err(e) => {
                 tracing::warn!(error = %e, listen = %cfg.api.listen, "API not started; trading continues");

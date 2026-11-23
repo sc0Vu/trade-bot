@@ -321,6 +321,10 @@ pub struct ApiSection {
     /// the token travels in a header.
     #[serde(default)]
     pub allow_public: bool,
+    /// Serve a read-only dashboard page at `/` of `listen` (needs
+    /// `enabled`). Off by default.
+    #[serde(default)]
+    pub dashboard: bool,
 }
 
 impl Default for ApiSection {
@@ -329,6 +333,7 @@ impl Default for ApiSection {
             enabled: false,
             listen: api_listen(),
             allow_public: false,
+            dashboard: false,
         }
     }
 }
@@ -580,6 +585,9 @@ impl Config {
         }
         if self.exchange.http_timeout_secs == 0 {
             bail!("exchange.http_timeout_secs must be >= 1");
+        }
+        if self.api.dashboard && !self.api.enabled {
+            bail!("api.dashboard is served by the API: set api.enabled = true too");
         }
         if !self.api.listen.ip().is_loopback() && !self.api.allow_public {
             bail!(
@@ -1299,6 +1307,13 @@ mod tests {
             toml::Value::from("ETHUSDT"),
             "not in the whitelist: left as written"
         );
+    }
+
+    #[test]
+    fn the_dashboard_needs_the_api() {
+        assert!(parse(&format!("{MIN}\n[api]\ndashboard = true")).is_err());
+        let c = parse(&format!("{MIN}\n[api]\nenabled = true\ndashboard = true")).unwrap();
+        assert!(c.api.dashboard);
     }
 
     #[test]
