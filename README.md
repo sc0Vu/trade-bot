@@ -74,7 +74,7 @@ On Linux or macOS, install the latest release (checksum verified, into
 curl -fsSL https://sc0vu.github.io/trade-bot/install.sh | sh
 ```
 
-The script is [`site/install.sh`](site/install.sh); `VERSION=0.1.3` pins a
+The script is [`site/install.sh`](site/install.sh); `VERSION=0.2.0` pins a
 release, `INSTALL_DIR` / `SHARE_DIR` move it. Or by hand: prebuilt
 binaries for Linux (x86_64, arm64; glibc 2.35+), macOS (Apple
 silicon, Intel) and Windows (x86_64) are on the

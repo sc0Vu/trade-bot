@@ -7,7 +7,7 @@
 # latest release, refuses to install unless the checksum matches, then
 # puts the binary in $INSTALL_DIR (default ~/.local/bin) and the example
 # configs and scripts in $SHARE_DIR (default ~/.local/share/trade-bot).
-# Set VERSION=0.1.3 to pin a release. Needs curl, tar and sha256sum or
+# Set VERSION=0.2.0 to pin a release. Needs curl, tar and sha256sum or
 # shasum. Windows: download the .zip from the releases page.
 set -eu
 
