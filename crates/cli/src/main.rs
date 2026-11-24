@@ -312,6 +312,7 @@ async fn run_usdm_paper(cfg: config::Config) -> anyhow::Result<()> {
                 leverage: perp.leverage,
                 mode: perp.margin,
                 brackets,
+                close_out: None,
             },
         );
     }
@@ -1109,6 +1110,7 @@ fn perp_setup(
                 leverage,
                 mode,
                 brackets,
+                close_out: None,
             },
         );
         let rates = dir.read_funding(id)?;

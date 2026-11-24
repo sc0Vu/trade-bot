@@ -140,6 +140,11 @@ probe findings in PROGRESS.md): `is_margined()` like Perpetual → same
 ratio/leverage): eToro closes a position whose loss reaches 50% of ITS
 margin, whatever the account holds (UK T&C 7.4–7.5). Fee 0.15%/side,
 overnight 0 on easy-to-borrow shorts, `sellShort` + mandatory stop loss.
+Paper: `PerpPaperBroker` + `PerpTerms::cfd(leverage)` (`close_out: Some(0.5)`,
+isolated, one rate-0 bracket; a Cfd instrument refuses other terms): close-out
+checked on the trade bar, filled like a stop at market (close-out price, or the
+open if gapped past), ordinary taker fee, whole loss to the wallet (gap past the
+margin included), wallet floored at 0 (negative balance protection).
 `core::margin` (one-way USDⓈ-M): `Brackets` (contiguous from 0: floor/cap,
 max_leverage, rate, cum; = `/fapi/v1/leverageBracket`), maintenance =
 |notional|·rate − cum, `initial_margin` = notional/leverage,

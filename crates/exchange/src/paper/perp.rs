@@ -1,5 +1,14 @@
-//! Simulated execution for linear perpetuals (Binance USDⓈ-M, one-way
-//! mode): [`PerpPaperBroker`].
+//! Simulated execution for margined instruments: linear perpetuals
+//! (Binance USDⓈ-M, one-way mode) and CFDs (eToro): [`PerpPaperBroker`].
+//!
+//! **CFDs** use the same broker with [`PerpTerms::cfd`]: isolated margin
+//! per position, no funding, and instead of bracket liquidation a
+//! close-out where the loss reaches half the position's margin (eToro's
+//! terms, [`bot_core::margin::close_out_price`]), checked on the trade
+//! bar. It fills like a stop at market: at the close-out price, or at the
+//! bar's open when the price gapped past it; ordinary taker fee, no
+//! clearance; the whole loss is the trader's (a gap can take more than
+//! the margin), the wallet flooring at zero (negative balance protection).
 //!
 //! Orders fill exactly as in [`super::PaperBroker`] (same [`FillModel`],
 //! [`SlippageModel`] and [`FeeModel`]; fees are paid in the quote), but
@@ -53,6 +62,34 @@ pub struct PerpTerms {
     pub leverage: u32,
     pub mode: MarginMode,
     pub brackets: Brackets,
+    /// `None`: liquidation by the brackets (Binance). `Some(ratio)`: a CFD's
+    /// close-out (eToro): the position closes where its loss reaches
+    /// `ratio` of its margin ([`margin::close_out_price`]); see the module
+    /// docs.
+    pub close_out: Option<Decimal>,
+}
+
+impl PerpTerms {
+    /// Terms for an eToro CFD at `leverage`: isolated, closed out at
+    /// [`margin::CFD_CLOSE_OUT`] of the margin, no maintenance brackets
+    /// (one tier, rate 0, allowing up to `leverage`: the allowed leverages
+    /// are the venue's eligibility list, checked by the caller).
+    pub fn cfd(leverage: u32) -> Result<Self, ExchangeError> {
+        let brackets = Brackets::new(vec![margin::Bracket {
+            floor: Notional::ZERO,
+            cap: Notional::new(Decimal::from(1_000_000_000_000_i64)),
+            max_leverage: leverage.max(1),
+            rate: Decimal::ZERO,
+            cum: Decimal::ZERO,
+        }])
+        .map_err(|_| ExchangeError::Rejected("bad CFD terms"))?;
+        Ok(Self {
+            leverage,
+            mode: MarginMode::Isolated,
+            brackets,
+            close_out: Some(margin::CFD_CLOSE_OUT),
+        })
+    }
 }
 
 struct Pending {
@@ -94,12 +131,21 @@ impl PerpPaperBroker {
         clearance: Decimal,
     ) -> Result<Self, ExchangeError> {
         for i in &instruments {
-            if i.class != AssetClass::Perpetual {
-                return Err(ExchangeError::Rejected("not a perpetual"));
+            if !i.is_margined() {
+                return Err(ExchangeError::Rejected("not a perpetual or CFD"));
             }
             let t = terms
                 .get(&i.id)
                 .ok_or(ExchangeError::Rejected("perpetual without margin terms"))?;
+            // A CFD is closed out per position (eToro), never by brackets;
+            // its margin is its own.
+            if i.class == AssetClass::Cfd
+                && (t.close_out.is_none() || t.mode != MarginMode::Isolated)
+            {
+                return Err(ExchangeError::Rejected(
+                    "a CFD needs isolated terms with a close-out",
+                ));
+            }
             if t.leverage == 0 || t.leverage > t.brackets.max_leverage(Notional::ZERO) {
                 return Err(ExchangeError::Rejected("leverage outside the brackets"));
             }
@@ -191,6 +237,9 @@ impl PerpPaperBroker {
     pub fn liquidation_price(&self, id: &InstrumentId) -> Option<Price> {
         let p = self.pos(id);
         let t = self.terms.get(id)?;
+        if let Some(ratio) = t.close_out {
+            return margin::close_out_price(&p, t.leverage, ratio);
+        }
         match t.mode {
             MarginMode::Isolated => margin::liquidation_price(
                 &p,
@@ -382,6 +431,14 @@ impl PerpPaperBroker {
             return None;
         }
         let inst = self.instruments.get(id)?.clone();
+        let close_out = self.terms.get(id).is_some_and(|t| t.close_out.is_some());
+        // A CFD's close-out is a stop executed at market: a bar that opens
+        // past it fills at that open (worse), not at the trigger.
+        let lp = match (close_out, long) {
+            (true, true) if range.open < lp => range.open,
+            (true, false) if range.open > lp => range.open,
+            _ => lp,
+        };
         // Closing a long sells: price rounded down; a short buys: up.
         let (side, price) = if long {
             (Side::Sell, inst.round_price(lp, Side::Buy))
@@ -389,6 +446,9 @@ impl PerpPaperBroker {
             (Side::Buy, inst.round_price(lp, Side::Sell))
         };
         let qty = Qty::new(p.qty().get().abs());
+        if close_out {
+            return self.close_out(c, &inst, side, qty, price);
+        }
         // The clearance fee comes out of the margin left at that price
         // (Binance), never more: isolated = its margin, cross = the wallet.
         let entry = p.cost_basis().get() / p.qty().get();
@@ -418,6 +478,43 @@ impl PerpPaperBroker {
         tracing::warn!(instrument = %id, "paper perpetual liquidated");
         self.book(&fill, &inst, true).ok()?;
         // Cross: a loss past the wallet is the venue's insurance fund's.
+        if self.wallet.is_negative() {
+            self.wallet = Notional::ZERO;
+        }
+        Some(fill)
+    }
+}
+
+impl PerpPaperBroker {
+    /// A CFD's forced close at `price`: the ordinary taker fee (eToro
+    /// charges its usual spread, no clearance fee), and the loss is the
+    /// trader's in full, past the position's margin on a gap (the terms:
+    /// "you may lose more than your deposit in a trade"); the wallet
+    /// floors at zero (retail negative balance protection).
+    fn close_out(
+        &mut self,
+        c: &Candle,
+        inst: &Instrument,
+        side: Side,
+        qty: Qty,
+        price: Price,
+    ) -> Option<Fill> {
+        let fee = self.quote_fee(inst, side, qty, price, Liquidity::Taker);
+        let order_id = OrderId::new(format!("liq-{}", self.next_liq)).ok()?;
+        self.next_liq += 1;
+        let fill = Fill::new(FillSpec {
+            order_id,
+            instrument: inst.id.clone(),
+            side,
+            qty,
+            price,
+            fee: Fee::Quote(fee),
+            liquidity: Liquidity::Taker,
+            ts: c.close_time,
+        })
+        .ok()?;
+        tracing::warn!(instrument = %inst.id, "paper CFD closed out: loss reached its margin limit");
+        self.book(&fill, inst, false).ok()?;
         if self.wallet.is_negative() {
             self.wallet = Notional::ZERO;
         }
@@ -665,6 +762,7 @@ mod tests {
                 leverage,
                 mode,
                 brackets: brackets(),
+                close_out: None,
             },
         )]);
         PerpPaperBroker::new(
@@ -883,6 +981,7 @@ mod tests {
                 leverage: 60,
                 mode: MarginMode::Isolated,
                 brackets: brackets(),
+                close_out: None,
             },
         )]);
         assert!(
@@ -918,5 +1017,103 @@ mod tests {
         let sold: Vec<Decimal> = f.iter().map(|f| f.qty.get()).collect();
         assert_eq!(sold, vec![dec!(0.6), dec!(0.4)]);
         assert!(b.position(&perp().id).is_flat());
+    }
+
+    /// A CFD on the test id, tick 0.01, unit 0.001.
+    fn cfd() -> Instrument {
+        Instrument::new(InstrumentSpec {
+            class: AssetClass::Cfd,
+            tick_size: Price::new(dec!(0.01)),
+            ..(*perp()).clone()
+        })
+        .unwrap()
+    }
+
+    /// eToro-like: 0.15% each way, no slippage, `leverage`, `wallet`.
+    fn cfd_broker(wallet: Decimal, leverage: u32) -> PerpPaperBroker {
+        let i = cfd();
+        PerpPaperBroker::new(
+            vec![i.clone()],
+            HashMap::from([(i.id.clone(), PerpTerms::cfd(leverage).unwrap())]),
+            Box::new(NextOpenFillModel),
+            Box::new(BpsSlippage::new(dec!(0)).unwrap()),
+            Box::new(RateFee::new(dec!(0.0015), dec!(0.0015), FeeAsset::Quote).unwrap()),
+            Notional::new(wallet),
+            dec!(0),
+        )
+        .unwrap()
+    }
+
+    /// Short 10 at 100, 1x: margin 1,000 + fee 1.50 → wallet 998.50;
+    /// close-out at 150. High 149: nothing. A bar opening at 140 and
+    /// reaching 151 closes it at 150: loss 500, fee 2.25 → 998.50 + 1,000
+    /// − 500 − 2.25 = 1,496.25.
+    #[tokio::test]
+    async fn a_cfd_short_is_closed_out_at_half_its_margin() {
+        let mut b = cfd_broker(dec!(2000), 1);
+        bar(&mut b, 0, ["100", "100", "100", "100"]).await;
+        b.submit(market(1, Side::Sell, dec!(10), 0)).await.unwrap();
+        bar(&mut b, 1, ["100", "100", "100", "100"]).await;
+        assert_eq!(b.wallet(), Notional::new(dec!(998.50)));
+        assert_eq!(b.liquidation_price(&cfd().id), Some(Price::new(dec!(150))));
+        assert!(
+            bar(&mut b, 2, ["120", "149", "119", "140"])
+                .await
+                .is_empty()
+        );
+        let f = bar(&mut b, 3, ["140", "151", "139", "145"]).await;
+        assert_eq!(f.len(), 1);
+        assert_eq!((f[0].side, f[0].price), (Side::Buy, Price::new(dec!(150))));
+        assert_eq!(f[0].fee, Fee::Quote(Notional::new(dec!(2.25))));
+        assert!(b.position(&cfd().id).is_flat());
+        assert_eq!(b.wallet(), Notional::new(dec!(1496.25)));
+    }
+
+    /// Same short; the bar opens at 160, past the close-out: filled at the
+    /// open, loss 600, fee 2.40 → 998.50 + 1,000 − 600 − 2.40 = 1,396.10.
+    #[tokio::test]
+    async fn a_gap_past_the_close_out_fills_at_the_open() {
+        let mut b = cfd_broker(dec!(2000), 1);
+        bar(&mut b, 0, ["100", "100", "100", "100"]).await;
+        b.submit(market(1, Side::Sell, dec!(10), 0)).await.unwrap();
+        bar(&mut b, 1, ["100", "100", "100", "100"]).await;
+        let f = bar(&mut b, 2, ["160", "165", "158", "160"]).await;
+        assert_eq!(f[0].price, Price::new(dec!(160)));
+        assert_eq!(b.wallet(), Notional::new(dec!(1396.10)));
+    }
+
+    /// 5x: margin 200 + fee 1.50 from 300 → 98.50; close-out at 110. A gap
+    /// to 200 loses 1,000 + fee 3.00, past the margin: the account pays
+    /// (98.50 + 200 − 1,003 = −704.50) and floors at zero.
+    #[tokio::test]
+    async fn a_gap_can_cost_more_than_the_margin_but_not_below_zero() {
+        let mut b = cfd_broker(dec!(300), 5);
+        bar(&mut b, 0, ["100", "100", "100", "100"]).await;
+        b.submit(market(1, Side::Sell, dec!(10), 0)).await.unwrap();
+        bar(&mut b, 1, ["100", "100", "100", "100"]).await;
+        assert_eq!(b.wallet(), Notional::new(dec!(98.50)));
+        assert_eq!(b.liquidation_price(&cfd().id), Some(Price::new(dec!(110))));
+        let f = bar(&mut b, 2, ["200", "200", "200", "200"]).await;
+        assert_eq!(f[0].fee, Fee::Quote(Notional::new(dec!(3.00))));
+        assert!(b.position(&cfd().id).is_flat());
+        assert_eq!(b.wallet(), Notional::ZERO);
+    }
+
+    /// A CFD can't be given bracket liquidation or cross margin.
+    #[test]
+    fn a_cfd_needs_its_close_out_terms() {
+        let i = cfd();
+        let mut terms = PerpTerms::cfd(2).unwrap();
+        terms.close_out = None;
+        let r = PerpPaperBroker::new(
+            vec![i.clone()],
+            HashMap::from([(i.id.clone(), terms)]),
+            Box::new(NextOpenFillModel),
+            Box::new(BpsSlippage::new(dec!(0)).unwrap()),
+            Box::new(RateFee::new(dec!(0.0015), dec!(0.0015), FeeAsset::Quote).unwrap()),
+            Notional::new(dec!(100)),
+            dec!(0),
+        );
+        assert!(r.is_err());
     }
 }
