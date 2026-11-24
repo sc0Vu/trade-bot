@@ -7,7 +7,8 @@ use std::ops::Deref;
 
 /// Asset class. Decides which math `Instrument` applies.
 ///
-/// `Spot` is owned inventory. `Perpetual` is a linear (quote-margined)
+/// `Spot` is owned inventory. `Cfd` is eToro's stock CFD (margined, signed,
+/// see the variant). `Perpetual` is a linear (quote-margined)
 /// perpetual future, Binance USDⓈ-M: quantity in base units, P&L and
 /// margin in the quote, signed positions (shorts allowed), funding every
 /// few hours, liquidation by the venue. `UsEquity` exists so adding
@@ -20,6 +21,15 @@ pub enum AssetClass {
     UsEquity,
     /// Linear perpetual future (Binance USDⓈ-M).
     Perpetual,
+    /// Contract for difference on a stock or ETF (eToro): quantity in
+    /// units of the underlying, P&L and fees in the quote (USD), signed
+    /// (a short is the reason to use one), margin per position (isolated)
+    /// with a forced close when the loss reaches a share of it
+    /// ([`margin::close_out_price`](crate::margin::close_out_price)). No
+    /// funding schedule: overnight fees (zero on an easy-to-borrow short)
+    /// and dividend adjustments are booked as they come
+    /// ([`Position::apply_dividend`](crate::Position::apply_dividend)).
+    Cfd,
     // UsOption (deferred)
 }
 
@@ -168,7 +178,7 @@ impl Instrument {
     pub fn notional(&self, qty: Qty, price: Price) -> Notional {
         match self.class {
             // A linear perpetual's quantity is in base units: the same.
-            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual => {
+            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual | AssetClass::Cfd => {
                 Notional::new(qty.get() * price.get())
             }
         }
@@ -182,7 +192,7 @@ impl Instrument {
             return Err(FilterError::NonPositivePrice);
         }
         match self.class {
-            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual => {
+            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual | AssetClass::Cfd => {
                 Ok(Qty::new(notional.get() / price.get()))
             }
         }
@@ -196,7 +206,7 @@ impl Instrument {
             return Err(FilterError::NonPositiveQty);
         }
         match self.class {
-            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual => {
+            AssetClass::Spot | AssetClass::UsEquity | AssetClass::Perpetual | AssetClass::Cfd => {
                 Ok(Price::new(notional.get() / qty.get()))
             }
         }
@@ -207,19 +217,28 @@ impl Instrument {
     /// Asset-class policy, checked at runtime by
     /// [`Position::check_against`](crate::Position::check_against), not
     /// encoded in `Qty` or `Position`, so a signed (short, perp) position can
-    /// reuse the same types. True for perpetuals only: spot can't short,
-    /// and equity shorting needs margin, which isn't modelled.
+    /// reuse the same types. True for the margined classes (perpetuals,
+    /// CFDs): spot can't short, and owned equity shorting needs a stock
+    /// loan, which isn't modelled.
     pub fn allows_short(&self) -> bool {
+        self.is_margined()
+    }
+
+    /// Whether positions are margined contracts rather than owned
+    /// inventory: perpetuals and CFDs. Their accounting is the venue's
+    /// (signed entry notional, fees to realized P&L, see
+    /// [`Position`](crate::Position)) and a fill moves margin, not cash.
+    pub fn is_margined(&self) -> bool {
         match self.class {
             AssetClass::Spot | AssetClass::UsEquity => false,
-            AssetClass::Perpetual => true,
+            AssetClass::Perpetual | AssetClass::Cfd => true,
         }
     }
 
     /// Spot settles instantly; US equities at T+1.
     pub fn settlement(&self) -> Settlement {
         match self.class {
-            AssetClass::Spot | AssetClass::Perpetual => Settlement::Instant,
+            AssetClass::Spot | AssetClass::Perpetual | AssetClass::Cfd => Settlement::Instant,
             AssetClass::UsEquity => Settlement::TPlus(1),
         }
     }

@@ -132,6 +132,14 @@ against the position closes first (realized = closed·(px − entry)·sign), res
 flips at fill px; fees (quote only, base refused) and funding
 (`apply_funding(rate, mark)`: −qty·mark·rate, longs pay at rate > 0) →
 realized. `MarketEvent::Funding { instrument, rate, mark, ts }`.
+`AssetClass::Cfd` (eToro stock CFD, in progress: core only so far; plan +
+probe findings in PROGRESS.md): `is_margined()` like Perpetual → same
+`apply_perp` accounting (checked against the 2026-11-23 demo KO short);
+`Position::apply_dividend(per_unit)` (long +qty·d, short pays);
+`margin::close_out_price(pos, leverage, CFD_CLOSE_OUT = 0.5)` = entry·(1 ∓
+ratio/leverage): eToro closes a position whose loss reaches 50% of ITS
+margin, whatever the account holds (UK T&C 7.4–7.5). Fee 0.15%/side,
+overnight 0 on easy-to-borrow shorts, `sellShort` + mandatory stop loss.
 `core::margin` (one-way USDⓈ-M): `Brackets` (contiguous from 0: floor/cap,
 max_leverage, rate, cum; = `/fapi/v1/leverageBracket`), maintenance =
 |notional|·rate − cum, `initial_margin` = notional/leverage,
@@ -227,7 +235,7 @@ Spot positions non-negative owned inventory. Quantity sign = value
 concern, not compile-time invariant — v2 signed (short/perp) position
 must reuse type, not force rewrite. Don't encode `quantity ≥ 0` as
 type-level law (no unsigned/`NonZero` qty, no `try_from` rejecting negatives).
-Sign = runtime policy: `Instrument::allows_short()` (true for Perpetual only),
+Sign = runtime policy: `Instrument::allows_short()` (= `is_margined()`: Perpetual, Cfd),
 checked by `Position::check_against(&Instrument)`; `from_parts` checks only
 sign-agnostic consistency (basis sign = qty sign, flat ⇒ zero basis).
 

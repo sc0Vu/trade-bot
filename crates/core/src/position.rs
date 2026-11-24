@@ -1,4 +1,4 @@
-use crate::{AssetClass, Error, Fee, Fill, Instrument, InstrumentId, Notional, Price, Qty, Side};
+use crate::{Error, Fee, Fill, Instrument, InstrumentId, Notional, Price, Qty, Side};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 /// policy ([`Instrument::allows_short`]), checked at runtime by
 /// [`check_against`](Self::check_against). Spot positions are long only.
 ///
-/// A perpetual position ([`AssetClass::Perpetual`]) is accounted the way
+/// A margined position (a perpetual, [`crate::AssetClass::Perpetual`], or a
+/// CFD, [`crate::AssetClass::Cfd`]; [`Instrument::is_margined`]) is accounted the way
 /// the venue does: `cost_basis` is the signed entry notional (entry price ×
 /// signed qty, no fees), so `avg_cost` is the entry price the venue's
 /// liquidation maths uses; fees and funding go straight to `realized_pnl`.
@@ -128,13 +129,14 @@ impl Position {
         self.qty.is_zero()
     }
 
-    /// [`apply`](Self::apply) for a perpetual; see the type docs.
+    /// [`apply`](Self::apply) for a margined position (perpetual, CFD);
+    /// see the type docs.
     fn apply_perp(&mut self, fill: &Fill) -> Result<(), Error> {
         let fee = match &fill.fee {
             Fee::Quote(f) | Fee::Other { value: Some(f), .. } => *f,
             Fee::Base(_) => {
                 return Err(Error::PositionUpdate(
-                    "a perpetual's fee is paid in the quote, not the base",
+                    "a margined position's fee is paid in the quote, not the base",
                 ));
             }
             Fee::Other { value: None, .. } => {
@@ -188,6 +190,18 @@ impl Position {
         self.realized_pnl += amount;
     }
 
+    /// Books a dividend adjustment on a CFD position at the ex-dividend
+    /// date: a long receives `qty × per_unit`, a short pays it (the venue
+    /// passes on what an owner would get; eToro: "you pay any eligible
+    /// dividends if you hold a short"). `per_unit` is what the venue
+    /// credits a long per unit (after any tax it withholds). Returns the
+    /// amount received (negative: paid). Flat: nothing.
+    pub fn apply_dividend(&mut self, per_unit: Decimal) -> Notional {
+        let received = Notional::new(self.qty.get() * per_unit);
+        self.realized_pnl += received;
+        received
+    }
+
     /// Settles one funding payment on a perpetual position: the venue
     /// charges `qty × mark × rate` (a positive rate: longs pay shorts),
     /// added to realized P&L. Returns the amount received (negative: paid).
@@ -222,7 +236,7 @@ impl Position {
         if fill.instrument != self.instrument || instrument.id != self.instrument {
             return Err(Error::PositionUpdate("fill is for a different instrument"));
         }
-        if instrument.class == AssetClass::Perpetual {
+        if instrument.is_margined() {
             return self.apply_perp(fill);
         }
         if self.qty.is_negative() {
@@ -886,5 +900,97 @@ mod tests {
         )
         .unwrap();
         assert!(short.check_against(&spot).is_err());
+    }
+
+    /// A CFD on BTCUSDT's id (the helpers fill that id), eToro-like
+    /// filters: tick 0.01, unit 1e-6.
+    fn cfd() -> Instrument {
+        Instrument::new(InstrumentSpec {
+            class: AssetClass::Cfd,
+            tick_size: Price::new(dec!(0.01)),
+            lot_size: Qty::new(dec!(0.000001)),
+            min_qty: Qty::new(dec!(0.000001)),
+            ..perp().into()
+        })
+        .unwrap()
+    }
+
+    /// The eToro demo probe of 2026-11-23 (KO short CFD, 1x): sell
+    /// 0.519642 at 96.22, fee 0.07; buy back 0.25 at 96.26, fee 0.035
+    /// (derived from the proceeds). eToro reported the closed part's net
+    /// profit as −0.01 (fees apart) and the rest as 0.269642 units with
+    /// $25.94 of margin: 0.269642 × 96.22 = 25.94495324.
+    #[test]
+    fn a_cfd_short_is_accounted_as_the_venue_reports_it() {
+        let inst = cfd();
+        assert!(inst.allows_short() && inst.is_margined());
+        let mut ko = Position::flat(inst.id.clone());
+        ko.apply(
+            &fill(
+                Side::Sell,
+                q(dec!(0.519642)),
+                p(dec!(96.22)),
+                Fee::Quote(Notional::new(dec!(0.07))),
+            ),
+            &inst,
+        )
+        .unwrap();
+        assert_eq!(ko.qty(), q(dec!(-0.519642)));
+        assert_eq!(
+            ko.realized_pnl(),
+            Notional::new(dec!(-0.07)),
+            "the opening fee"
+        );
+        ko.apply(
+            &fill(
+                Side::Buy,
+                q(dec!(0.25)),
+                p(dec!(96.26)),
+                Fee::Quote(Notional::new(dec!(0.035))),
+            ),
+            &inst,
+        )
+        .unwrap();
+        assert_eq!(ko.qty(), q(dec!(-0.269642)));
+        assert_eq!(ko.cost_basis(), Notional::new(dec!(-25.94495324)));
+        // −0.07 − 0.035 fees, and 0.25 × (96.22 − 96.26) = −0.01.
+        assert_eq!(ko.realized_pnl(), Notional::new(dec!(-0.115)));
+    }
+
+    /// A short pays the dividend, a long receives it: 10 units short at a
+    /// 0.51 dividend → −5.10; 4 units long → +2.04. Position untouched.
+    #[test]
+    fn dividends_are_paid_by_shorts_and_received_by_longs() {
+        let inst = cfd();
+        let mut short = Position::flat(inst.id.clone());
+        short
+            .apply(
+                &fill(
+                    Side::Sell,
+                    q(dec!(10)),
+                    p(dec!(60)),
+                    Fee::Quote(Notional::ZERO),
+                ),
+                &inst,
+            )
+            .unwrap();
+        assert_eq!(short.apply_dividend(dec!(0.51)), Notional::new(dec!(-5.10)));
+        assert_eq!(short.realized_pnl(), Notional::new(dec!(-5.10)));
+        assert_eq!(short.qty(), q(dec!(-10)));
+        assert_eq!(short.cost_basis(), Notional::new(dec!(-600)));
+        let mut long = Position::flat(inst.id.clone());
+        long.apply(
+            &fill(
+                Side::Buy,
+                q(dec!(4)),
+                p(dec!(60)),
+                Fee::Quote(Notional::ZERO),
+            ),
+            &inst,
+        )
+        .unwrap();
+        assert_eq!(long.apply_dividend(dec!(0.51)), Notional::new(dec!(2.04)));
+        let mut flat = Position::flat(inst.id.clone());
+        assert_eq!(flat.apply_dividend(dec!(0.51)), Notional::ZERO);
     }
 }

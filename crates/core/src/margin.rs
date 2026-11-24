@@ -1,4 +1,5 @@
-//! Margin for linear perpetuals (Binance USDⓈ-M, one-way mode).
+//! Margin for linear perpetuals (Binance USDⓈ-M, one-way mode), and the
+//! per-position close-out of CFDs (eToro, [`close_out_price`]).
 //!
 //! **Maintenance margin** comes from a notional bracket (Binance's
 //! "Notional and Leverage Brackets", `GET /fapi/v1/leverageBracket`):
@@ -127,6 +128,35 @@ pub enum MarginMode {
     Isolated,
     /// All positions share the cross wallet.
     Cross,
+}
+
+/// The share of a CFD position's margin whose loss closes it: eToro's
+/// terms (UK, 7.4) keep a position's margin at no less than 50% of what
+/// it might lose, the ESMA/FCA retail "margin close-out rule", applied per
+/// position, whatever else the account holds (7.5).
+pub const CFD_CLOSE_OUT: Decimal = Decimal::from_parts(5, 0, 0, false, 1);
+
+/// The price at which a CFD position opened at `entry` with `leverage`
+/// is force-closed: where its loss reaches `ratio` of its margin. Margin
+/// is |qty| × entry / leverage, so the loss |qty| × |move| reaches
+/// ratio × margin at a move of entry × ratio / leverage, independent of
+/// size: long `entry × (1 − ratio/leverage)`, short `entry × (1 +
+/// ratio/leverage)`. Not rounded to tick (a trigger, not an order price).
+/// `None` when flat, or for a long whose close-out would be at or below
+/// zero (ratio ≥ leverage: it can't lose that share of its margin).
+pub fn close_out_price(position: &Position, leverage: u32, ratio: Decimal) -> Option<Price> {
+    let qty = position.qty().get();
+    if qty.is_zero() {
+        return None;
+    }
+    let entry = position.cost_basis().get() / qty;
+    let step = ratio / Decimal::from(leverage.max(1));
+    let price = if qty.is_sign_positive() {
+        entry * (Decimal::ONE - step)
+    } else {
+        entry * (Decimal::ONE + step)
+    };
+    (price > Decimal::ZERO).then(|| Price::new(price))
 }
 
 /// Margin to open `notional` at `leverage` (≥ 1): notional / leverage.
@@ -329,6 +359,38 @@ mod tests {
                 cum: dec!(0)
             }])
             .is_err()
+        );
+    }
+
+    fn held(qty: Decimal, entry: Decimal) -> Position {
+        let id: InstrumentId = "etoro:KO".parse().unwrap();
+        Position::from_parts(
+            id,
+            Qty::new(qty),
+            Notional::new(qty * entry),
+            Notional::ZERO,
+        )
+        .unwrap()
+    }
+
+    /// KO at 96.22, close-out at half the margin: a 1x short closes 50%
+    /// above entry (144.33), a 5x short 10% above (105.842), a 2x long 25%
+    /// below (72.165); a 1x long at half its price (48.11). Size doesn't
+    /// matter: margin and loss both scale with it.
+    #[test]
+    fn cfd_close_out_is_where_the_loss_reaches_half_the_margin() {
+        let half = CFD_CLOSE_OUT;
+        assert_eq!(half, dec!(0.5));
+        let at = |qty, lev| close_out_price(&held(qty, dec!(96.22)), lev, half);
+        assert_eq!(at(dec!(-0.519642), 1), Some(Price::new(dec!(144.33))));
+        assert_eq!(at(dec!(-3), 5), Some(Price::new(dec!(105.842))));
+        assert_eq!(at(dec!(2), 2), Some(Price::new(dec!(72.165))));
+        assert_eq!(at(dec!(1), 1), Some(Price::new(dec!(48.11))));
+        assert_eq!(close_out_price(&held(dec!(0), dec!(96.22)), 1, half), None);
+        // A long can't lose 100% of its margin above zero at 1x: none.
+        assert_eq!(
+            close_out_price(&held(dec!(1), dec!(96.22)), 1, dec!(1)),
+            None
         );
     }
 }
