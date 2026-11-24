@@ -109,6 +109,7 @@ dependencies = [
  "axum",
  "bot-core",
  "engine",
+ "futures-util",
  "reqwest",
  "rust_decimal",
  "rust_decimal_macros",

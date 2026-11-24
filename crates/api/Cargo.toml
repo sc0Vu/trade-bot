@@ -10,6 +10,7 @@ license.workspace = true
 axum.workspace = true
 bot-core.workspace = true
 engine.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 storage.workspace = true
 tokio = { workspace = true, features = ["net", "sync"] }

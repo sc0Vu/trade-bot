@@ -132,7 +132,7 @@
       <tbody id="orders"></tbody>
     </table></div>
   </section>
-  <p class="fine">Read-only: nothing on this page can place, cancel or change an order. Refreshes every 5 s.</p>
+  <p class="fine">Read-only: nothing on this page can place, cancel or change an order. Updates as the bot handles each event.</p>
 </main>
 <script>
 "use strict";
@@ -204,56 +204,117 @@ function fee(f) {
   return "–";
 }
 
-async function refresh() {
+// Live state arrives over /events (server-sent events, read with fetch so
+// the token stays in a header, never in the URL); the books (trades,
+// orders) are re-read only when a fill or the working orders change. If
+// the stream can't be opened or drops, the page reconnects with backoff.
+let startedAt = null;
+let booksKey = null;
+
+function render(status) {
+  $("auth").style.display = "none";
+  $("strategy").textContent = status.strategy;
+  $("network").textContent = status.network;
+  $("network").className = "pill" + (status.network === "live" ? " live" : "");
+  startedAt = status.started_at;
+  $("s-up").textContent = since(startedAt);
+  const live = status.live;
+  const bars = live ? live.last_candles : [];
+  const close = Object.fromEntries(bars.map((c) => [c.instrument, num(c.close)]));
+  $("s-at").textContent = live && live.at ? utc(live.at).slice(5) : "–";
+  $("s-events").textContent = live ? live.events.toLocaleString() : "–";
+  $("s-fills").textContent = live ? live.fills : "–";
+  $("s-rej").textContent = live ? live.rejections : "–";
+  const held = (live ? live.positions : []).filter((p) => num(p.qty) !== 0 || num(p.realized_pnl) !== 0);
+  let total = 0;
+  rows($("positions"), held, (p) => {
+    const q = num(p.qty), basis = num(p.cost_basis), c = close[p.instrument];
+    const value = q * c, unreal = value - basis, real = num(p.realized_pnl);
+    total += (Number.isFinite(unreal) ? unreal : 0) + real;
+    return [p.instrument, raw(p.qty), q ? fmt(basis / q) : "–", fmt(c), fmt(value),
+            (td) => signed(td, q ? unreal : 0), (td) => signed(td, real)];
+  }, "Nothing held.");
+  $("s-pnl").textContent = held.length ? fmt(total, 2) : "–";
+  $("s-pnl").className = total > 0 ? "pos" : total < 0 ? "neg" : "";
+  rows($("open"), live ? live.open_orders : [], (o) =>
+    [o.id, left(o.instrument), left(o.side), left(kind(o.kind) + (o.reduce_only ? " · reduce-only" : "")),
+     size(o.size), utc(o.created_at)], "No working orders.");
+  rows($("bars"), bars, (c) => [c.instrument, utc(c.close_time + 1), raw(c.open), raw(c.high), raw(c.low), raw(c.close)],
+    "No bar yet.");
+  const key = live ? `${live.fills}|${live.rejections}|${live.open_orders.map((o) => o.id).join(",")}` : "";
+  if (key !== booksKey) {
+    booksKey = key;
+    books();
+  }
+}
+
+async function books() {
   try {
-    const [status, trades, orders] = await Promise.all([get("/status"), get("/trades?limit=50"), get("/orders?limit=50")]);
-    $("auth").style.display = "none";
-    $("strategy").textContent = status.strategy;
-    $("network").textContent = status.network;
-    $("network").className = "pill" + (status.network === "live" ? " live" : "");
-    $("s-up").textContent = since(status.started_at);
-    const live = status.live;
-    const bars = live ? live.last_candles : [];
-    const close = Object.fromEntries(bars.map((c) => [c.instrument, num(c.close)]));
-    $("s-at").textContent = live && live.at ? utc(live.at).slice(5) : "–";
-    $("s-events").textContent = live ? live.events.toLocaleString() : "–";
-    $("s-fills").textContent = live ? live.fills : "–";
-    $("s-rej").textContent = live ? live.rejections : "–";
-    const held = (live ? live.positions : []).filter((p) => num(p.qty) !== 0 || num(p.realized_pnl) !== 0);
-    let total = 0;
-    rows($("positions"), held, (p) => {
-      const q = num(p.qty), basis = num(p.cost_basis), c = close[p.instrument];
-      const value = q * c, unreal = value - basis, real = num(p.realized_pnl);
-      total += (Number.isFinite(unreal) ? unreal : 0) + real;
-      return [p.instrument, raw(p.qty), q ? fmt(basis / q) : "–", fmt(c), fmt(value),
-              (td) => signed(td, q ? unreal : 0), (td) => signed(td, real)];
-    }, "Nothing held.");
-    $("s-pnl").textContent = held.length ? fmt(total, 2) : "–";
-    $("s-pnl").className = total > 0 ? "pos" : total < 0 ? "neg" : "";
-    rows($("open"), live ? live.open_orders : [], (o) =>
-      [o.id, left(o.instrument), left(o.side), left(kind(o.kind) + (o.reduce_only ? " · reduce-only" : "")),
-       size(o.size), utc(o.created_at)], "No working orders.");
-    rows($("bars"), bars, (c) => [c.instrument, utc(c.close_time + 1), raw(c.open), raw(c.high), raw(c.low), raw(c.close)],
-      "No bar yet.");
+    const [trades, orders] = await Promise.all([get("/trades?limit=50"), get("/orders?limit=50")]);
     rows($("trades"), trades, (t) => [utc(t.ts), left(t.instrument), left(t.side), raw(t.qty), raw(t.price),
       fee(t.fee), left(t.liquidity), left(t.client_order_id ?? t.order_id)], "No trades in the books yet.");
     rows($("orders"), orders, (o) => [utc(o.created_at), left(o.client_order_id), left(o.instrument), left(o.side),
       left(o.status), raw(o.venue_order_id)], "No orders in the journal yet.");
-    $("state").textContent = "updated " + new Date().toLocaleTimeString();
-    $("state").className = "";
   } catch (e) {
-    $("state").textContent = "not reachable: " + e.message;
-    $("state").className = "err";
+    booksKey = null; // try again with the next message
   }
 }
 
+function state(text, bad) {
+  $("state").textContent = text;
+  $("state").className = bad ? "err" : "";
+}
+
+let stream = null;
+let generation = 0;
+async function listen() {
+  const mine = ++generation; // a newer listen() retires this loop
+  let delay = 1000;
+  while (mine === generation) {
+    stream = new AbortController();
+    try {
+      const headers = {};
+      const t = token();
+      if (t) headers.Authorization = "Bearer " + t;
+      const r = await fetch("/events", { headers, cache: "no-store", signal: stream.signal });
+      if (r.status === 401) { $("auth").style.display = "flex"; throw new Error("token needed"); }
+      if (!r.ok || !r.body) throw new Error("/events: HTTP " + r.status);
+      delay = 1000;
+      const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("stream ended (the run stopped?)");
+        if (mine !== generation) return;
+        buf += value;
+        let cut;
+        while ((cut = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, cut);
+          buf = buf.slice(cut + 2);
+          const data = block.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n");
+          if (!data) continue; // keep-alive comment
+          render(JSON.parse(data));
+          state("live · " + new Date().toLocaleTimeString());
+        }
+      }
+    } catch (e) {
+      if (e.name === "AbortError" || mine !== generation) return;
+      state(`not reachable: ${e.message}; retrying in ${delay / 1000} s`, true);
+      await new Promise((ok) => setTimeout(ok, delay));
+      delay = Math.min(delay * 2, 30000);
+    }
+  }
+}
+
+setInterval(() => { if (startedAt) $("s-up").textContent = since(startedAt); }, 30000);
 $("save").addEventListener("click", () => {
   try { sessionStorage.setItem(TOKEN_KEY, $("token").value.trim()); } catch {}
   $("token").value = "";
-  refresh();
+  if (stream) stream.abort();
+  booksKey = null;
+  listen();
 });
-refresh();
-setInterval(refresh, 5000);
+listen();
 </script>
 <script>
 (() => {

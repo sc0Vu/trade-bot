@@ -182,7 +182,8 @@ listen = "127.0.0.1:9185"
 allow_public = false
 # A dashboard page at http://<listen>/ (needs enabled): the run, positions
 # with value and P&L at the last close, open orders, latest bars, recent
-# trades and orders, refreshed every 5 s. Read-only, like the API; with a
+# trades and orders, updated as each event is handled (it follows the
+# /events stream). Read-only, like the API; with a
 # token set, the page asks for it. On a local paper run (Binance futures
 # paper, MAX paper) the API reads in-memory books kept from the run's own
 # fills: positions and trades since it started; no order journal.

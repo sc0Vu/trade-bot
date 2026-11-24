@@ -153,7 +153,7 @@ are errors, so a typo fails loudly instead of falling back to a default.
 | `[db]` | `url` | Where a run keeps its books; default `data/<network>.db` |
 | `[metrics]` | `enabled`, `listen`, `include_money`, `allow_public` | Prometheus `/metrics` during `run`; off, loopback-only and money-free by default |
 | `[api]` | `enabled`, `listen`, `allow_public` | Read-only JSON API during `run` (default `127.0.0.1:9185`); a public address needs a token in `TRADEBOT_API_TOKEN` |
-| `[api]` | `dashboard` | A read-only web dashboard at `http://<listen>/` while the bot runs (needs `enabled`): positions with value and P&L, open orders, latest bars, recent trades and orders, refreshed every 5 s |
+| `[api]` | `dashboard` | A read-only web dashboard at `http://<listen>/` while the bot runs (needs `enabled`): positions with value and P&L, open orders, latest bars, recent trades and orders, updated as each event is handled (server-sent events, `/events`) |
 | `[log]` | `level` | What `run` logs, as a `RUST_LOG`-style filter (default `info,sqlx=warn`); `RUST_LOG`, when set, overrides it |
 | `[log]` | `format` | Console lines as `text` (default) or `json` |
 | `[log]` | `file` | Also append JSON lines here for a log shipper (Loki via `deploy/`, Datadog, Vector); unset = no file |
@@ -573,7 +573,8 @@ cargo run -p cli -- run --live --i-understand
 **Watching a run.** With `[api] enabled = true` and `dashboard = true`, a
 running bot serves a dashboard at <http://127.0.0.1:9185/>: the run, its
 positions with value and P&L at the last close, open orders, the latest
-bars, and recent trades and orders, refreshed every 5 seconds. It is
+bars, and recent trades and orders, updated the moment the bot handles
+an event (it follows `/events`, a server-sent event stream). It is
 read-only like the API behind it (nothing on it can place or cancel an
 order), loopback by default, and asks for the token when one is set.
 ### eToro

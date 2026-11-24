@@ -9,12 +9,16 @@
 //! | `/open-orders` | the broker's working orders, as of the latest snapshot |
 //! | `/orders?limit=N` | the latest journaled orders, newest first |
 //! | `/trades?limit=N` | the latest fills, newest first |
+//! | `/events` | server-sent events: the `/status` body now, then again after every engine snapshot (event `status`); a slow reader skips to the latest; ends with the run |
 //!
 //! With [`ApiState::dashboard`], `/` serves a page (the run, positions with
 //! value and P&L at the last close, open orders, latest bars, recent trades
 //! and orders) that reads these routes every 5 s. The page itself holds no
 //! data, so it loads without the token; it asks for the token when the API
-//! answers 401 and keeps it for that browser tab only.
+//! answers 401 and keeps it for that browser tab only. The page follows
+//! `/events` (read with `fetch`, so the token travels in the header, never
+//! the URL) and re-reads `/trades` and `/orders` only when fills or the
+//! working orders change.
 //!
 //! There is deliberately no route that places, cancels or changes
 //! anything: orders come only from the strategy through risk, and nothing
@@ -25,6 +29,7 @@
 use axum::extract::{Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -91,6 +96,7 @@ fn router(state: ApiState) -> Router {
         .route("/open-orders", get(open_orders))
         .route("/orders", get(orders))
         .route("/trades", get(trades))
+        .route("/events", get(events))
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
     // The page carries no data (it fetches the routes above, with the
     // token), so it is served outside the token check.
@@ -150,6 +156,35 @@ struct StatusBody {
     #[serde(flatten)]
     info: RunInfo,
     live: Option<Snapshot>,
+}
+
+/// `/events`: the status body at once, then after each change of the live
+/// view. Built on the `watch` channel, so a reader slower than the engine
+/// sees only the newest snapshot and the engine never waits; the stream
+/// ends when the run drops the sender. A keep-alive comment every 15 s
+/// keeps idle connections (and proxies) open between bars.
+async fn events(
+    State(s): State<ApiState>,
+) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let info = s.info.clone();
+    let stream = futures_util::stream::unfold((s.live.clone(), true), move |(mut rx, first)| {
+        let info = info.clone();
+        async move {
+            if !first && rx.changed().await.is_err() {
+                return None;
+            }
+            let body = StatusBody {
+                info,
+                live: rx.borrow_and_update().clone(),
+            };
+            let event = Event::default()
+                .event("status")
+                .json_data(&body)
+                .unwrap_or_else(|e| Event::default().event("error").data(e.to_string()));
+            Some((Ok(event), (rx, false)))
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 async fn status(State(s): State<ApiState>) -> Json<StatusBody> {
@@ -473,7 +508,7 @@ mod tests {
                 .starts_with("text/html")
         );
         let html = page.text().await.unwrap();
-        assert!(html.contains("/status") && html.contains("/trades?limit="));
+        assert!(html.contains("/events") && html.contains("/trades?limit="));
         let data = reqwest::get(format!("{base}/status")).await.unwrap();
         assert_eq!(data.status().as_u16(), 401);
     }
@@ -498,5 +533,66 @@ mod tests {
         let addr = serve("127.0.0.1:0".parse().unwrap(), state).await.unwrap();
         let r = reqwest::get(format!("http://{addr}/")).await.unwrap();
         assert_eq!(r.status().as_u16(), 404);
+    }
+
+    /// Reads SSE chunks until one holds a whole `data:` line; its JSON.
+    async fn next_event(r: &mut reqwest::Response) -> Option<Value> {
+        let mut buf = String::new();
+        loop {
+            let chunk = r.chunk().await.unwrap()?;
+            buf.push_str(std::str::from_utf8(&chunk).unwrap());
+            if let Some(line) = buf
+                .split('\n')
+                .find(|l| l.starts_with("data:") && buf.contains("\n\n"))
+            {
+                return Some(serde_json::from_str(line["data:".len()..].trim()).unwrap());
+            }
+        }
+    }
+
+    /// `/events`: the current status at once (no event yet: `live` null),
+    /// then one message per new snapshot; it needs the token like the
+    /// other data routes; it ends when the run drops the sender.
+    #[tokio::test]
+    async fn events_stream_each_snapshot_and_end_with_the_run() {
+        let db = db().await;
+        let (base, tx) = start(&db, Some("s3cret")).await;
+        let refused = reqwest::get(format!("{base}/events")).await.unwrap();
+        assert_eq!(refused.status().as_u16(), 401);
+
+        let client = reqwest::Client::new();
+        let mut r = client
+            .get(format!("{base}/events"))
+            .bearer_auth("s3cret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        assert!(
+            r.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/event-stream")
+        );
+        let first = next_event(&mut r).await.unwrap();
+        assert_eq!(first["strategy"], "sma_trend");
+        assert!(first["live"].is_null());
+
+        tx.send_replace(Some(Snapshot {
+            events: 5,
+            fills: 1,
+            ..Snapshot::default()
+        }));
+        let second = next_event(&mut r).await.unwrap();
+        assert_eq!(second["live"]["events"], 5);
+        assert_eq!(second["live"]["fills"], 1);
+        // `new_fills` is for observers, not the wire.
+        assert!(second["live"].get("new_fills").is_none());
+
+        drop(tx);
+        assert!(
+            next_event(&mut r).await.is_none(),
+            "stream ends with the run"
+        );
     }
 }

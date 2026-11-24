@@ -1370,7 +1370,9 @@ Not finished until all hold — per task, not at end:
   P&L) only with `include_money`; exporter failure = warning, never stops
   trading. `[api] dashboard` (needs enabled): `api` serves `dashboard.html` (embedded) at
   `/`, outside the token layer (page holds no data; asks for the token on 401,
-  sessionStorage), polls /status /trades /orders every 5 s; value / P&L computed in
+  sessionStorage), follows `/events` (SSE over the `watch` channel: status now + each
+  snapshot, latest only, ends with the run; read via fetch so the token stays in the
+  header), re-reads /trades /orders when fills/working orders change; value / P&L computed in
   the browser for display only. `[api]` same rules: off, loopback default, non-loopback needs
   `allow_public` + token in `TRADEBOT_API_TOKEN` (not `BOT_*`: that prefix is
   config layer), live view via observer `watch` channel, bind failure =
