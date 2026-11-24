@@ -516,7 +516,11 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
     FROM=2024-01-01 TO=2024-06-01 SLIPPAGE_BPS=5 PARAMS=my-params.toml</pre></div>
 <div class="panel" role="tabpanel" id="p-bn" aria-labelledby="t-bn" hidden><pre><span class="c"># paper trade on Binance's testnet (the default network)</span>
 <span class="p">$ </span>export BINANCE_API_KEY=… BINANCE_API_SECRET=…
-<span class="p">$ </span>make run-paper</pre></div>
+<span class="p">$ </span>make run-paper
+<span class="c"># watch it live: add to the config, then open http://127.0.0.1:9185/</span>
+<span class="c">#   [api]</span>
+<span class="c">#   enabled = true</span>
+<span class="c">#   dashboard = true</span></pre></div>
 <div class="panel" role="tabpanel" id="p-pp" aria-labelledby="t-pp" hidden><pre><span class="c"># USDⓈ-M: klines, funding, mark price and your margin brackets</span>
 <span class="p">$ </span>cargo run -p cli -- fetch-data --venue binance-usdm --symbol BTCUSDT --from 2026-01-01
 <span class="p">$ </span>cargo run -p cli -- backtest --venue binance-usdm --strategy sma_long_short \
@@ -553,6 +557,15 @@ params = { coins = ["QQQ", "MSFT", "META"], k = 1, lookback = 60, … }
       <div class="card"><h3><span class="ico">▣</span>Ship it anywhere</h3>
         <p>Release binaries for five platforms, <code>trade-bot service</code> for launchd and systemd, a Dockerfile,
           and a Render blueprint that keeps the books on a disk.</p></div>
+      <div class="card"><h3><span class="ico">⇄</span>Tuned out of sample</h3>
+        <p><code>trade-bot sweep</code> picks parameters on one window and scores them only on the next, unseen one,
+          beside the median choice. If the pick doesn't beat the median, the tuning was a fit to the past.</p></div>
+      <div class="card"><h3><span class="ico">↧</span>Shorts where the venue allows</h3>
+        <p>Signed positions on Binance USDⓈ-M perpetuals, and eToro stock CFDs in backtests: margin per position,
+          forced close at half of it, reduce-only exits, so a refused flip never strands a losing position.</p></div>
+      <div class="card"><h3><span class="ico">↓</span>One-line install</h3>
+        <p><code>curl -fsSL …/install.sh | sh</code> fetches the latest release for your platform, refuses it
+          unless its SHA-256 matches the published sums, and puts it in <code>~/.local/bin</code>.</p></div>
     </div>
   </div>
 </section>
