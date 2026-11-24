@@ -18,8 +18,8 @@
 //! is any fill that shrinks the position, liquidations included.
 
 use bot_core::{
-    AssetClass, Candle, Decimal, Fee, Fill, Instrument, InstrumentId, Interval, MarketEvent,
-    Notional, Position, Price, Side,
+    Candle, Decimal, Fee, Fill, Instrument, InstrumentId, Interval, MarketEvent, Notional,
+    Position, Price, Side,
 };
 use engine::RunReport;
 use rust_decimal::MathematicalOps;
@@ -243,7 +243,7 @@ impl Ledger {
     }
 
     fn apply(&mut self, f: &Fill, inst: &Instrument) {
-        if inst.class == AssetClass::Perpetual {
+        if inst.is_margined() {
             let pos = self
                 .positions
                 .entry(f.instrument.clone())
@@ -304,7 +304,7 @@ impl Ledger {
                 let mark = self.marks.get(id)?;
                 let inst = by_id.get(id)?;
                 let value = inst.notional(p.qty(), *mark);
-                Some(if inst.class == AssetClass::Perpetual {
+                Some(if inst.is_margined() {
                     value - p.cost_basis()
                 } else {
                     value
@@ -417,6 +417,7 @@ impl fmt::Display for Report {
 mod tests {
     use super::*;
     use crate::test_support::{HOUR, btcusdt, candle};
+    use bot_core::AssetClass;
     use bot_core::{FillSpec, Liquidity, OrderId, Qty, Timestamp};
     use rust_decimal_macros::dec;
 

@@ -446,6 +446,20 @@ close over weekends and holidays, so a series is cut as delisted only
 after 120 hours without a bar. eToro publishes no tick or unit step and
 volume is often missing, so `avwap` has no data there.
 
+`--cfd` backtests the symbols as eToro CFDs instead, so a strategy can
+short them (`long_short_momentum`, `tsmom_long_short`, `sma_long_short`).
+It is modelled on eToro's terms and a demo probe: 1x only, a fee rate each
+way (`--fee 0.0015` is eToro's 0.15%), and a position is closed where its
+loss reaches half its margin (filled like a stop: at that price, or at the
+open after a gap). Not modelled, so stated: dividends, which a short pays;
+overnight fees (none on an easy-to-borrow short at 1x, but leveraged CFDs
+pay them, which is why leverage above 1 is refused); and a 1x long is a
+CFD here where eToro would buy the real share ($1 an order). Backtest
+only: the bot doesn't place CFD orders yet. Measured (model output):
+`long_short_momentum` on AAPL, JPM, META, MSFT, UNH, V, XOM and QQQ, daily,
+walk-forward 2022–2026: the picks chained −35.6% out of sample, the median
+parameters −10%; momentum between these large caps didn't pay.
+
 ```sh
 make etoro-stocks-data                                    # SPY, QQQ, AAPL, MSFT, AMZN daily
 make etoro-stocks-backtest FROM=2024-01-01 TO=2026-11-01  # examples vs buy-and-hold SPY

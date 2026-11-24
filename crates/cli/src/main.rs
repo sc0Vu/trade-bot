@@ -848,6 +848,12 @@ struct BacktestArgs {
     /// `binance-usdm`: margin mode.
     #[arg(long, value_enum, default_value = "isolated")]
     margin: MarginArg,
+    /// `etoro`: trade every symbol as a CFD (shorts allowed), 1x, closed
+    /// out where a position's loss reaches half its margin. Leverage above
+    /// 1 is refused: leveraged CFDs pay overnight fees, not modelled.
+    /// Dividends (paid by shorts) are not replayed either.
+    #[arg(long)]
+    cfd: bool,
     /// `binance-usdm`: liquidation clearance fee rate; default the highest
     /// cached `liquidationFee` of the symbols.
     #[arg(long, value_parser = parse_decimal)]
@@ -971,6 +977,21 @@ async fn backtest_report(
         // eToro's resting limit is market-if-touched; IOC and stops refused.
         provider = provider.with_touch_fills();
     }
+    if a.cfd {
+        anyhow::ensure!(a.venue == Venue::Etoro, "--cfd is for --venue etoro");
+        anyhow::ensure!(
+            a.leverage.unwrap_or(1) == 1,
+            "--cfd trades 1x only: leveraged CFDs pay overnight fees, which aren't modelled"
+        );
+        anyhow::ensure!(a.earn_ratio.is_none(), "--earn-ratio is spot only");
+        provider = provider.as_cfds(1)?;
+        notes.push(
+            "note: CFDs at 1x, closed out at half a position's margin; a 1x long is modelled \
+             as a CFD (eToro would buy the real share: $1 per order instead of the fee rate); \
+             dividends, which shorts pay, are not replayed"
+                .to_owned(),
+        );
+    }
     if perp {
         let (setup, events) = perp_setup(&provider, &dir, &ids, a, &mut notes)?;
         provider = provider.with_perp(setup).with_events(events);
@@ -985,7 +1006,7 @@ async fn backtest_report(
                 fees,
             })
             .with_events(events);
-    } else if a.leverage.is_some() || a.clearance.is_some() {
+    } else if (a.leverage.is_some() && !a.cfd) || a.clearance.is_some() {
         anyhow::bail!("--leverage and --clearance are for --venue binance-usdm or --perp-symbol");
     }
     if let Some(ratio) = a.earn_ratio {

@@ -100,6 +100,30 @@ impl BacktestProvider {
         self
     }
 
+    /// Trades every instrument as a CFD at `leverage` (eToro shorts): the
+    /// cached instruments, same filters, re-classed [`AssetClass::Cfd`], on
+    /// a [`PerpPaperBroker`] with [`PerpTerms::cfd`] (closed out at half a
+    /// position's margin; no clearance fee). The fill model stays the
+    /// provider's ([`with_touch_fills`](Self::with_touch_fills) for eToro).
+    /// No funding: overnight fees and dividends are not replayed.
+    pub fn as_cfds(mut self, leverage: u32) -> Result<Self, ExchangeError> {
+        let mut terms = HashMap::new();
+        for i in &mut self.instruments {
+            let spec = bot_core::InstrumentSpec {
+                class: AssetClass::Cfd,
+                ..(**i).clone()
+            };
+            *i =
+                Instrument::new(spec).map_err(|_| ExchangeError::Rejected("bad CFD instrument"))?;
+            terms.insert(i.id.clone(), PerpTerms::cfd(leverage)?);
+        }
+        self.perp = Some(PerpSetup {
+            terms,
+            clearance: bot_core::Decimal::ZERO,
+        });
+        Ok(self)
+    }
+
     /// Merges extra market events (funding settlements, …) into the replay
     /// by time; at equal times they come before the bars.
     pub fn with_events(mut self, events: Vec<MarketEvent>) -> Self {
@@ -263,6 +287,9 @@ impl Provider for BacktestProvider {
     fn asset_classes(&self) -> &[AssetClass] {
         if self.hedge.is_some() {
             &[AssetClass::Spot, AssetClass::Perpetual]
+        } else if self.perp.is_some() && self.instruments.iter().any(|i| i.class == AssetClass::Cfd)
+        {
+            &[AssetClass::Cfd]
         } else if self.perp.is_some() {
             &[AssetClass::Perpetual]
         } else {
@@ -311,10 +338,15 @@ impl Provider for BacktestProvider {
             }));
         }
         if let Some(perp) = &self.perp {
+            let model: Box<dyn exchange::paper::FillModel> = if self.touch_fills {
+                Box::new(TouchFillModel)
+            } else {
+                Box::new(NextOpenFillModel)
+            };
             return Ok(Box::new(PerpPaperBroker::new(
                 self.instruments.clone(),
                 perp.terms.clone(),
-                Box::new(NextOpenFillModel),
+                model,
                 Box::new(self.paper.slippage),
                 Box::new(self.paper.fees),
                 self.paper.initial_cash,

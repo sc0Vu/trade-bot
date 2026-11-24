@@ -473,6 +473,7 @@ async fn run_backtest(
             data_dir: c.data_dir.clone(),
             leverage: r.leverage,
             margin: MarginArg::Isolated,
+            cfd: false,
             clearance: None,
         })
     };

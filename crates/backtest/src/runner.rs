@@ -188,6 +188,53 @@ mod tests {
         assert_eq!(r.final_equity, Notional::new(dec!(1197.9)));
     }
 
+    /// An eToro-style CFD backtest, 1x, 0.15% each way: short 1 at 100
+    /// (fee 0.15), short 1 more at 120 (fee 0.18) → 2 short, entry 110,
+    /// close-out at 110 × 1.5 = 165. t3's high 151 doesn't reach it; t4
+    /// opens at 150 and trades to 170: bought back at 165, loss 2 × 55 =
+    /// 110, fee 0.495. Equity 1,000 − 0.15 − 0.18 − 110 − 0.495 = 889.175.
+    #[tokio::test]
+    async fn a_cfd_short_backtest_is_closed_out_at_half_its_margin() {
+        use bot_core::AssetClass;
+        use exchange::Provider;
+        let spot = btcusdt();
+        let id = spot.id.clone();
+        let provider = BacktestProvider::new(
+            vec![spot],
+            vec![
+                candle(&id, 0, ["100", "100", "100", "100"]),
+                candle(&id, 1, ["100", "100", "100", "100"]),
+                candle(&id, 2, ["100", "100", "100", "100"]),
+                candle(&id, 3, ["120", "151", "120", "140"]),
+                candle(&id, 4, ["150", "170", "150", "160"]),
+            ],
+            PaperConfig {
+                fees: RateFee::new(dec!(0.0015), dec!(0.0015), FeeAsset::Quote).unwrap(),
+                slippage: BpsSlippage::zero(),
+                initial_cash: Notional::new(dec!(1000)),
+            },
+        )
+        .as_cfds(1)
+        .unwrap();
+        assert_eq!(provider.asset_classes(), &[AssetClass::Cfd]);
+        let config = EngineConfig {
+            whitelist: vec![id],
+            history_len: 10,
+            ..Default::default()
+        };
+        let r = run_backtest(
+            &provider,
+            &mut Shorter,
+            Params::default(),
+            &config,
+            Interval::H1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.fills, 3, "two shorts and the close-out");
+        assert_eq!(r.final_equity, Notional::new(dec!(889.175)));
+    }
+
     /// Sells 1 (base) at t0's close and again at t2's close.
     struct Shorter;
 

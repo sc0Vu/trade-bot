@@ -664,6 +664,7 @@ mod tests {
                 data_dir: dir.clone(),
                 leverage: None,
                 margin: MarginArg::Isolated,
+                cfd: false,
                 clearance: None,
             },
             train_days: 3,
