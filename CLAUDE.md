@@ -151,7 +151,8 @@ touch fills on eToro; asset classes [Cfd]); report treats `is_margined()`
 like perps (cash by realized). CLI `backtest --venue etoro --cfd` (1x only:
 leveraged CFDs pay overnight fees, unmodelled; dividends not replayed;
 note printed). Pinned: runner test 889.175. Measured: long_short_momentum on
-8 large caps, daily, walk-forward 2022–2026: picks −35.6%, median −10%.
+8 large caps, daily, walk-forward 2022–2026: picks +10.7%, median −6.1%
+(after the rotation-margin fix; before it −35.6%: openings refused).
 `core::margin` (one-way USDⓈ-M): `Brackets` (contiguous from 0: floor/cap,
 max_leverage, rate, cum; = `/fapi/v1/leverageBracket`), maintenance =
 |notional|·rate − cum, `initial_margin` = notional/leverage,
@@ -166,7 +167,8 @@ slippage / fees (quote) as PaperBroker; fills move margin not cash
 realized + fees → wallet, funding → position margin; cross: shared
 wallet, available = wallet + cross UPNL − cross IM − reservations).
 Refuses leverage above the bracket at the resulting size and an order
-whose exact wallet cost (`flow`: new margin − returned margin − realized −
+(available + what earlier-sent pending market reduce-only orders free:
+`Pending.frees`, at submit and at fill, as live the close fills first) whose exact wallet cost (`flow`: new margin − returned margin − realized −
 fee; cross: ΔIM − realized) > available (submit at last close; fill at real price → dropped unfilled).
 After each candle: low (long) / high (short) ≤/≥ liquidation price →
 closed at LP (tick against trader) + clearance fee capped at margin left

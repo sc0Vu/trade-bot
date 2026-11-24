@@ -20,7 +20,7 @@
 //! Walk-forward (`sweep`, 365-day train / 90-day test, 2023–2026, 2x
 //! cross): with `rebalance_bars` swept in {6, 42}, picks chained +88% out
 //! of sample against +26% for the median combination (beat it in 11 of 15
-//! windows); deciding every bar, picks −81%. The 10 coins are today's
+//! windows); deciding every bar (2x isolated), picks −57%. The 10 coins are today's
 //! survivors (chosen in 2026): that flatters a winners-minus-losers bet.
 //!
 //! Orders: `builtin::signed` (shared with `tsmom_long_short`): a flip

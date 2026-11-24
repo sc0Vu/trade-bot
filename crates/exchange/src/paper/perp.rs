@@ -27,6 +27,10 @@
 //! An order is refused (`Rejected`) when the leverage is above what the
 //! symbol's bracket allows at the resulting size, or the margin to open it
 //! (plus the taker fee) isn't available. Selling from flat opens a short.
+//! Available counts what pending market orders that only reduce, sent
+//! before it, are expected to free (at submit and again at the fill): live
+//! the venue fills a market close at once, so an opening sent right after
+//! it in a rotation finds that margin free.
 //!
 //! **Liquidation.** After each candle's fills, every position on the
 //! instrument is checked against its liquidation price
@@ -97,6 +101,12 @@ struct Pending {
     state: OrderState,
     /// Margin plus fee held for it until it fills or is cancelled.
     reserved: Notional,
+    /// What a market order that only reduces is expected to free (margin
+    /// back, P&L and fee at the reference price): orders submitted after
+    /// it may count on it, as live, where the venue fills the market close
+    /// before the next order arrives (a rotation: close one, open another
+    /// in the same decision). Zero for anything else.
+    frees: Notional,
 }
 
 /// See the module docs.
@@ -221,6 +231,17 @@ impl PerpPaperBroker {
     /// What a new order may still use: cross = wallet + cross unrealized
     /// P&L − cross initial margin; isolated = the wallet; less what
     /// pending orders hold.
+    /// [`available`](Self::available) plus what the first `earlier`
+    /// pending orders (submission order) will free: the market closes
+    /// sent before the order being checked.
+    fn available_after(&self, id: &InstrumentId, earlier: usize) -> Notional {
+        self.available(id)
+            + self.pending[..earlier.min(self.pending.len())]
+                .iter()
+                .map(|p| p.frees)
+                .sum::<Notional>()
+    }
+
     fn available(&self, id: &InstrumentId) -> Notional {
         let held: Notional = self.pending.iter().map(|p| p.reserved).sum();
         let base = match self.mode(id) {
@@ -558,12 +579,16 @@ impl Broker for PerpPaperBroker {
         }
         let opens = self.opens(&order.instrument, order.side, qty);
         let fee = self.quote_fee(&inst, order.side, Qty::new(qty), price, Liquidity::Taker);
-        let reserved = self
-            .need(&inst, order.side, Qty::new(qty), price, fee)?
-            .max(Notional::ZERO);
-        if opens && reserved > self.available(&order.instrument) {
+        let need = self.need(&inst, order.side, Qty::new(qty), price, fee)?;
+        let reserved = need.max(Notional::ZERO);
+        if opens && reserved > self.available_after(&order.instrument, self.pending.len()) {
             return Err(ExchangeError::Rejected("insufficient margin"));
         }
+        let frees = if !opens && matches!(order.kind, bot_core::OrderKind::Market) {
+            (-need).max(Notional::ZERO)
+        } else {
+            Notional::ZERO
+        };
         let id = order.id.clone();
         self.pending.push(Pending {
             order,
@@ -572,6 +597,7 @@ impl Broker for PerpPaperBroker {
                 first_look: true,
             },
             reserved,
+            frees,
         });
         Ok(id)
     }
@@ -652,7 +678,9 @@ impl Broker for PerpPaperBroker {
                             // → dropped unfilled, as the venue would refuse.
                             let opens = self.opens(&p.order.instrument, p.order.side, qty.get());
                             let need = self.need(&inst, p.order.side, qty, price, fee)?;
-                            if opens && need > self.available(&p.order.instrument) {
+                            // `p` was at index `i`: those before it were
+                            // sent first, so their closes count.
+                            if opens && need > self.available_after(&p.order.instrument, i) {
                                 tracing::warn!(order = %p.order.id, "paper perpetual fill dropped: insufficient margin");
                                 continue;
                             }
@@ -1115,5 +1143,76 @@ mod tests {
             dec!(0),
         );
         assert!(r.is_err());
+    }
+
+    /// A rotation in one decision: close ZZZ (held 9 at 100, all the
+    /// margin but 100) and open AAA 9 at 100. Live, the market close fills
+    /// first and frees the margin; here AAA is accepted on what the earlier
+    /// close will free, and fills even though AAA's bar settles before
+    /// ZZZ's. CFD 1x, no fees: wallet 1,000 → 100 after ZZZ, 100 again
+    /// after the rotation; a third opening counting on nothing is refused.
+    #[tokio::test]
+    async fn a_rotation_counts_the_margin_an_earlier_market_close_frees() {
+        let mk = |sym: &str| {
+            Instrument::new(InstrumentSpec {
+                id: format!("binance:{sym}USDT").parse().unwrap(),
+                base: bot_core::Asset::new(sym).unwrap(),
+                ..(*cfd()).clone()
+            })
+            .unwrap()
+        };
+        let (a, z) = (mk("AAA"), mk("ZZZ"));
+        let mut b = PerpPaperBroker::new(
+            vec![a.clone(), z.clone()],
+            HashMap::from([
+                (a.id.clone(), PerpTerms::cfd(1).unwrap()),
+                (z.id.clone(), PerpTerms::cfd(1).unwrap()),
+            ]),
+            Box::new(NextOpenFillModel),
+            Box::new(BpsSlippage::new(dec!(0)).unwrap()),
+            Box::new(RateFee::new(dec!(0), dec!(0), FeeAsset::Quote).unwrap()),
+            Notional::new(dec!(1000)),
+            dec!(0),
+        )
+        .unwrap();
+        let on = |i: &Instrument, n: i64, p: &str| {
+            MarketEvent::Candle(
+                bot_core::Candle::new(bot_core::CandleSpec {
+                    instrument: i.id.clone(),
+                    ..candle(n, [p, p, p, p]).into()
+                })
+                .unwrap(),
+            )
+        };
+        let order = |n: u32, i: &Instrument, side: Side, after: i64| {
+            Order::new(OrderSpec {
+                id: OrderId::new(format!("o-{n}")).unwrap(),
+                instrument: i.id.clone(),
+                side,
+                size: Size::Base(Qty::new(dec!(9))),
+                kind: OrderKind::Market,
+                created_at: candle(after, ["1", "1", "1", "1"]).close_time,
+            })
+            .unwrap()
+        };
+        for i in [&a, &z] {
+            b.settle(&on(i, 0, "100")).await.unwrap();
+        }
+        b.submit(order(1, &z, Side::Buy, 0)).await.unwrap();
+        b.settle(&on(&a, 1, "100")).await.unwrap();
+        b.settle(&on(&z, 1, "100")).await.unwrap();
+        assert_eq!(b.wallet(), Notional::new(dec!(100)));
+        b.submit(order(2, &z, Side::Sell, 1).with_reduce_only().unwrap())
+            .await
+            .unwrap();
+        b.submit(order(3, &a, Side::Buy, 1)).await.unwrap();
+        // Nothing frees margin for a second opening.
+        assert!(b.submit(order(4, &a, Side::Buy, 1)).await.is_err());
+        let first = b.settle(&on(&a, 2, "100")).await.unwrap();
+        assert_eq!(first.len(), 1, "AAA fills on the close sent before it");
+        b.settle(&on(&z, 2, "100")).await.unwrap();
+        assert_eq!(b.position(&a.id).qty(), Qty::new(dec!(9)));
+        assert!(b.position(&z.id).is_flat());
+        assert_eq!(b.wallet(), Notional::new(dec!(100)));
     }
 }

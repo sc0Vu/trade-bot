@@ -457,8 +457,9 @@ pay them, which is why leverage above 1 is refused); and a 1x long is a
 CFD here where eToro would buy the real share ($1 an order). Backtest
 only: the bot doesn't place CFD orders yet. Measured (model output):
 `long_short_momentum` on AAPL, JPM, META, MSFT, UNH, V, XOM and QQQ, daily,
-walk-forward 2022–2026: the picks chained −35.6% out of sample, the median
-parameters −10%; momentum between these large caps didn't pay.
+walk-forward 2022–2026: the picks chained +10.7% out of sample, the median
+parameters −6.1% (the pick beat the median in 9 of 19 windows): a weak,
+noisy result on eight names.
 
 ```sh
 make etoro-stocks-data                                    # SPY, QQQ, AAPL, MSFT, AMZN daily
