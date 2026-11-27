@@ -41,7 +41,10 @@ jobs:
       - name: install and VPS setup scripts
         run: shellcheck site/install.sh site/vps-setup.sh
       - name: cloud-init file
-        run: ruby -ryaml -e 'f = "deploy/vps/cloud-init.yaml"; abort "no #cloud-config" unless File.readlines(f)[0].strip == "#cloud-config"; abort "no runcmd" unless YAML.load_file(f)["runcmd"]'
+        run: |
+          f=deploy/vps/cloud-init.yaml
+          test "$(head -n 1 "$f")" = "#cloud-config"
+          ruby -ryaml -e 'abort "no runcmd" unless YAML.load_file(ARGV[0])["runcmd"]' "$f"
       - name: dashboard JSON
         run: python3 -m json.tool deploy/grafana/dashboards/trade-bot.json > /dev/null
       - name: Prometheus rules and their unit tests
