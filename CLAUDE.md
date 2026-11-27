@@ -1257,6 +1257,8 @@ crates/
                (gate, overrides, funding_carry; shared with `run`) + loader +
                key env names (never values) + API token + strategy build +
                kill marker, every refusal reported, nothing connected, exit 1;
+               `--env-file` = keys from the service's file only (mode 600,
+               `KEY=value` subset systemd and `sh .` read alike);
                `init` without `--strategy` / `-i` = `wizard.rs`: questions on
                the example via `toml_edit` (comments kept; param help = its
                comment; type of the example's value; coins renamed by position;

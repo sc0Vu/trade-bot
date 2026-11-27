@@ -135,6 +135,7 @@ trade-bot config init                          # asks: strategy, venue, coins, i
 trade-bot config init --strategy sma_trend     # writes config/config.toml from its example as is
 trade-bot config check                         # what `run` would refuse, without connecting
 trade-bot config check --config my.toml --live # as `run --live` (config's two locks)
+trade-bot config check --env-file ~/.trade-bot.env  # keys from the service's file, not the shell
 ```
 
 `config init` without `--strategy` (or with `-i`) asks for each setting.
@@ -153,7 +154,11 @@ fake-money run at mainnet, keys missing from the environment (names only;
 values are never printed), the API token, the strategy's params, a
 tripped kill switch. It also shows where the run keeps its books. It
 connects to nothing, so a bad key, an unlisted symbol or the balance only
-show at `run`. Exit status 1 when `run` would refuse. `--i-understand` is
+show at `run`. Exit status 1 when `run` would refuse. With `--env-file`
+the keys are read from that file, the one `service install --env-file`
+gets: refused unless chmod 600, `KEY=value` lines only (no `export`, no
+`$`, backquotes, backslashes or inner quotes, which systemd and launchd
+would read differently). `--i-understand` is
 never accepted there: it is typed at each live start.
 
 `config/config.toml` and `config/*.local.toml` are gitignored. Unknown keys

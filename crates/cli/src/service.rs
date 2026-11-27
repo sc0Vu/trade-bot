@@ -143,7 +143,7 @@ fn run_flags(real: bool, live: bool, i_understand: bool) -> anyhow::Result<Vec<S
 
 /// Refuses an env file others can read: it holds keys.
 #[cfg(unix)]
-fn check_env_file(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn check_env_file(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let meta = std::fs::metadata(path).with_context(|| {
         format!(
@@ -164,7 +164,7 @@ fn check_env_file(path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn check_env_file(_: &Path) -> anyhow::Result<()> {
+pub(crate) fn check_env_file(_: &Path) -> anyhow::Result<()> {
     bail!("services are not supported on this platform")
 }
 

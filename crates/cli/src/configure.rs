@@ -95,6 +95,11 @@ pub enum ConfigCommand {
         /// `--i-understand`, is typed at each run, never here.
         #[arg(long)]
         live: bool,
+        /// Read the keys from this file (`KEY=value` lines, chmod 600; the
+        /// one `service install --env-file` gets) instead of the shell's
+        /// environment. Only key names are reported, never values.
+        #[arg(long)]
+        env_file: Option<PathBuf>,
     },
 }
 
@@ -130,15 +135,71 @@ pub fn run(cmd: ConfigCommand) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        ConfigCommand::Check { config, live } => {
+        ConfigCommand::Check {
+            config,
+            live,
+            env_file,
+        } => {
             let shown = config
                 .clone()
                 .or_else(|| std::env::var_os("BOT_CONFIG").map(PathBuf::from))
                 .unwrap_or_else(|| PathBuf::from(config::DEFAULT_PATH));
-            let found = check(config.as_deref(), live, &env, &exists);
+            let found = match &env_file {
+                Some(path) => {
+                    crate::service::check_env_file(path)?;
+                    let text = std::fs::read_to_string(path)
+                        .with_context(|| format!("reading {}", path.display()))?;
+                    let vars = read_env_file(&text)
+                        .with_context(|| format!("env file {}", path.display()))?;
+                    let from_file = |name: &str| vars.get(name).cloned();
+                    check(config.as_deref(), live, &from_file, &exists)
+                }
+                None => check(config.as_deref(), live, &env, &exists),
+            };
             report(&found, &shown, live)
         }
     }
+}
+
+/// An env file's variables: `KEY=value` per line, blank lines and `#`
+/// comments skipped, one pair of matching quotes around a value removed.
+/// The subset both service runners read alike (systemd `EnvironmentFile`,
+/// and `sh`'s `.` under launchd); anything else is refused rather than
+/// read differently from how the service will.
+fn read_env_file(text: &str) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    let mut vars = std::collections::HashMap::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, raw)) = line.split_once('=') else {
+            bail!("line {}: not KEY=value", n + 1);
+        };
+        let ok_key = !key.is_empty()
+            && !key.starts_with(|c: char| c.is_ascii_digit())
+            && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !ok_key {
+            bail!(
+                "line {}: {key:?} is not a variable name (no `export`, no spaces)",
+                n + 1
+            );
+        }
+        let value = ['"', '\'']
+            .iter()
+            .find_map(|q| raw.strip_prefix(*q).and_then(|r| r.strip_suffix(*q)))
+            .unwrap_or(raw);
+        if value.contains(['$', '`', '\\', '"', '\'']) {
+            // `sh` expands or unquotes these, systemd doesn't: the two
+            // services would start with different keys.
+            bail!(
+                "line {}: {key}'s value has $, `, \\ or a quote inside",
+                n + 1
+            );
+        }
+        vars.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(vars)
 }
 
 /// `config init` by questions ([`crate::wizard`]) on the terminal.
@@ -557,6 +618,38 @@ mod tests {
         // And without --live, a live config is refused, not downgraded.
         let f = check_loaded(&parsed(&live_cfg), false, &binance_keys, &nothing);
         assert!(fails(&f)[0].contains("--live was not given"), "{f:?}");
+    }
+
+    /// The env file subset both service runners agree on; values kept
+    /// exactly, quotes unwrapped; `export` and spaces refused.
+    #[test]
+    fn env_files_read_as_the_service_reads_them() {
+        let v = read_env_file(
+            "# keys\n\nBINANCE_API_KEY=abc=def\nBINANCE_API_SECRET=\"s 1\"\nX_2='q'\nEMPTY=\n",
+        )
+        .unwrap();
+        assert_eq!(v["BINANCE_API_KEY"], "abc=def");
+        assert_eq!(v["BINANCE_API_SECRET"], "s 1");
+        assert_eq!(v["X_2"], "q");
+        assert_eq!(v["EMPTY"], "");
+        for bad in [
+            "export K=v",
+            "K = v",
+            "just text",
+            "1K=v",
+            "K=a$b",
+            "K=\"a\"b\"",
+        ] {
+            assert!(read_env_file(bad).is_err(), "{bad}");
+        }
+        // An empty key value counts as unset in the check, as `run` reads it.
+        let lookup = |n: &str| v.get(n).cloned();
+        let cfg = parsed(SPOT);
+        assert!(fails(&check_loaded(&cfg, false, &lookup, &nothing)).is_empty());
+        let empty = read_env_file("BINANCE_API_KEY=\nBINANCE_API_SECRET=x").unwrap();
+        let lookup = |n: &str| empty.get(n).cloned();
+        let f = check_loaded(&cfg, false, &lookup, &nothing);
+        assert!(fails(&f)[0].contains("BINANCE_API_KEY not set"), "{f:?}");
     }
 
     /// MAX needs no key; eToro names its own two.
