@@ -65,12 +65,17 @@ pub const EXAMPLES: &[(&str, &str)] = examples![
 pub enum ConfigCommand {
     /// List the strategies a config can name, each with a one-line summary.
     List,
-    /// Write a new config from a strategy's example (paper on Binance
-    /// testnet), then check it. Edit the coins, amounts and network after.
+    /// Write a new paper config, then check it. Without `--strategy`, asks
+    /// for everything (venue, coins, interval, costs, each strategy param,
+    /// defaults from the example); with it, copies that example as is.
     Init {
-        /// Strategy to start from (see `config list`).
+        /// Strategy to start from (see `config list`). Omitted: asked.
         #[arg(long)]
-        strategy: String,
+        strategy: Option<String>,
+        /// Ask the questions even with `--strategy` (which then skips only
+        /// the strategy question).
+        #[arg(long, short)]
+        interactive: bool,
         /// Where to write it. Gitignored by default: keep real configs out
         /// of the repository.
         #[arg(long, default_value = config::DEFAULT_PATH)]
@@ -104,9 +109,14 @@ pub fn run(cmd: ConfigCommand) -> anyhow::Result<()> {
         }
         ConfigCommand::Init {
             strategy,
+            interactive,
             out,
             force,
         } => {
+            let strategy = match strategy {
+                Some(s) if !interactive => s,
+                other => return ask(other.as_deref(), &out, force, &env, &exists),
+            };
             init(&strategy, &out, force)?;
             println!(
                 "wrote {} from the {strategy} example; edit it, then `trade-bot config check --config {}`",
@@ -131,8 +141,29 @@ pub fn run(cmd: ConfigCommand) -> anyhow::Result<()> {
     }
 }
 
+/// `config init` by questions ([`crate::wizard`]) on the terminal.
+fn ask(
+    strategy: Option<&str>,
+    out: &Path,
+    force: bool,
+    env: &dyn Fn(&str) -> Option<String>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> anyhow::Result<()> {
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let mut stdout = std::io::stdout();
+    let mut prompt = crate::wizard::Prompt::new(&mut input, &mut stdout);
+    if let Some(found) = crate::wizard::run(&mut prompt, strategy, out, force, env, exists)? {
+        // Written; what's left to fix (keys, usually) is the report's to say.
+        if let Err(e) = report(&found, out, false) {
+            println!("{e}");
+        }
+    }
+    Ok(())
+}
+
 /// Every strategy with its example's summary, one per line.
-fn list() -> String {
+pub(crate) fn list() -> String {
     let width = EXAMPLES.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
     let built = strategy::names();
     let mut out = String::new();

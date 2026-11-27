@@ -131,10 +131,21 @@ them too, so this works without the repository:
 
 ```sh
 trade-bot config list                          # strategies, one line each
-trade-bot config init --strategy sma_trend     # writes config/config.toml from its example
+trade-bot config init                          # asks: strategy, venue, coins, interval, costs, params
+trade-bot config init --strategy sma_trend     # writes config/config.toml from its example as is
 trade-bot config check                         # what `run` would refuse, without connecting
 trade-bot config check --config my.toml --live # as `run --live` (config's two locks)
 ```
+
+`config init` without `--strategy` (or with `-i`) asks for each setting.
+Each default comes from the strategy's example, and each param's help is the
+example's comment beside it. Changing the coins renames them in the params.
+Money answers must be exact decimals, and a bare `0.5` in a table is
+refused. Nothing is written until the config loads and the strategy builds;
+otherwise the questions repeat with your answers as defaults. It writes
+paper configs only (testnet or demo, or local paper fills on MAX and
+USDⓈ-M) and never asks for keys: going live stays a deliberate edit of
+`mode` and `exchange.network`.
 
 `config check` loads the config as `run` does (file, then `BOT_*`), and
 reports every refusal at once: the live gate, a URL override pointing a

@@ -547,8 +547,7 @@ impl Config {
     }
 
     /// `text` as a config file (plus `BOT_*` env, as [`Self::load`]):
-    /// for tests outside this module.
-    #[cfg(test)]
+    /// for a config not yet on disk (`config init`'s answers).
     pub(crate) fn parse_str(text: &str) -> anyhow::Result<Self> {
         Self::from_figment(Figment::new().merge(Toml::string(text)))
     }

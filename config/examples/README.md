@@ -50,6 +50,7 @@ Or let the binary copy one (it carries every file here) and check it
 before starting:
 
 ```
+trade-bot config init                       # questions, defaults from these files
 trade-bot config init --strategy sma_trend --out config/config.toml
 trade-bot config check --config config/config.toml
 ```

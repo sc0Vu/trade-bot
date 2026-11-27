@@ -17,6 +17,7 @@ mod state;
 mod sweep;
 mod symbols;
 mod telemetry;
+mod wizard;
 
 use anyhow::Context;
 use backtest::{BacktestProvider, DataDir, HistorySource, PaperConfig, fetch, run_backtest};

@@ -1256,7 +1256,12 @@ crates/
                (`EXAMPLES`, test = dir = registry); `check` = `preflight::route`
                (gate, overrides, funding_carry; shared with `run`) + loader +
                key env names (never values) + API token + strategy build +
-               kill marker, every refusal reported, nothing connected, exit 1)
+               kill marker, every refusal reported, nothing connected, exit 1;
+               `init` without `--strategy` / `-i` = `wizard.rs`: questions on
+               the example via `toml_edit` (comments kept; param help = its
+               comment; type of the example's value; coins renamed by position;
+               floats refused), written only once it loads + route + build ok,
+               paper only (never live network/mode), no keys asked)
                (`console`: axum on loopback only, page `console.html` embedded;
                catalog / scripts get+put / example params / check / lookahead
                (`check_lookahead`) / restart (`check_restart`; both 10 cuts,
