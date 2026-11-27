@@ -63,12 +63,19 @@
   .hidden { display: none; }
   .fine { font-size: 12px; color: var(--muted); margin-top: 12px; }
   code { font-family: var(--mono); font-size: 12px; }
+  section.wide { grid-column: 1 / -1; }
+  #cfgq { font-weight: 600; margin: 4px 0 8px; }
+  #cfgtoml { min-height: 300px; }
+  ul.findings { list-style: none; padding: 0; margin: 10px 0; font-size: 12.5px; }
+  ul.findings li { padding: 2px 0; }
+  ul.findings .ok { color: var(--good); } ul.findings .fail { color: var(--bad); }
+  ul.findings .note { color: var(--muted); }
 </style>
 </head>
 <body>
 <header>
   <h1>trade-bot console</h1>
-  <span>local only · backtests and script editing · places no orders</span>
+  <span>local only · backtests, script editing and run configs · places no orders · never asks for keys</span>
 </header>
 <main>
   <section>
@@ -127,6 +134,38 @@
       <p class="fine">Model output under the stated fill model (next-open fills, fee and
         slippage as entered), not a forecast. A strategy that can't beat buy-and-hold after
         costs has no edge here.</p>
+    </div>
+  </section>
+
+  <section class="wide" id="cfg">
+    <h2>Run config</h2>
+    <p class="fine" style="margin-top:0">The questions of <code>trade-bot config init</code>, one at a
+      time: defaults come from the strategy's example. Paper configs only; nothing is written
+      here, and keys are never asked for: put them in the server's env file.</p>
+    <div id="cfgask">
+      <ul class="notes" id="cfgnotes"></ul>
+      <label for="cfgin" id="cfgq"></label>
+      <select id="cfgsel" class="hidden"></select>
+      <input id="cfgin" class="hidden" spellcheck="false" autocomplete="off">
+      <div class="bar">
+        <button id="cfgback">Back</button>
+        <button id="cfgnext" class="primary">Next</button>
+        <button id="cfgreset">Start over</button>
+        <span id="cfgstatus" class="status"></span>
+      </div>
+    </div>
+    <div id="cfgdone" class="hidden">
+      <ul class="findings" id="cfgfind"></ul>
+      <label for="cfgtoml">Config (save as <code id="cfgfile">config/config.toml</code>, then
+        <code>trade-bot config check --env-file ~/.trade-bot.env</code> where it runs)</label>
+      <textarea id="cfgtoml" readonly spellcheck="false"></textarea>
+      <div class="bar">
+        <button id="cfgdl" class="primary">Download</button>
+        <button id="cfgcopy">Copy</button>
+        <button id="cfgbt" title="Fill the backtest form above with this strategy, params and market">Use in backtest</button>
+        <button id="cfgedit">Back to the questions</button>
+        <span id="cfgdonestatus" class="status"></span>
+      </div>
     </div>
   </section>
 </main>
@@ -389,6 +428,127 @@ function chart(a, b) {
     <text x="${W - R}" y="${H - 6}" font-size="11" text-anchor="end" fill="var(--muted)">${day(x1)}</text>
     ${line(b, "var(--series-b)")}${line(a, "var(--series-a)")}</svg>`;
 }
+
+// --- Run config: the server replays every answer so far and says what's next.
+let cfgAnswers = [];
+let cfgLast = null;
+try { cfgAnswers = JSON.parse(localStorageGet("config:answers") || "[]"); } catch { cfgAnswers = []; }
+
+async function cfgStep() {
+  try {
+    const r = await api("/api/config/step", { method: "POST", body: { answers: cfgAnswers } });
+    cfgAnswers = r.answers;
+    localStorageSet("config:answers", JSON.stringify(cfgAnswers));
+    cfgLast = r;
+    cfgRender(r);
+  } catch (e) {
+    // Saved answers from an older build may no longer fit: start over.
+    setStatus($("cfgstatus"), e.message, "err");
+  }
+}
+
+function cfgRender(r) {
+  const done = r.kind === "done";
+  $("cfgask").classList.toggle("hidden", done);
+  $("cfgdone").classList.toggle("hidden", !done);
+  $("cfgback").disabled = cfgAnswers.length === 0;
+  if (r.kind === "stopped") {
+    setStatus($("cfgstatus"), "Stopped without a config. Back, or start over.", "");
+    $("cfgq").textContent = ""; $("cfgsel").classList.add("hidden"); $("cfgin").classList.add("hidden");
+    return;
+  }
+  if (done) return cfgShowDone(r);
+  const q = r.question;
+  $("cfgnotes").innerHTML = "";
+  for (const n of q.notes) { const li = document.createElement("li"); li.textContent = n; $("cfgnotes").appendChild(li); }
+  $("cfgq").textContent = q.text;
+  const choice = q.options.length > 0;
+  $("cfgsel").classList.toggle("hidden", !choice);
+  $("cfgin").classList.toggle("hidden", choice);
+  if (choice) {
+    $("cfgsel").innerHTML = "";
+    q.options.forEach((o, i) => option($("cfgsel"), o, q.labels[i] || o));
+    $("cfgsel").value = q.options.includes(q.default) ? q.default : q.options[0];
+    $("cfgq").htmlFor = "cfgsel";
+  } else {
+    $("cfgin").value = q.default;
+    $("cfgq").htmlFor = "cfgin";
+  }
+  setStatus($("cfgstatus"), r.error ? r.error : `question ${r.progress + 1}`, r.error ? "err" : "");
+  (choice ? $("cfgsel") : $("cfgin")).focus({ preventScroll: true });
+}
+
+function cfgShowDone(r) {
+  $("cfgfind").innerHTML = "";
+  for (const [level, text] of r.findings) {
+    const li = document.createElement("li");
+    li.className = level; li.textContent = (level === "fail" ? "FAIL  " : level + "  ") + text;
+    $("cfgfind").appendChild(li);
+  }
+  $("cfgtoml").value = r.toml;
+  const named = /^name = "([a-z0-9_-]+)"/m.exec(r.toml);
+  $("cfgfile").textContent = "config/" + (named ? named[1] : r.backtest.strategy) + ".toml";
+  setStatus($("cfgdonestatus"), "");
+}
+
+function cfgNext() {
+  const choice = !$("cfgsel").classList.contains("hidden");
+  cfgAnswers.push(choice ? $("cfgsel").value : $("cfgin").value.trim());
+  cfgStep();
+}
+
+async function cfgCopy() {
+  try { await navigator.clipboard.writeText($("cfgtoml").value); setStatus($("cfgdonestatus"), "copied", "ok"); }
+  catch { $("cfgtoml").select(); setStatus($("cfgdonestatus"), "selected: copy it with Ctrl/⌘-C", ""); }
+}
+
+function cfgDownload() {
+  const blob = new Blob([$("cfgtoml").value], { type: "application/toml" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = $("cfgfile").textContent.split("/").pop();
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function cfgToBacktest() {
+  const h = cfgLast && cfgLast.backtest;
+  if (!h) return;
+  if (!catalog.strategies.includes(h.strategy)) {
+    setStatus($("cfgdonestatus"), h.strategy + " is not a built-in of this build", "err");
+    return;
+  }
+  $("pick").value = h.strategy;
+  await onPick();
+  $("params").value = h.params;
+  localStorageSet("params:" + h.strategy, h.params);
+  if (h.fee) $("fee").value = h.fee;
+  if (h.slippage_bps) $("slip").value = h.slippage_bps;
+  if (h.history_len) $("hist").value = h.history_len;
+  const cached = (sym) => catalog.data.some((d) => d.venue === h.venue && d.interval === h.interval && d.symbol === sym);
+  const missing = h.symbols.filter((s) => !cached(s));
+  if ([...$("venue").options].some((o) => o.value === h.venue)) {
+    $("venue").value = h.venue; fillIntervals();
+    if ([...$("interval").options].some((o) => o.value === h.interval)) { $("interval").value = h.interval; fillSymbols(); }
+    for (const o of $("symbols").options) o.selected = h.symbols.includes(o.value);
+  }
+  if (missing.length) {
+    setStatus($("cfgdonestatus"), `not cached yet: trade-bot fetch-data --venue ${h.venue} --symbol ${missing.join(",")} --interval ${h.interval} --from 2024-01-01`, "err");
+  } else {
+    setStatus($("cfgdonestatus"), "backtest form filled: set the dates, then Run backtest", "ok");
+  }
+  $("pick").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+$("cfgnext").addEventListener("click", cfgNext);
+$("cfgin").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); cfgNext(); } });
+$("cfgback").addEventListener("click", () => { cfgAnswers.pop(); cfgStep(); });
+$("cfgreset").addEventListener("click", () => { cfgAnswers = []; cfgStep(); });
+$("cfgedit").addEventListener("click", () => { cfgAnswers.pop(); cfgStep(); });
+$("cfgcopy").addEventListener("click", cfgCopy);
+$("cfgdl").addEventListener("click", cfgDownload);
+$("cfgbt").addEventListener("click", cfgToBacktest);
+cfgStep();
 
 $("to").value = new Date().toISOString().slice(0, 10);
 $("pick").addEventListener("change", onPick);

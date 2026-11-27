@@ -523,8 +523,8 @@ plain symbols (`AAPL`, `SPY`) go back to 2018 daily.
 
 ## Console (web)
 
-A local web page for writing script strategies and backtesting any
-strategy against buy-and-hold:
+A local web page for writing script strategies, backtesting any
+strategy against buy-and-hold, and writing a run config:
 
 ```sh
 cargo run -p cli --features rhai -- console   # release binaries: trade-bot console
@@ -548,6 +548,13 @@ cargo run -p cli --features rhai -- console   # release binaries: trade-bot cons
   working, restarts it from its saved state, and fails if the fills
   change (its `save_state` / `restore` loses something). It says so when
   no restart happened while holding a position.
+- **Run config**: the questions of `trade-bot config init`, one at a time
+  (same code: answers replayed on the server each step), with *Back* and
+  *Start over*. The result comes with its check, to *Download* or *Copy*,
+  and *Use in backtest* fills the backtest form with its strategy, params
+  and market (saying which series still need `fetch-data`). Nothing is
+  written on the server; keys are never asked for, the check only names
+  the ones the server's env file will need.
 - **Safety**: loopback only (an SSH tunnel to reach it from elsewhere),
   reads no keys, places no orders. It refuses requests from other web pages
   (wrong `Host` or `Origin`, or a write that isn't JSON), and writes only

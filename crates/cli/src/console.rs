@@ -1,5 +1,7 @@
-//! `trade-bot console`: a local web page for writing script strategies and
-//! backtesting any strategy against buy-and-hold.
+//! `trade-bot console`: a local web page for writing script strategies,
+//! backtesting any strategy against buy-and-hold, and writing a run config
+//! by `config init`'s questions (`/api/config/step`, [`crate::wizard::step`]:
+//! nothing written, no key asked).
 //!
 //! Self-hosted and single-user: it listens on loopback only (reach it from
 //! elsewhere through an SSH tunnel), reads no secret and places no order.
@@ -105,6 +107,7 @@ fn router(console: Console) -> Router {
         .route("/api/backtest", post(run_backtest))
         .route("/api/lookahead", post(lookahead))
         .route("/api/restart", post(restart))
+        .route("/api/config/step", post(config_step))
         .layer(middleware::from_fn_with_state(console.clone(), guard))
         .with_state(console)
 }
@@ -729,6 +732,42 @@ fn outcome(r: &backtest::Report, notes: Vec<String>) -> Outcome {
     }
 }
 
+#[derive(Deserialize)]
+struct StepRequest {
+    /// Every answer so far, in order; the questions are replayed.
+    answers: Vec<String>,
+}
+
+/// One step of the run-config questions (`config init`'s, [`crate::wizard`]):
+/// the next question, or the finished config with its check. Nothing is
+/// written: the page offers the text to copy or download. Keys are never
+/// asked for here; the check reports which ones the server will need,
+/// without looking at this process's environment.
+async fn config_step(Json(r): Json<StepRequest>) -> Result<Json<crate::wizard::Step>, Failure> {
+    let no_keys = |_: &str| None;
+    let exists = |p: &Path| p.exists();
+    let mut step = crate::wizard::step(
+        &r.answers,
+        Path::new("config/config.toml"),
+        &no_keys,
+        &exists,
+    )
+    .map_err(|e| bad(format!("{e:#}")))?;
+    if let crate::wizard::Step::Done { findings, .. } = &mut step {
+        for (level, text) in findings.iter_mut() {
+            if let Some(rest) = text.strip_prefix("keys: ")
+                && level == "fail"
+            {
+                *level = "note".into();
+                let names = rest.split(" not set").next().unwrap_or(rest);
+                *text =
+                    format!("keys: the server needs {names} in its env file (never entered here)");
+            }
+        }
+    }
+    Ok(Json(step))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,5 +954,101 @@ mod tests {
         assert_eq!(o.curve.len(), 1668);
         assert_eq!(o.curve.first().unwrap().0, 0);
         assert_eq!(o.curve.last().unwrap().0, 4999);
+    }
+
+    async fn step(answers: &[&str]) -> serde_json::Value {
+        let r = StepRequest {
+            answers: answers.iter().map(|a| (*a).to_owned()).collect(),
+        };
+        let Json(step) = config_step(Json(r)).await.unwrap();
+        serde_json::to_value(step).unwrap()
+    }
+
+    /// The page walks the same questions as `config init`: first the
+    /// strategy (a choice with summaries), then one at a time; a refused
+    /// answer comes back as an error with the same question and is dropped
+    /// from the answers; enough answers give the config, its backtest
+    /// form, and a check that names the keys without asking for them.
+    #[tokio::test]
+    async fn the_config_page_walks_the_wizard() {
+        let first = step(&[]).await;
+        assert_eq!(first["kind"], "ask");
+        assert_eq!(first["question"]["default"], "sma_trend");
+        let options = first["question"]["options"].as_array().unwrap();
+        assert!(options.iter().any(|o| o == "grid"));
+        assert!(!options.iter().any(|o| o == "funding_carry"));
+        assert_eq!(
+            options.len(),
+            first["question"]["labels"].as_array().unwrap().len()
+        );
+        let labels = first["question"]["labels"].as_array().unwrap();
+        assert!(
+            labels.iter().any(|l| l
+                == "buy_and_hold — the benchmark. Buys one coin once on its first candle and holds"),
+            "{labels:?}"
+        );
+
+        let refused = step(&["sma_trend", "kraken"]).await;
+        assert_eq!(refused["kind"], "ask");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("one of binance")
+        );
+        assert_eq!(refused["answers"], serde_json::json!(["sma_trend"]));
+        assert!(
+            refused["question"]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("Venue")
+        );
+
+        // strategy, venue … history, 6 params, bot name
+        let mut all = vec!["sma_trend", "", "ETHUSDT", "1h", "", ""];
+        all.extend([""; 7]);
+        let done = step(&all).await;
+        assert_eq!(done["kind"], "done", "{done}");
+        assert!(
+            done["toml"]
+                .as_str()
+                .unwrap()
+                .contains("whitelist = [\"binance:ETHUSDT\"]")
+        );
+        let hint = &done["backtest"];
+        assert_eq!(hint["strategy"], "sma_trend");
+        assert_eq!(hint["symbols"], serde_json::json!(["ETHUSDT"]));
+        assert_eq!(hint["interval"], "1h");
+        assert_eq!(hint["fee"], "0.001");
+        assert!(
+            hint["params"]
+                .as_str()
+                .unwrap()
+                .contains("sma_period = 200")
+        );
+        let findings = done["findings"].as_array().unwrap();
+        assert!(!findings.iter().any(|f| f[0] == "fail"), "{findings:?}");
+        assert!(findings.iter().any(|f| {
+            f[1].as_str()
+                .unwrap()
+                .contains("BINANCE_API_KEY, BINANCE_API_SECRET in its env file")
+        }));
+
+        // A section header said before a question travels with it.
+        let mut max = vec!["buy_and_hold", "max", "", ""];
+        max.truncate(4);
+        let at_paper = step(&max).await;
+        assert_eq!(
+            at_paper["question"]["notes"][0],
+            "Paper broker (local fills, money as exact decimals):"
+        );
+
+        assert!(
+            config_step(Json(StepRequest {
+                answers: vec!["a\nb".into()]
+            }))
+            .await
+            .is_err()
+        );
     }
 }

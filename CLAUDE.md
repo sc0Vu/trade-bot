@@ -1273,7 +1273,12 @@ crates/
                `backtest_report` (= `backtest` command) + buy_and_hold benchmark;
                guard: Host = own loopback addr, Origin same, writes JSON only;
                writes only `<scripts_dir>/<[a-z0-9_]{1,64}>.rhai`; one backtest at
-               a time; no keys, no orders; `Report.equity_curve` for the chart)
+               a time; no keys, no orders; `Report.equity_curve` for the chart;
+               run config: POST `/api/config/step` {answers} = `wizard::step`:
+               replays answers through `wizard::build` (shared with `config init`;
+               `Prompt` records question, options/labels, notes, refused answers)
+               → next question | done {toml, findings, backtest hint} | stopped;
+               writes nothing, keys asked never (key FAIL shown as a note))
 migration/     SeaORM migrations
 strategies/    script strategies (`sma_trend.rhai`: reference port, tested vs built-in)
 config/        config.example.toml (committed); *.local.toml (gitignored). Env (BOT_*) overrides file.

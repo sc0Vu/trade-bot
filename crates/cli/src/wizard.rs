@@ -29,39 +29,90 @@ use std::str::FromStr;
 use toml_edit::{Array, DocumentMut, Item, Value, value};
 
 /// Questions on `out`, answers from `input`, one line each; an empty line
-/// takes the default.
+/// takes the default. Also remembers, for the web page ([`step`]), the
+/// last question asked, what was said before it, and which answers were
+/// refused.
 pub struct Prompt<'a> {
     input: &'a mut dyn BufRead,
     out: &'a mut dyn Write,
+    /// The question waiting for (or last given) an answer.
+    asked: Option<Question>,
+    /// Lines said since the last question.
+    notes: Vec<String>,
+    /// Answers read so far.
+    read: usize,
+    /// Indices (in reading order) of answers refused, with why.
+    refused: Vec<(usize, String)>,
+    /// The input ran out.
+    ended: bool,
+}
+
+/// One question, as the web page shows it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Question {
+    pub text: String,
+    /// What an empty answer means.
+    pub default: String,
+    /// The accepted answers, when it is a choice (empty: free text).
+    pub options: Vec<String>,
+    /// A label per option, if the options need one (strategy summaries).
+    pub labels: Vec<String>,
+    /// What was said before it (section headers, a failed check).
+    pub notes: Vec<String>,
 }
 
 impl<'a> Prompt<'a> {
     pub fn new(input: &'a mut dyn BufRead, out: &'a mut dyn Write) -> Self {
-        Self { input, out }
+        Self {
+            input,
+            out,
+            asked: None,
+            notes: Vec::new(),
+            read: 0,
+            refused: Vec::new(),
+            ended: false,
+        }
     }
 
-    /// Prints a line (no question).
+    /// Prints a line (no question); the page shows it with the next one.
     fn say(&mut self, text: &str) -> anyhow::Result<()> {
+        self.notes.push(text.trim().to_owned());
+        self.print(text)
+    }
+
+    /// Prints a line for the terminal only (the page shows it otherwise).
+    fn print(&mut self, text: &str) -> anyhow::Result<()> {
         writeln!(self.out, "{text}")?;
         Ok(())
     }
 
     /// One answer: the line typed, trimmed, or `default` if empty. Input
     /// ending is an error (nothing is written).
-    fn ask(&mut self, question: &str, default: &str) -> anyhow::Result<String> {
-        if default.is_empty() {
-            write!(self.out, "{question}: ")?;
+    fn ask(&mut self, q: Question) -> anyhow::Result<String> {
+        let shown = if q.options.is_empty() || !q.labels.is_empty() {
+            q.text.clone()
         } else {
-            write!(self.out, "{question} [{default}]: ")?;
+            format!("{} ({})", q.text, q.options.join("/"))
+        };
+        if q.default.is_empty() {
+            write!(self.out, "{shown}: ")?;
+        } else {
+            write!(self.out, "{shown} [{}]: ", q.default)?;
         }
         self.out.flush()?;
+        let default = q.default.clone();
+        let mut q = q;
+        q.notes = std::mem::take(&mut self.notes);
+        self.asked = Some(q);
         let mut line = String::new();
         if self.input.read_line(&mut line)? == 0 {
+            self.ended = true;
             bail!("input ended; nothing written");
         }
+        self.read += 1;
         let line = line.trim();
         Ok(if line.is_empty() {
-            default.to_owned()
+            default
         } else {
             line.to_owned()
         })
@@ -75,11 +126,23 @@ impl<'a> Prompt<'a> {
         default: &str,
         parse: impl Fn(&str) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
+        self.ask_question(free(question, default), parse)
+    }
+
+    fn ask_question<T>(
+        &mut self,
+        q: Question,
+        parse: impl Fn(&str) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
         loop {
-            let answer = self.ask(question, default)?;
+            let answer = self.ask(q.clone())?;
             match parse(&answer) {
                 Ok(v) => return Ok(v),
-                Err(e) => self.say(&format!("  {e:#}"))?,
+                Err(e) => {
+                    let why = format!("{e:#}");
+                    self.refused.push((self.read - 1, why.clone()));
+                    self.print(&format!("  {why}"))?;
+                }
             }
         }
     }
@@ -91,8 +154,11 @@ impl<'a> Prompt<'a> {
         options: &[&str],
         default: &str,
     ) -> anyhow::Result<String> {
-        let q = format!("{question} ({})", options.join("/"));
-        self.ask_valid(&q, default, |a| {
+        let q = Question {
+            options: options.iter().map(|o| (*o).to_owned()).collect(),
+            ..free(question, default)
+        };
+        self.ask_question(q, |a| {
             options
                 .iter()
                 .find(|o| o.eq_ignore_ascii_case(a))
@@ -108,6 +174,17 @@ impl<'a> Prompt<'a> {
     }
 }
 
+/// A free-text question.
+fn free(text: &str, default: &str) -> Question {
+    Question {
+        text: text.to_owned(),
+        default: default.to_owned(),
+        options: Vec::new(),
+        labels: Vec::new(),
+        notes: Vec::new(),
+    }
+}
+
 /// Runs the questions and writes `out` (asking before replacing it unless
 /// `force`). `strategy` skips the strategy question. Returns the check of
 /// the written file, or `None` when the user stopped without writing.
@@ -119,7 +196,32 @@ pub fn run(
     env: &dyn Fn(&str) -> Option<String>,
     exists: &dyn Fn(&Path) -> bool,
 ) -> anyhow::Result<Option<Vec<Finding>>> {
-    p.say(
+    let Some((text, found)) = build(p, strategy, out, env, exists)? else {
+        return Ok(None);
+    };
+    if exists(out) && !force && !p.yes(&format!("{} exists; replace it?", out.display()), false)? {
+        p.say("nothing written")?;
+        return Ok(None);
+    }
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(out, &text).with_context(|| format!("writing {}", out.display()))?;
+    p.say(&format!("wrote {}", out.display()))?;
+    Ok(Some(found))
+}
+
+/// The questions, until the answers make a config that loads, routes and
+/// builds its strategy: its text (headed for `out`) and its check. `None`
+/// when the user stopped after a failed check. Writes nothing.
+fn build(
+    p: &mut Prompt,
+    strategy: Option<&str>,
+    out: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> anyhow::Result<Option<(String, Vec<Finding>)>> {
+    p.print(
         "New run config. Enter keeps the [default]. Paper only: nothing here trades real money.",
     )?;
     let name = match strategy {
@@ -140,26 +242,13 @@ pub fn run(
             &format!("config/examples/{name}.toml"),
             &out.display().to_string(),
         );
-        let found = match Config::parse_str(&text) {
-            Ok(cfg) => configure::check_loaded(&cfg, false, env, exists),
-            Err(e) => vec![Finding::Fail(format!("{e:#}"))],
-        };
         let blocking = blocking(&text);
         if blocking.is_empty() {
-            if exists(out)
-                && !force
-                && !p.yes(&format!("{} exists; replace it?", out.display()), false)?
-            {
-                p.say("nothing written")?;
-                return Ok(None);
-            }
-            if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
-                std::fs::create_dir_all(dir)
-                    .with_context(|| format!("creating {}", dir.display()))?;
-            }
-            std::fs::write(out, &text).with_context(|| format!("writing {}", out.display()))?;
-            p.say(&format!("wrote {}", out.display()))?;
-            return Ok(Some(found));
+            let found = match Config::parse_str(&text) {
+                Ok(cfg) => configure::check_loaded(&cfg, false, env, exists),
+                Err(e) => vec![Finding::Fail(format!("{e:#}"))],
+            };
+            return Ok(Some((text, found)));
         }
         for b in &blocking {
             p.say(&format!("FAIL  {b}"))?;
@@ -168,6 +257,151 @@ pub fn run(
             p.say("nothing written")?;
             return Ok(None);
         }
+    }
+}
+
+/// Where the questions stand after `answers` (the web page's state: it
+/// keeps the answers and sends them all each time; the questions are
+/// replayed, so the same answers always reach the same place).
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Step {
+    /// The next question. `error` says why the last answer was refused.
+    Ask {
+        question: Question,
+        error: Option<String>,
+        /// The answers that stood (refused ones dropped): the page's new state.
+        answers: Vec<String>,
+        /// How many questions answered so far.
+        progress: usize,
+    },
+    /// The config, ready.
+    Done {
+        toml: String,
+        findings: Vec<(String, String)>,
+        answers: Vec<String>,
+        /// What a backtest of it needs (the console's backtest form).
+        backtest: BacktestHint,
+    },
+    /// The user declined to answer again after a failed check.
+    Stopped { answers: Vec<String> },
+}
+
+/// A finished config's strategy, params and market, for a backtest.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct BacktestHint {
+    pub strategy: String,
+    /// `[strategy.params]` as its own TOML table.
+    pub params: String,
+    pub venue: String,
+    pub interval: String,
+    /// Whitelisted symbols without the venue.
+    pub symbols: Vec<String>,
+    pub history_len: Option<i64>,
+    pub fee: Option<String>,
+    pub slippage_bps: Option<String>,
+}
+
+/// Most answers [`step`] takes (a full run is a few dozen).
+pub const MAX_ANSWERS: usize = 400;
+
+/// Replays `answers` through the questions ([`build`]) and says what comes
+/// next. `env` and `exists` as for [`configure::check_loaded`]. `out` is
+/// the path the config's usage comment names.
+pub fn step(
+    answers: &[String],
+    out: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> anyhow::Result<Step> {
+    if answers.len() > MAX_ANSWERS {
+        bail!("too many answers");
+    }
+    if answers
+        .iter()
+        .any(|a| a.contains(['\n', '\r']) || a.len() > 4096)
+    {
+        bail!("an answer is one line, at most 4096 bytes");
+    }
+    let text: String = answers.iter().map(|a| format!("{a}\n")).collect();
+    let mut input = std::io::Cursor::new(text.into_bytes());
+    let mut sink = std::io::sink();
+    let mut p = Prompt::new(&mut input, &mut sink);
+    let result = build(&mut p, None, out, env, exists);
+    let stood: Vec<String> = answers
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !p.refused.iter().any(|(r, _)| r == i))
+        .map(|(_, a)| a.clone())
+        .collect();
+    match result {
+        Ok(Some((toml, found))) => Ok(Step::Done {
+            backtest: hint(&toml),
+            toml,
+            findings: found
+                .into_iter()
+                .map(|f| match f {
+                    Finding::Ok(t) => ("ok".into(), t),
+                    Finding::Note(t) => ("note".into(), t),
+                    Finding::Fail(t) => ("fail".into(), t),
+                })
+                .collect(),
+            answers: stood,
+        }),
+        Ok(None) => Ok(Step::Stopped { answers: stood }),
+        Err(_) if p.ended => {
+            let question = p.asked.take().context("no question asked")?;
+            let error = p
+                .refused
+                .iter()
+                .find(|(i, _)| i + 1 == answers.len())
+                .map(|(_, why)| why.clone());
+            Ok(Step::Ask {
+                progress: stood.len(),
+                question,
+                error,
+                answers: stood,
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// What the console's backtest form needs from a finished config.
+fn hint(text: &str) -> BacktestHint {
+    let Ok(t) = text.parse::<toml::Table>() else {
+        return BacktestHint::default();
+    };
+    let get = |path: &[&str]| {
+        let mut v = t.get(path[0])?;
+        for k in &path[1..] {
+            v = v.get(k)?;
+        }
+        Some(v)
+    };
+    let s = |path: &[&str]| get(path).and_then(|v| v.as_str()).map(str::to_owned);
+    let params = get(&["strategy", "params"])
+        .and_then(|v| v.as_table())
+        .cloned()
+        .unwrap_or_default();
+    BacktestHint {
+        strategy: s(&["strategy", "name"]).unwrap_or_default(),
+        params: toml::to_string(&params).unwrap_or_default(),
+        venue: s(&["exchange", "venue"]).unwrap_or_else(|| "binance".into()),
+        interval: s(&["exchange", "interval"]).unwrap_or_default(),
+        symbols: get(&["whitelist"])
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|id| id.split_once(':').map_or(id, |(_, s)| s).to_owned())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        history_len: get(&["engine", "history_len"]).and_then(|v| v.as_integer()),
+        fee: s(&["strategy", "params", "fee"]).or_else(|| s(&["paper", "fee"])),
+        slippage_bps: s(&["strategy", "params", "slippage_bps"])
+            .or_else(|| s(&["paper", "slippage_bps"])),
     }
 }
 
@@ -198,14 +432,25 @@ fn pick_strategy(p: &mut Prompt) -> anyhow::Result<String> {
         .filter(|n| *n != "funding_carry")
         .collect();
     let listing = configure::list();
-    for (i, line) in listing
+    let lines: Vec<&str> = listing
         .lines()
         .filter(|l| !l.starts_with("funding_carry "))
-        .enumerate()
-    {
-        p.say(&format!("{:>3}  {line}", i + 1))?;
+        .collect();
+    for (i, line) in lines.iter().enumerate() {
+        p.print(&format!("{:>3}  {line}", i + 1))?;
     }
-    p.ask_valid("Strategy (number or name)", "sma_trend", |a| {
+    let q = Question {
+        options: names.iter().map(|n| (*n).to_owned()).collect(),
+        labels: lines
+            .iter()
+            .map(|l| {
+                let (name, summary) = l.split_once(' ').unwrap_or((l, ""));
+                format!("{name} — {}", summary.trim())
+            })
+            .collect(),
+        ..free("Strategy (number or name)", "sma_trend")
+    };
+    p.ask_question(q, |a| {
         if let Ok(i) = a.parse::<usize>() {
             return names
                 .get(i.wrapping_sub(1))
