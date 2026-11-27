@@ -16,6 +16,16 @@ that would be a bug.
 > strategy here has a demonstrated edge: backtest results come from a stated
 > fill model and are not a promise.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/sc0Vu/trade-bot)
+[![Deploy on any VPS](https://img.shields.io/badge/Deploy-any%20VPS-0080FF)](deploy/vps/README.md)
+
+Both deploy paper trading on testnet. You add the API keys yourself:
+Render asks for them on its deploy form (stored by Render, never in the
+repository). On a VPS you write them to a file on the server after logging
+in. Render: a paid worker plan with a disk (Frankfurt), and the bot starts
+only once you upload your config as a Secret File (see
+[Containers and Render](#containers-and-render)).
+
 ## Contents
 
 - [Safety model](#safety-model)
@@ -776,8 +786,8 @@ A fresh volume with orders still open on the account makes the bot refuse
 to start (an unknown `tb…` order). That's the guard working: reuse the
 volume, or, if the old one is lost, start once with `--cancel-orphans`.
 
-**2. On Render, still testnet.** *New > Blueprint* with this repo reads
-`render.yaml`. Then, in the dashboard:
+**2. On Render, still testnet.** The *Deploy to Render* button at the
+top (or *New > Blueprint* with this repo) reads `render.yaml`. Then, in the dashboard:
 - Set `BINANCE_API_KEY` and `BINANCE_API_SECRET` (testnet keys).
 - Upload your config as a *Secret File* named `config.toml`; `BOT_CONFIG`
   points at `/etc/secrets/config.toml`.
