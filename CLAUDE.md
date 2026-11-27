@@ -1287,7 +1287,8 @@ data/          downloaded klines, per-network run dbs (gitignored)
                os linux|darwin|windows, arch amd64|arm64) + SHA256SUMS on a GitHub
                release), pages.yml
                (site/ → GitHub Pages sc0vu.github.io/trade-bot on push to main)
-site/          static project page (one index.html, no build); strategy table and
+site/          static project page (one index.html, no build; install.sh,
+               vps-setup.sh served from it, shellchecked in CI); strategy table and
                safety claims mirror README: keep in sync
 Dockerfile     debian + rustup (toolchain pin), system libssl, `--features rhai`
                (+ `strategies/` at /app/strategies); `run --paper` default,
@@ -1295,6 +1296,10 @@ Dockerfile     debian + rustup (toolchain pin), system libssl, `--features rhai`
 render.yaml    worker, frankfurt (Binance 451s US IPs), disk /app/data (books survive;
                no overlapping instances), maxShutdownDelaySeconds 120 (close-out)
 deploy/        service/ (systemd + launchd templates for `trade-bot service`);
+               vps/ (user guide + cloud-init.yaml → `site/vps-setup.sh`: any
+               provider, root once: user `trade-bot`, SSH keys copied (KEYS_FROM,
+               options stripped), install.sh, enable-linger, ~/bot; never keys,
+               no ports/firewall; user adds `~/.trade-bot.env` after login);
                Prometheus + Alertmanager + Loki/Alloy (tails `[log] file`) + Grafana
                compose, alerts.yml (+ promtool unit tests alerts_test.yml), dashboard;
                keep in sync with metric names and log keys (cli test pins alloy keys)

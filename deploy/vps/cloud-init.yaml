@@ -1,0 +1,15 @@
+#cloud-config
+# trade-bot on a fresh VPS: paste this file as the server's "user data"
+# (the cloud-init field) when you create it. It runs vps-setup.sh once:
+# a `trade-bot` user that your SSH key can log in as, the latest release,
+# services that survive a reboot. See deploy/vps/README.md.
+#
+# Never put API keys here. User data is stored by the provider and readable
+# by any process on the server (the metadata service); you add the keys
+# yourself after logging in.
+#
+# On images whose login user isn't root, name it so its SSH key can log in
+# as trade-bot too, e.g. KEYS_FROM=ubuntu (AWS Ubuntu), ec2-user (Amazon
+# Linux), opc (Oracle). VERSION=0.2.0 pins a release.
+runcmd:
+  - [sh, -c, "curl -fsSL https://sc0vu.github.io/trade-bot/vps-setup.sh | KEYS_FROM=root sh"]

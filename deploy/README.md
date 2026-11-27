@@ -1,7 +1,8 @@
 # Monitoring stack
 
 (`service/` holds the systemd and launchd templates `trade-bot service
-install` fills in; see the README, "Running as a service".)
+install` fills in; see the README, "Running as a service". `vps/` is the
+guide to running the bot on a rented server: [`vps/README.md`](vps/README.md).)
 
 Prometheus (metrics), Alertmanager (alerts), Loki with Grafana Alloy (logs)
 and Grafana for a running bot.

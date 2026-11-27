@@ -736,6 +736,16 @@ trade-bot service remove trade-bot-etoro-demo     # stops it (closes out) and de
   container.
 - The templates are in `deploy/service/` for setting it up by hand.
 
+### On a VPS (any provider)
+
+[`deploy/vps/README.md`](deploy/vps/README.md) walks through a rented
+server step by step: create it (Ubuntu 22.04+ / Debian 12+, non-US region
+for Binance), paste [`deploy/vps/cloud-init.yaml`](deploy/vps/cloud-init.yaml)
+as its user data or run `site/vps-setup.sh` by hand, log in as `trade-bot`,
+add your keys to `~/.trade-bot.env` yourself, then `config init`,
+`config check --env-file`, `service install`. The setup script creates the
+user, installs the release, and enables start at boot; it never sees a key.
+
 ## Containers and Render
 
 `Dockerfile` builds the bot (`trade-bot run --paper` by default);
