@@ -484,6 +484,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-et" id="t-et">etoro demo</button>
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-co" id="t-co">console</button>
       <button class="tab" role="tab" aria-selected="false" aria-controls="p-sv" id="t-sv">service</button>
+      <button class="tab" role="tab" aria-selected="false" aria-controls="p-vp" id="t-vp">vps</button>
     </div>
     <div class="term">
       <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>~/trade-bot</span></div>
@@ -496,9 +497,9 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
 <span class="p">$ </span>tar xzf trade_bot_&lt;os&gt;_&lt;arch&gt;.&lt;version&gt;.tar.gz
 <span class="c"># Windows: unzip trade_bot_windows_amd64.&lt;version&gt;.zip and run trade-bot.exe</span></pre></div>
 <div class="panel" role="tabpanel" id="p-st" aria-labelledby="t-st" hidden><pre><span class="c"># 29 built-ins, each with a runnable example (installed under ~/.local/share/trade-bot)</span>
-<span class="p">$ </span>ls config/examples/                     <span class="c"># sma_trend.toml, top_k_momentum.toml, …</span>
-<span class="p">$ </span>cp config/examples/sma_trend.toml my.toml
-<span class="c"># edit [strategy.params] in my.toml: coin, sma_period, quote_amount, fee, slippage_bps</span>
+<span class="p">$ </span>trade-bot config list                   <span class="c"># one line per strategy</span>
+<span class="p">$ </span>trade-bot config init --out my.toml     <span class="c"># asks: venue, coins, interval, each param</span>
+<span class="p">$ </span>trade-bot config check --config my.toml <span class="c"># what run would refuse, without connecting</span>
 <span class="c"># 1. backtest it against buy-and-hold (p.toml = just the params table)</span>
 <span class="p">$ </span>trade-bot fetch-data --symbol BTCUSDT --interval 4h --from 2024-01-01
 <span class="p">$ </span>trade-bot backtest --strategy sma_trend --params p.toml --symbol BTCUSDT \
@@ -546,6 +547,18 @@ params = { coins = ["QQQ", "MSFT", "META"], k = 1, lookback = 60, … }
 <span class="p">$ </span>chmod 600 ~/.trade-bot.env        <span class="c"># keys stay out of the service file</span>
 <span class="p">$ </span>trade-bot service install --config etoro.toml --env-file ~/.trade-bot.env
 <span class="p">$ </span>trade-bot service status trade-bot-etoro</pre></div>
+<div class="panel" role="tabpanel" id="p-vp" aria-labelledby="t-vp" hidden><pre><span class="c"># any provider: paste deploy/vps/cloud-init.yaml as user data, or on the server:</span>
+<span class="p">$ </span>curl -fsSL https://sc0vu.github.io/trade-bot/vps-setup.sh | sudo sh
+<span class="c"># then log in as the bot user; your keys are added by you, on the server only</span>
+<span class="p">$ </span>ssh trade-bot@&lt;server-ip&gt;
+<span class="p">$ </span>umask 077 &amp;&amp; nano ~/.trade-bot.env    <span class="c"># BINANCE_API_KEY=…  BINANCE_API_SECRET=…</span>
+<span class="p">$ </span>cd ~/bot &amp;&amp; trade-bot config init
+<span class="p">$ </span>trade-bot config check --env-file ~/.trade-bot.env
+<span class="p">$ </span>trade-bot service install --config config/config.toml --env-file ~/.trade-bot.env</pre></div>
+    </div>
+    <div style="margin-top:18px; display:flex; flex-wrap:wrap; gap:10px">
+      <a class="btn" href="https://render.com/deploy?repo=https://github.com/sc0Vu/trade-bot">Deploy to Render</a>
+      <a class="btn" href="https://github.com/sc0Vu/trade-bot/blob/main/deploy/vps/README.md">Deploy on any VPS</a>
     </div>
     <div class="cards" style="margin-top:22px">
       <div class="card"><h3><span class="ico">⌁</span>Observable, read-only</h3>
@@ -556,7 +569,8 @@ params = { coins = ["QQQ", "MSFT", "META"], k = 1, lookback = 60, … }
           and run it without recompiling; the console checks it before you trust it.</p></div>
       <div class="card"><h3><span class="ico">▣</span>Ship it anywhere</h3>
         <p>Release binaries for five platforms, <code>trade-bot service</code> for launchd and systemd, a Dockerfile,
-          and a Render blueprint that keeps the books on a disk.</p></div>
+          a Render blueprint that keeps the books on a disk, and a setup script for any VPS. Your API keys are
+          added by you, on the server: never in user data, a config or a form of ours.</p></div>
       <div class="card"><h3><span class="ico">⇄</span>Tuned out of sample</h3>
         <p><code>trade-bot sweep</code> picks parameters on one window and scores them only on the next, unseen one,
           beside the median choice. If the pick doesn't beat the median, the tuning was a fit to the past.</p></div>
