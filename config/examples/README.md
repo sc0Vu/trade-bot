@@ -25,6 +25,15 @@ One complete, runnable config per built-in strategy:
 | `tsmom_long_short.toml` | time-series momentum long and short on perpetuals (flat on spot) |
 | `long_short_momentum.toml` | cross-sectional momentum, market-neutral: long the best k, short the worst k (perpetuals) |
 | `turn_of_month.toml` | one instrument, held over each month's turn, cash otherwise |
+| `ichimoku.toml` | one coin, long above the Ichimoku cloud with Tenkan over Kijun |
+| `supertrend.toml` | one coin, long while SuperTrend says up |
+| `stochastic.toml` | one coin, buy a %K/%D cross up while oversold, sell a cross down while overbought |
+| `trailing_stop.toml` | buy-and-hold with a trailing exit and a re-entry off the trough |
+| `pair_reversion.toml` | two coins, hold whichever is cheap relative to the other |
+| `top_k_momentum.toml` | several coins, hold the best k by momentum (optional trend, volatility and schedule overlays) |
+| `tsmom.toml` | time-series momentum, long-only, volatility-targeted |
+| `risk_parity.toml` | several coins weighted by inverse volatility |
+| `rhai.toml` | a Rhai script strategy (`strategies/sma_trend.rhai`); needs the `rhai` feature |
 
 Venue-specific examples live in subdirectories: `etoro/` (US stocks and
 ETFs on eToro: demo-account configs, backtest params, and `make
