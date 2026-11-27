@@ -10,6 +10,6 @@
 #
 # On images whose login user isn't root, name it so its SSH key can log in
 # as trade-bot too, e.g. KEYS_FROM=ubuntu (AWS Ubuntu), ec2-user (Amazon
-# Linux), opc (Oracle). VERSION=0.2.0 pins a release.
+# Linux), opc (Oracle). VERSION=0.3.0 pins a release.
 runcmd:
   - [sh, -c, "curl -fsSL https://sc0vu.github.io/trade-bot/vps-setup.sh | KEYS_FROM=root sh"]

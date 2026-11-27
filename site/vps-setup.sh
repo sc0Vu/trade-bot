@@ -8,7 +8,7 @@
 #
 # It creates the user `trade-bot` (BOT_USER), lets the SSH keys you created
 # the server with log in as it, installs the latest release for that user
-# with install.sh (checksum verified; VERSION=0.2.0 pins one), lets its
+# with install.sh (checksum verified; VERSION=0.3.0 pins one), lets its
 # services run without a login (loginctl enable-linger), and makes ~/bot,
 # the directory the bot's books (data/) live in.
 #
@@ -42,7 +42,7 @@ case "$BOT_USER" in
   "" | *[!a-z0-9_-]*) fail "BOT_USER must be lowercase letters, digits, _ or -" ;;
 esac
 case "$VERSION" in
-  *[!0-9.]*) fail "VERSION must look like 0.2.0" ;;
+  *[!0-9.]*) fail "VERSION must look like 0.3.0" ;;
 esac
 
 # Release binaries link glibc 2.35+.

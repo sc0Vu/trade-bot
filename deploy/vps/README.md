@@ -52,7 +52,7 @@ What the script does, and nothing else:
 - creates the user `trade-bot` (no password) and lets the SSH keys you log
   in with log in as it;
 - installs the latest release for that user (checksum verified;
-  `VERSION=0.2.0` pins one);
+  `VERSION=0.3.0` pins one);
 - lets that user's services run at boot without a login
   (`loginctl enable-linger`);
 - creates `~/bot`, where the bot's books (`data/`) will live.

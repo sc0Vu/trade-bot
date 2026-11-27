@@ -104,7 +104,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "bot-core",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "backtest"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bot-core",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "bot-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rust_decimal",
  "rust_decimal_macros",
@@ -688,7 +688,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "api",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bot-core",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "exchange"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bot-core",
@@ -2038,7 +2038,7 @@ dependencies = [
 
 [[package]]
 name = "migration"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sea-orm-migration",
  "tokio",
@@ -3459,7 +3459,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "storage"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bot-core",
@@ -3473,7 +3473,7 @@ dependencies = [
 
 [[package]]
 name = "strategy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bot-core",
  "hex",
