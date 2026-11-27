@@ -33,6 +33,13 @@ pub enum Mode {
 pub struct Config {
     #[serde(default)]
     pub mode: Mode,
+    /// This bot's name (`[a-z0-9_-]`, 1–64), for several bots on one
+    /// machine: it goes into the default database file
+    /// (`data/<network>[-usdm|-etoro]-<name>.db`) and the kill-switch
+    /// marker, so two bots never share books or a tripped switch. Unset:
+    /// the names without it (one bot per network and venue family).
+    #[serde(default)]
+    pub name: Option<String>,
     pub exchange: ExchangeSection,
     /// The only instruments the bot may trade, as written: `venue:SYMBOL`,
     /// or a bare symbol on `exchange.venue` (`crate::symbols`).
@@ -403,15 +410,6 @@ pub struct DbSection {
     pub url: Option<String>,
 }
 
-impl DbSection {
-    /// The configured URL, or the per-network default.
-    pub fn url_for(&self, network: Network) -> String {
-        self.url
-            .clone()
-            .unwrap_or_else(|| format!("sqlite://data/{}.db?mode=rwc", network_name(network)))
-    }
-}
-
 /// The name a network goes by in config, file names and the database
 /// stamp.
 pub fn network_name(network: Network) -> &'static str {
@@ -567,6 +565,16 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        if let Some(n) = &self.name {
+            let ok = !n.is_empty()
+                && n.len() <= 64
+                && n.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
+                });
+            if !ok {
+                bail!("name {n:?}: 1 to 64 of a-z, 0-9, _ and - (it becomes part of file names)");
+            }
+        }
         match (self.engine.kill_drawdown, self.engine.kill_capital) {
             (None, None) => {}
             (Some(d), Some(c)) => {
@@ -1097,17 +1105,37 @@ mod tests {
 
     #[test]
     fn each_network_gets_its_own_default_database() {
+        use crate::preflight::Route;
+        let url = |db: &DbSection, n| Route::Spot(n).books_url(db, None).unwrap();
         let d = DbSection::default();
         assert_eq!(
-            d.url_for(Network::Testnet),
+            url(&d, Network::Testnet),
             "sqlite://data/testnet.db?mode=rwc"
         );
-        assert_eq!(d.url_for(Network::Demo), "sqlite://data/demo.db?mode=rwc");
-        assert_eq!(d.url_for(Network::Live), "sqlite://data/live.db?mode=rwc");
+        assert_eq!(url(&d, Network::Demo), "sqlite://data/demo.db?mode=rwc");
+        assert_eq!(url(&d, Network::Live), "sqlite://data/live.db?mode=rwc");
         let set = DbSection {
             url: Some("mysql://bot@db/bot".into()),
         };
-        assert_eq!(set.url_for(Network::Live), "mysql://bot@db/bot");
+        assert_eq!(url(&set, Network::Live), "mysql://bot@db/bot");
+    }
+
+    /// A bot name becomes part of file names: lowercase letters, digits,
+    /// `_` and `-` only, 1 to 64 of them.
+    #[test]
+    fn a_bot_name_is_safe_in_a_file_name() {
+        Jail::expect_with(|_| {
+            let named = |n: &str| parse(&format!("name = {n:?}\n{MIN}"));
+            assert_eq!(
+                named("btc-trend_2").unwrap().name.as_deref(),
+                Some("btc-trend_2")
+            );
+            for bad in ["", "Upper", "../x", "a b", "a.b", &"x".repeat(65)] {
+                assert!(named(bad).is_err(), "{bad:?}");
+            }
+            assert!(parse(MIN).unwrap().name.is_none());
+            Ok(())
+        });
     }
 
     #[test]

@@ -177,6 +177,31 @@ A tripped kill switch stops the service for good (exit code 3, not
 restarted). Review what happened, then start once with
 `--clear-kill-switch`.
 
+## More than one bot
+
+One server can run several bots, each from its own config:
+
+```sh
+cd ~/bot
+trade-bot config init --out config/btc.toml     # answer "btc" to the bot name
+trade-bot config init --out config/eth.toml     # answer "eth"
+trade-bot service install --config config/btc.toml --env-file ~/.trade-bot.env
+trade-bot service install --config config/eth.toml --env-file ~/.trade-bot.env
+```
+
+- **Give each a `name`.** It separates their books (`data/<network>-<name>.db`)
+  and kill switches. Two bots with no name on the same network would
+  share one database.
+- **Never let two bots trade the same symbol on the same account.** Each
+  bot's books record only its own fills, so they would disagree with the
+  account and the bot stops (or refuses to start).
+- **API ports:** if `[api]` is on, give each bot its own `listen` port.
+- **Rate limits are shared.** Binance counts request weight per IP. Each
+  bot budgets 80% of the limit and also reads Binance's count for the whole
+  IP from every response, so together they slow down instead of being
+  banned. eToro's limits are per key and it reports no count: bots
+  sharing one eToro key can exceed it, so use one key per bot.
+
 ## Real money
 
 Only after a paper run behaved as expected. Three locks, all needed:

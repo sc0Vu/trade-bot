@@ -344,7 +344,7 @@ pub fn check_loaded(
                         .into(),
                 ));
             }
-            match r.books_url(&cfg.db) {
+            match r.books_url(&cfg.db, cfg.name.as_deref()) {
                 Some(url) => found.push(Finding::Note(format!("books: {url}"))),
                 None => found.push(Finding::Note(
                     "books: in memory (a local paper run starts flat every time)".into(),
@@ -367,7 +367,9 @@ pub fn check_loaded(
         )));
     }
     // `run` asks for the token when it serves the API or keeps books.
-    let with_books = route.as_ref().is_ok_and(|r| r.books_url(&cfg.db).is_some());
+    let with_books = route
+        .as_ref()
+        .is_ok_and(|r| r.books_url(&cfg.db, cfg.name.as_deref()).is_some());
     if cfg.api.enabled || with_books {
         match config::api_token(&cfg.api, env(config::API_TOKEN_VAR)) {
             Ok(_) if cfg.api.enabled => {

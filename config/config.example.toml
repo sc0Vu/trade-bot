@@ -22,6 +22,13 @@
 # exchange.network = "live", and `run --live --i-understand`.
 mode = "paper"
 
+# Optional: this bot's name (a-z, 0-9, _ and -, up to 64), for several bots
+# on one machine. It goes into the default database file
+# (data/<network>[-usdm|-etoro]-<name>.db) and the kill-switch marker
+# (data/kill-switch/<venue>-<network>-<name>.txt), so two bots never share
+# books or a tripped switch. Give each its own [api] listen port too.
+# name = "btc-trend"
+
 # The only instruments the bot may trade. Must not be empty.
 # Full ids ("binance:BTCUSDT") or bare symbols on exchange.venue below
 # ("BTCUSDT"). Params naming a whitelisted symbol get its venue the same way.

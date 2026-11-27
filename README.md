@@ -179,6 +179,7 @@ are errors, so a typo fails loudly instead of falling back to a default.
 | Section | Field | Meaning |
 |---|---|---|
 | top level | `mode` | `"paper"` (default) or `"live"` |
+| top level | `name` | Optional bot name (`a-z 0-9 _ -`, up to 64). Several bots on one machine each get their own default database (`data/<network>[-usdm\|-etoro]-<name>.db`) and kill-switch marker; also give each its own `[api] listen` port if the API is on |
 | top level | `whitelist` | The only instruments the bot may trade, e.g. `["binance:BTCUSDT"]`, or bare symbols on `exchange.venue` (`["BTCUSDT"]`). In strategy params, a string naming a whitelisted symbol (`coin = "BTCUSDT"`, `coins = [...]`, map keys) gets its venue too; a symbol on two venues (a spot + perpetual hedge) must be written in full |
 | `[exchange]` | `venue` | `"binance"` (default, spot), `"binance-usdm"` (perpetuals), `"etoro"` or `"max"`; the whitelist must use the same venue |
 | `[exchange]` | `network` | `"testnet"` (default), `"demo"` or `"live"` |

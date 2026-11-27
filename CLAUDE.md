@@ -351,7 +351,7 @@ basis); peak from capital; equity ≤ peak·(1 − dd) → tripped: strategy mut
 `RunReport.killed` / `Report.killed` (printed); metric
 `tradebot_kill_switch_total`, alert `KillSwitchTripped`. `run`: trip →
 `KillSwitchTripped` error (exit non-zero) + marker
-`data/kill-switch/<venue>-<network>-<strategy>.txt`; marker present →
+`data/kill-switch/<venue>-<network>-<name or strategy>.txt` (config `name`); marker present →
 start refused unless `--clear-kill-switch` (supervisor can't resume).
 `EngineConfig { .. }` literals end `..Default::default()` (new fields break no caller).
 `Signal::Reduce { instrument, side, qty, kind }` = reduce-only (venue
@@ -464,7 +464,7 @@ by signed `GET /api/v3/account` + `canTrade`, bad key = error before first candl
    `SqlStore`): order journaled before submit, fills recorded by Binance trade
    id, position = stored holding → survives restart (engine seeds ctx
    positions from broker before `on_start`). Balances outside bot's own fills
-   ignored. `run` db: `db.url`, default `sqlite://data/<network>.db`, migrated
+   ignored. `run` db: `db.url`, default `sqlite://data/<network>[-<name>].db` (`preflight::Route::books_url`; config `name` = several bots, one machine), migrated
    on open, network-stamped.
    Refusals identical to PaperBroker. Fee in third asset (BNB) → valued
    (`binance::fees`) at `close` of 1m `{asset}{quote}` kline containing trade

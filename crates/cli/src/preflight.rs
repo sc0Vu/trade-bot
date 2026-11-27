@@ -31,23 +31,24 @@ pub enum Route {
 
 impl Route {
     /// Where this run keeps its books: `db.url` if set, else its default
-    /// SQLite file under `data/`. `None` for the local paper runs, whose
-    /// books are in memory (every run starts flat).
-    pub fn books_url(self, db: &config::DbSection) -> Option<String> {
-        let default = |suffix: &str, n: Network| {
-            db.url.clone().unwrap_or_else(|| {
-                format!(
-                    "sqlite://data/{}{suffix}.db?mode=rwc",
-                    config::network_name(n)
-                )
-            })
+    /// SQLite file under `data/`, one per network and venue family, with
+    /// the bot's `name` in it when set (several bots on one machine).
+    /// `None` for the local paper runs, whose books are in memory (every
+    /// run starts flat).
+    pub fn books_url(self, db: &config::DbSection, name: Option<&str>) -> Option<String> {
+        let (network, family) = match self {
+            Self::Spot(n) => (n, ""),
+            Self::UsdmOrders(n) => (n, "-usdm"),
+            Self::Etoro(n) => (n, "-etoro"),
+            Self::UsdmPaper | Self::MaxPaper => return None,
         };
-        match self {
-            Self::Spot(n) => Some(db.url_for(n)),
-            Self::UsdmOrders(n) => Some(default("-usdm", n)),
-            Self::Etoro(n) => Some(default("-etoro", n)),
-            Self::UsdmPaper | Self::MaxPaper => None,
-        }
+        Some(db.url.clone().unwrap_or_else(|| {
+            let bot = name.map(|n| format!("-{n}")).unwrap_or_default();
+            format!(
+                "sqlite://data/{}{family}{bot}.db?mode=rwc",
+                config::network_name(network)
+            )
+        }))
     }
 
     /// True when orders reach a real-money account.
@@ -135,13 +136,14 @@ pub fn route(cfg: &Config, live: bool, i_understand: bool) -> anyhow::Result<Rou
 }
 
 /// Where a tripped kill switch is remembered for this venue, network and
-/// strategy (`data/kill-switch/<venue>-<network>-<strategy>.txt`).
+/// bot (`data/kill-switch/<venue>-<network>-<name>.txt`; the strategy's
+/// name when the config names no bot).
 pub fn kill_marker(cfg: &Config) -> PathBuf {
     PathBuf::from("data/kill-switch").join(format!(
         "{}-{}-{}.txt",
         cfg.exchange.venue.id().as_str(),
         config::network_name(cfg.exchange.network),
-        cfg.strategy.name
+        cfg.name.as_deref().unwrap_or(&cfg.strategy.name)
     ))
 }
 
@@ -267,23 +269,48 @@ mod tests {
             url: Some("sqlite://x.db".into()),
         };
         assert_eq!(
-            Route::Spot(Network::Testnet).books_url(&none).as_deref(),
+            Route::Spot(Network::Testnet)
+                .books_url(&none, None)
+                .as_deref(),
             Some("sqlite://data/testnet.db?mode=rwc")
         );
         assert_eq!(
-            Route::UsdmOrders(Network::Demo).books_url(&none).as_deref(),
+            Route::UsdmOrders(Network::Demo)
+                .books_url(&none, None)
+                .as_deref(),
             Some("sqlite://data/demo-usdm.db?mode=rwc")
         );
         assert_eq!(
-            Route::Etoro(Network::Live).books_url(&none).as_deref(),
+            Route::Etoro(Network::Live)
+                .books_url(&none, None)
+                .as_deref(),
             Some("sqlite://data/live-etoro.db?mode=rwc")
         );
         assert_eq!(
-            Route::Etoro(Network::Live).books_url(&set).as_deref(),
+            Route::Etoro(Network::Live).books_url(&set, None).as_deref(),
             Some("sqlite://x.db")
         );
-        assert_eq!(Route::UsdmPaper.books_url(&set), None);
-        assert_eq!(Route::MaxPaper.books_url(&none), None);
+        // A named bot gets its own file; an explicit url still wins.
+        assert_eq!(
+            Route::Spot(Network::Demo)
+                .books_url(&none, Some("btc-trend"))
+                .as_deref(),
+            Some("sqlite://data/demo-btc-trend.db?mode=rwc")
+        );
+        assert_eq!(
+            Route::UsdmOrders(Network::Testnet)
+                .books_url(&none, Some("a"))
+                .as_deref(),
+            Some("sqlite://data/testnet-usdm-a.db?mode=rwc")
+        );
+        assert_eq!(
+            Route::Etoro(Network::Live)
+                .books_url(&set, Some("a"))
+                .as_deref(),
+            Some("sqlite://x.db")
+        );
+        assert_eq!(Route::UsdmPaper.books_url(&set, None), None);
+        assert_eq!(Route::MaxPaper.books_url(&none, None), None);
     }
 
     #[test]
@@ -296,6 +323,15 @@ mod tests {
         assert_eq!(
             kill_marker(&c),
             PathBuf::from("data/kill-switch/max-testnet-buy_and_hold.txt")
+        );
+        let named = cfg(
+            "name = \"two\"",
+            "max:BTCUSDT",
+            &format!("[exchange]\nvenue = \"max\"\n{PAPER}"),
+        );
+        assert_eq!(
+            kill_marker(&named),
+            PathBuf::from("data/kill-switch/max-testnet-two.txt")
         );
     }
 }

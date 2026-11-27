@@ -114,12 +114,13 @@ struct RunArgs {
 /// Opens (and migrates) `route`'s database ([`Route::books_url`]) and
 /// checks it belongs to `network`.
 async fn open_books(
-    db: &config::DbSection,
+    cfg: &config::Config,
     route: Route,
     network: Network,
 ) -> anyhow::Result<Arc<SqlStore>> {
+    let db = &cfg.db;
     let url = route
-        .books_url(db)
+        .books_url(db, cfg.name.as_deref())
         .context("a local paper run keeps no books on disk")?;
     if db.url.is_none() {
         // The default SQLite file lives under data/ (gitignored).
@@ -160,7 +161,7 @@ async fn run_spot(
 ) -> anyhow::Result<()> {
     // Hard error in every mode: fake-money networks need their own keys too.
     let creds = Credentials::from_env()?;
-    let books = open_books(&cfg.db, Route::Spot(network), network).await?;
+    let books = open_books(&cfg, Route::Spot(network), network).await?;
     // Fail before connecting: a public API without a token is refused.
     config::api_token(&cfg.api, std::env::var(config::API_TOKEN_VAR).ok())?;
     let provider = BinanceSpotProvider::new(
@@ -465,7 +466,7 @@ async fn run_usdm_orders(
         .as_ref()
         .context("exchange.venue = \"binance-usdm\" needs a [perp] section")?;
     let creds = Credentials::from_env()?;
-    let books = open_books(&cfg.db, Route::UsdmOrders(network), network).await?;
+    let books = open_books(&cfg, Route::UsdmOrders(network), network).await?;
     let books_ref = books.clone();
     let provider = UsdmProvider::new(
         UsdmConfig {
@@ -551,7 +552,7 @@ async fn run_etoro(cfg: config::Config, network: Network) -> anyhow::Result<()> 
         account,
         Duration::from_secs(cfg.exchange.http_timeout_secs),
     );
-    let books = open_books(&cfg.db, Route::Etoro(network), network).await?;
+    let books = open_books(&cfg, Route::Etoro(network), network).await?;
     let provider = EtoroProvider::new(
         client,
         EtoroConfig {

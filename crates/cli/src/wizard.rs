@@ -448,8 +448,44 @@ fn ask_all(p: &mut Prompt, doc: &mut DocumentMut) -> anyhow::Result<()> {
     )?;
     table(doc, "engine")["history_len"] = value(hist);
 
-    ask_params(p, doc, &old_ids, &new_ids, paper_costs.as_ref())
+    ask_params(p, doc, &old_ids, &new_ids, paper_costs.as_ref())?;
+
+    let name = doc
+        .get("name")
+        .and_then(Item::as_str)
+        .unwrap_or(NO_NAME)
+        .to_owned();
+    let name = p.ask_valid(
+        &format!(
+            "Bot name: its own books and kill switch, for several bots on one machine \
+             (a-z 0-9 _ -; {NO_NAME:?} for none)"
+        ),
+        &name,
+        |a| {
+            if a == NO_NAME {
+                return Ok(None);
+            }
+            let ok = a.len() <= 64
+                && a.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
+                });
+            if !ok {
+                bail!("lowercase letters, digits, _ and - only, at most 64");
+            }
+            Ok(Some(a.to_owned()))
+        },
+    )?;
+    match name {
+        Some(n) => doc["name"] = value(n),
+        None => {
+            doc.remove("name");
+        }
+    }
+    Ok(())
 }
+
+/// The answer that leaves a config without a bot name.
+const NO_NAME: &str = "none";
 
 /// The fake-money network of a Binance run.
 fn ask_network(p: &mut Prompt, doc: &mut DocumentMut, question: &str) -> anyhow::Result<()> {
@@ -792,7 +828,7 @@ mod tests {
     #[test]
     fn all_defaults_reproduce_the_example() {
         // strategy, venue, symbols, interval, network, history, 6 params
-        let r = drive("defaults", None, &[""; 12], false);
+        let r = drive("defaults", None, &[""; 13], false);
         let found = r.result.as_ref().unwrap().as_ref().unwrap();
         assert!(
             !found.iter().any(|f| matches!(f, Finding::Fail(_))),
@@ -830,13 +866,13 @@ mod tests {
     #[test]
     fn coins_follow_the_instruments_answered() {
         let mut a = vec!["sma_trend", "", "ethusdt", "", "", ""];
-        a.extend([""; 6]);
+        a.extend([""; 7]);
         let r = drive("one", None, &a, false);
         assert_eq!(param(&r.cfg(), "coin").as_str(), Some("binance:ETHUSDT"));
 
         // momentum_rotation: 4 example coins, answered 2.
         let mut a = vec!["momentum_rotation", "", "BTCUSDT, SOLUSDT", "", "", ""];
-        a.extend([""; 6]);
+        a.extend([""; 7]);
         let r = drive("list", None, &a, false);
         let c = r.cfg();
         let coins: Vec<&str> = param(&c, "coins")
@@ -848,7 +884,7 @@ mod tests {
         assert_eq!(coins, ["binance:BTCUSDT", "binance:SOLUSDT"]);
 
         let mut a = vec!["rebalance", "", "ETHUSDT", "", "", ""];
-        a.extend([""; 5]);
+        a.extend([""; 6]);
         let r = drive("table", None, &a, false);
         let c = r.cfg();
         let w = param(&c, "weights").as_table().unwrap();
@@ -873,7 +909,7 @@ mod tests {
             "20",
             "",
         ];
-        a.extend([""; 4]); // coin, quote_amount, fee, slippage_bps
+        a.extend([""; 5]); // coin, quote_amount, fee, slippage_bps, name
         let r = drive("max", None, &a, false);
         let c = r.cfg();
         assert_eq!(route(&c), Route::MaxPaper);
@@ -894,7 +930,7 @@ mod tests {
         // leverage, margin, brackets, history, 6 params
         let mut a = vec!["sma_long_short"];
         a.extend(["", "", "", "", "", "", "", "3", "cross", "", ""]);
-        a.extend([""; 6]);
+        a.extend([""; 7]);
         let r = drive("usdm", None, &a, false);
         let c = r.cfg();
         assert_eq!(route(&c), Route::UsdmPaper);
@@ -903,7 +939,7 @@ mod tests {
         assert_eq!(perp.margin, bot_core::margin::MarginMode::Cross);
 
         let mut a = vec!["sma_long_short", "binance", "", "", "demo", ""];
-        a.extend([""; 6]);
+        a.extend([""; 7]);
         let r = drive("to-spot", None, &a, false);
         let c = r.cfg();
         assert_eq!(route(&c), Route::Spot(Network::Demo));
@@ -919,7 +955,7 @@ mod tests {
     fn etoro_asks_which_market() {
         // venue, market, symbols, interval, history, 6 params
         let mut a = vec!["sma_trend", "etoro", "crypto", "", "", ""];
-        a.extend([""; 6]);
+        a.extend([""; 7]);
         let r = drive("etoro-crypto", None, &a, false);
         let c = r.cfg();
         assert_eq!(c.whitelist[0].to_string(), "etoro:BTC");
@@ -929,7 +965,7 @@ mod tests {
 
         // venue, market, hours, symbols, interval, history, 6 params
         let mut a = vec!["sma_trend", "etoro", "", "", "", "", ""];
-        a.extend([""; 6]);
+        a.extend([""; 7]);
         let r = drive("etoro-stocks", None, &a, false);
         let c = r.cfg();
         assert_eq!(c.whitelist[0].to_string(), "etoro:SPY.RTH");
@@ -943,6 +979,25 @@ mod tests {
         let c = r.cfg();
         let ids: Vec<String> = c.whitelist.iter().map(ToString::to_string).collect();
         assert_eq!(ids, ["etoro:AAPL", "etoro:MSFT", "etoro:QQQ"]);
+    }
+
+    /// A bot name goes into the config (and so its books and kill switch);
+    /// "none" leaves it out; a name unsafe in a file name is asked again.
+    #[test]
+    fn a_bot_name_is_asked_last() {
+        let mut a = vec![""; 11]; // venue … history, 6 params
+        a.extend(["BTC 1", "btc-1"]);
+        let r = drive("named", Some("sma_trend"), &a, false);
+        assert!(r.shown.contains("lowercase letters"), "{}", r.shown);
+        let c = r.cfg();
+        assert_eq!(c.name.as_deref(), Some("btc-1"));
+        assert_eq!(
+            preflight::kill_marker(&c),
+            std::path::PathBuf::from("data/kill-switch/binance-testnet-btc-1.txt")
+        );
+        assert!(r.text().contains("name = \"btc-1\""), "{}", r.text());
+        let unnamed = drive("unnamed", Some("sma_trend"), &[""; 12], false);
+        assert!(unnamed.cfg().name.is_none(), "{}", unnamed.text());
     }
 
     /// A wrong answer is explained and asked again; nothing else moves.
@@ -971,6 +1026,7 @@ mod tests {
             "0.1.1",
             "",
             "", // band_pct, quote, fee, slippage
+            "", // name
         ];
         let r = drive("bad", None, &a, false);
         r.result.as_ref().unwrap().as_ref().unwrap();
@@ -1001,7 +1057,7 @@ mod tests {
             r#"{ "binance:BTCUSDT" = 0.5 }"#,
             r#"{ "binance:BTCUSDT" = "0.4" }"#,
         ]);
-        a.extend([""; 4]);
+        a.extend([""; 5]);
         let r = drive("float", None, &a, false);
         assert!(r.shown.contains("go in quotes"), "{}", r.shown);
         let c = r.cfg();
@@ -1016,14 +1072,14 @@ mod tests {
     /// defaults; declining writes nothing.
     #[test]
     fn a_strategy_that_wont_build_is_never_written() {
-        let mut a = vec!["sma_trend", "", "", "", "", "", "", "0", "", "", "", ""];
+        let mut a = vec!["sma_trend", "", "", "", "", "", "", "0", "", "", "", "", ""];
         a.push("y");
-        a.extend(["", "", "", "", "", "", "20", "", "", "", ""]); // no strategy question the second time
+        a.extend(["", "", "", "", "", "", "20", "", "", "", "", ""]); // no strategy question the second time
         let r = drive("again", None, &a, false);
         assert!(r.shown.contains("FAIL  strategy sma_trend"), "{}", r.shown);
         assert_eq!(param(&r.cfg(), "sma_period").as_integer(), Some(20));
 
-        let mut a = vec!["sma_trend", "", "", "", "", "", "", "0", "", "", "", ""];
+        let mut a = vec!["sma_trend", "", "", "", "", "", "", "0", "", "", "", "", ""];
         a.push("n");
         let r = drive("quit", None, &a, false);
         assert!(r.result.as_ref().unwrap().is_none());
@@ -1044,13 +1100,13 @@ mod tests {
         );
         assert!(!r.out.exists());
 
-        let mut a = vec![""; 11];
+        let mut a = vec![""; 12];
         a.push("");
         let r = drive("keep", Some("sma_trend"), &a, true);
         assert!(r.result.as_ref().unwrap().is_none());
         assert_eq!(r.text(), "mine");
 
-        let mut a = vec![""; 11];
+        let mut a = vec![""; 12];
         a.push("y");
         let r = drive("replace", Some("sma_trend"), &a, true);
         assert!(r.result.as_ref().unwrap().is_some());
