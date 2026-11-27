@@ -152,7 +152,10 @@ like perps (cash by realized). CLI `backtest --venue etoro --cfd` (1x only:
 leveraged CFDs pay overnight fees, unmodelled; dividends not replayed;
 note printed). Pinned: runner test 889.175. Measured: long_short_momentum on
 8 large caps, daily, walk-forward 2022–2026: picks +10.7%, median −6.1%
-(after the rotation-margin fix; before it −35.6%: openings refused).
+(after the rotation-margin fix; before it −35.6%: openings refused). 29 large caps
+(no split 2022–26; CVX: no eToro bars), capital 6000 of 10000, fee 0.15%, 5 bps,
+k {3,6} × lookback {20,60,120,240} × rebalance {5,21}, 365/90 d, 2023–Sep 2026:
+picks +1.74%, median −10.06% (SPY hold +96%): no edge; CFD step 4 stays on hold.
 `core::margin` (one-way USDⓈ-M): `Brackets` (contiguous from 0: floor/cap,
 max_leverage, rate, cum; = `/fapi/v1/leverageBracket`), maintenance =
 |notional|·rate − cum, `initial_margin` = notional/leverage,
