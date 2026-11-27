@@ -9,6 +9,7 @@ mod date;
 mod gate;
 mod logging;
 mod paper_books;
+mod preflight;
 mod service;
 mod shutdown;
 mod state;
@@ -30,6 +31,7 @@ use exchange::binance::{
 use exchange::max::paper::{MaxPaperConfig, MaxPaperProvider};
 use exchange::max::public::MaxPublicClient;
 use exchange::paper::{BpsSlippage, FeeAsset, RateFee};
+use preflight::Route;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -101,10 +103,16 @@ struct RunArgs {
     config: Option<PathBuf>,
 }
 
-/// Opens (and migrates) the run's database and checks it belongs to
-/// `network`.
-async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<Arc<SqlStore>> {
-    let url = db.url_for(network);
+/// Opens (and migrates) `route`'s database ([`Route::books_url`]) and
+/// checks it belongs to `network`.
+async fn open_books(
+    db: &config::DbSection,
+    route: Route,
+    network: Network,
+) -> anyhow::Result<Arc<SqlStore>> {
+    let url = route
+        .books_url(db)
+        .context("a local paper run keeps no books on disk")?;
     if db.url.is_none() {
         // The default SQLite file lives under data/ (gitignored).
         std::fs::create_dir_all("data").context("creating data/")?;
@@ -115,57 +123,36 @@ async fn open_books(db: &config::DbSection, network: Network) -> anyhow::Result<
 }
 
 async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
-    // Spot and futures in one run aren't built: started, it would see one
-    // leg's instrument and quietly do nothing.
-    anyhow::ensure!(
-        cfg.strategy.name != "funding_carry",
-        "funding_carry trades Binance spot and USDⓈ-M together; a run trades one venue, \
-         so it is backtest only for now (backtest --perp-symbol)"
-    );
-    if cfg.exchange.venue == Venue::BinanceUsdm {
-        let venue_fills = cfg
-            .perp
-            .as_ref()
-            .is_some_and(|p| p.fills == config::PerpFills::Venue);
-        if venue_fills {
-            // The same three locks as spot: --paper = testnet/demo only.
-            let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
-            return run_usdm_orders(cfg, network, a.cancel_orphans).await;
+    match preflight::route(&cfg, a.live, a.i_understand)? {
+        Route::UsdmOrders(network) => run_usdm_orders(cfg, network, a.cancel_orphans).await,
+        Route::UsdmPaper => {
+            if a.cancel_orphans {
+                tracing::warn!(
+                    "--cancel-orphans ignored: a local-fill paper run places no orders on Binance"
+                );
+            }
+            run_usdm_paper(cfg).await
         }
-        anyhow::ensure!(
-            !a.live,
-            "perp.fills = \"local\" is a paper run; set perp.fills = \"venue\" for orders on Binance"
-        );
-        if a.cancel_orphans {
-            tracing::warn!(
-                "--cancel-orphans ignored: a local-fill paper run places no orders on Binance"
-            );
+        Route::Etoro(network) => run_etoro(cfg, network).await,
+        Route::MaxPaper => {
+            if a.cancel_orphans {
+                tracing::warn!("--cancel-orphans ignored: a MAX paper run places no orders on MAX");
+            }
+            run_max_paper(cfg).await
         }
-        return run_usdm_paper(cfg).await;
+        Route::Spot(network) => run_spot(cfg, network, a.cancel_orphans).await,
     }
-    if cfg.exchange.venue == Venue::Etoro {
-        // The same three locks: --paper = demo account only.
-        let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
-        return run_etoro(cfg, network).await;
-    }
-    if cfg.exchange.venue == Venue::Max {
-        gate::decide_max(cfg.mode, a.live)?;
-        if a.cancel_orphans {
-            tracing::warn!("--cancel-orphans ignored: a MAX paper run places no orders on MAX");
-        }
-        return run_max_paper(cfg).await;
-    }
-    let network = gate::decide(cfg.mode, cfg.exchange.network, a.live, a.i_understand)?;
-    gate::check_overrides(
-        network,
-        &[
-            cfg.exchange.rest_url.as_deref(),
-            cfg.exchange.ws_url.as_deref(),
-        ],
-    )?;
+}
+
+/// A Binance spot run on `network` (gated by [`preflight::route`]).
+async fn run_spot(
+    cfg: config::Config,
+    network: Network,
+    cancel_orphans: bool,
+) -> anyhow::Result<()> {
     // Hard error in every mode: fake-money networks need their own keys too.
     let creds = Credentials::from_env()?;
-    let books = open_books(&cfg.db, network).await?;
+    let books = open_books(&cfg.db, Route::Spot(network), network).await?;
     // Fail before connecting: a public API without a token is refused.
     config::api_token(&cfg.api, std::env::var(config::API_TOKEN_VAR).ok())?;
     let provider = BinanceSpotProvider::new(
@@ -184,7 +171,7 @@ async fn run_bot(a: RunArgs, cfg: config::Config) -> anyhow::Result<()> {
         cfg.whitelist.clone(),
         books.clone(),
     )
-    .with_orphans(if a.cancel_orphans {
+    .with_orphans(if cancel_orphans {
         Orphans::Cancel
     } else {
         Orphans::Refuse
@@ -470,18 +457,7 @@ async fn run_usdm_orders(
         .as_ref()
         .context("exchange.venue = \"binance-usdm\" needs a [perp] section")?;
     let creds = Credentials::from_env()?;
-    let url = cfg.db.url.clone().unwrap_or_else(|| {
-        format!(
-            "sqlite://data/{}-usdm.db?mode=rwc",
-            config::network_name(network)
-        )
-    });
-    if cfg.db.url.is_none() {
-        std::fs::create_dir_all("data").context("creating data/")?;
-    }
-    let books = SqlStore::open(&url).await.context("opening the database")?;
-    books.bind_network(config::network_name(network)).await?;
-    let books = Arc::new(books);
+    let books = open_books(&cfg.db, Route::UsdmOrders(network), network).await?;
     let books_ref = books.clone();
     let provider = UsdmProvider::new(
         UsdmConfig {
@@ -567,18 +543,7 @@ async fn run_etoro(cfg: config::Config, network: Network) -> anyhow::Result<()> 
         account,
         Duration::from_secs(cfg.exchange.http_timeout_secs),
     );
-    let url = cfg.db.url.clone().unwrap_or_else(|| {
-        format!(
-            "sqlite://data/{}-etoro.db?mode=rwc",
-            config::network_name(network)
-        )
-    });
-    if cfg.db.url.is_none() {
-        std::fs::create_dir_all("data").context("creating data/")?;
-    }
-    let books = SqlStore::open(&url).await.context("opening the database")?;
-    books.bind_network(config::network_name(network)).await?;
-    let books = Arc::new(books);
+    let books = open_books(&cfg.db, Route::Etoro(network), network).await?;
     let provider = EtoroProvider::new(
         client,
         EtoroConfig {
@@ -682,17 +647,6 @@ fn tripped(killed: Option<String>) -> anyhow::Result<()> {
         Some(why) => Err(KillSwitchTripped(why).into()),
         None => Ok(()),
     }
-}
-
-/// Where a tripped kill switch is remembered for this venue, network and
-/// strategy (`data/kill-switch/<venue>-<network>-<strategy>.txt`).
-fn kill_marker(cfg: &config::Config) -> PathBuf {
-    PathBuf::from("data/kill-switch").join(format!(
-        "{}-{}-{}.txt",
-        cfg.exchange.venue.id().as_str(),
-        format!("{:?}", cfg.exchange.network).to_lowercase(),
-        cfg.strategy.name
-    ))
 }
 
 /// Refuses to start while `marker` exists, unless `clear` (which removes
@@ -1364,7 +1318,7 @@ async fn real_main() -> anyhow::Result<()> {
                 &config::log_filter(rust_log, cfg.log.level.as_deref(), "info,sqlx=warn"),
                 &cfg.log,
             );
-            let marker = kill_marker(&cfg);
+            let marker = preflight::kill_marker(&cfg);
             check_kill_marker(&marker, a.clear_kill_switch)?;
             let ran = run_bot(a, cfg).await;
             if let Err(e) = &ran

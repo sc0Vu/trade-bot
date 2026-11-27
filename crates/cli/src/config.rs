@@ -546,6 +546,13 @@ impl Config {
         Self::from_figment(Figment::new().merge(file))
     }
 
+    /// `text` as a config file (plus `BOT_*` env, as [`Self::load`]):
+    /// for tests outside this module.
+    #[cfg(test)]
+    pub(crate) fn parse_str(text: &str) -> anyhow::Result<Self> {
+        Self::from_figment(Figment::new().merge(Toml::string(text)))
+    }
+
     fn from_figment(f: Figment) -> anyhow::Result<Self> {
         let cfg: Self = f
             .merge(Env::prefixed("BOT_").ignore(&["CONFIG"]).split("__"))
