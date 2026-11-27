@@ -1262,7 +1262,9 @@ crates/
                `init` without `--strategy` / `-i` = `wizard.rs`: questions on
                the example via `toml_edit` (comments kept; param help = its
                comment; type of the example's value; coins renamed by position;
-               floats refused), written only once it loads + route + build ok,
+               floats refused; eToro: market stocks|crypto, stocks → hours
+               regular (`.RTH` suffix) | extended, default tickers + 1d),
+               written only once it loads + route + build ok,
                paper only (never live network/mode), no keys asked)
                (`console`: axum on loopback only, page `console.html` embedded;
                catalog / scripts get+put / example params / check / lookahead

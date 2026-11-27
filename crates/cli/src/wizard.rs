@@ -222,6 +222,14 @@ fn pick_strategy(p: &mut Prompt) -> anyhow::Result<String> {
 
 const VENUES: [&str; 4] = ["binance", "binance-usdm", "max", "etoro"];
 
+/// Default tickers for an eToro stock config: broad ETFs, then large caps
+/// (the set `make etoro-stocks-data` caches), none near a split.
+const ETORO_STOCKS: [&str; 6] = ["SPY", "QQQ", "AAPL", "MSFT", "AMZN", "META"];
+
+/// eToro crypto symbols the wizard recognises as crypto, to keep a crypto
+/// config crypto when its questions are asked again.
+const ETORO_CRYPTO: [&str; 8] = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "BNB", "LTC"];
+
 /// Every question, defaults read from `doc`, answers written into it.
 fn ask_all(p: &mut Prompt, doc: &mut DocumentMut) -> anyhow::Result<()> {
     let old_venue = str_at(doc, &["exchange", "venue"])
@@ -230,18 +238,60 @@ fn ask_all(p: &mut Prompt, doc: &mut DocumentMut) -> anyhow::Result<()> {
     let old_ids = ids(doc, &old_venue);
 
     let venue = p.choose("Venue", &VENUES, &old_venue)?;
-    let default_symbols: Vec<String> = old_ids
+    let old_symbols: Vec<&str> = old_ids
         .iter()
-        .map(|id| {
-            let sym = id.split_once(':').map_or(id.as_str(), |(_, s)| s);
-            if venue == "etoro" && old_venue != "etoro" {
-                // eToro names crypto by coin (etoro:BTC), stocks by ticker.
-                sym.strip_suffix("USDT").unwrap_or(sym).to_owned()
-            } else {
-                sym.to_owned()
-            }
-        })
+        .map(|id| id.split_once(':').map_or(id.as_str(), |(_, s)| s))
         .collect();
+    // eToro lists stocks, ETFs and crypto; which one decides the tickers,
+    // the trading hours and a sensible bar.
+    let mut rth = false;
+    let mut stocks_from_elsewhere = false;
+    let default_symbols: Vec<String> = if venue == "etoro" {
+        let was_etoro = old_venue == "etoro";
+        let crypto_now = was_etoro && old_symbols.iter().all(|s| ETORO_CRYPTO.contains(s));
+        let market = p.choose(
+            "eToro market: US stocks and ETFs, or crypto",
+            &["stocks", "crypto"],
+            if crypto_now { "crypto" } else { "stocks" },
+        )?;
+        if market == "stocks" {
+            stocks_from_elsewhere = !was_etoro || crypto_now;
+            let regular = !was_etoro || old_symbols.iter().all(|s| s.ends_with(".RTH"));
+            rth = p.choose(
+                "Trading hours: regular (9:30-16:00 New York) or extended (pre- and after-market too)",
+                &["regular", "extended"],
+                if regular { "regular" } else { "extended" },
+            )? == "regular";
+            if was_etoro && !crypto_now {
+                old_symbols
+                    .iter()
+                    .map(|s| s.trim_end_matches(".RTH").to_owned())
+                    .collect()
+            } else {
+                // As many tickers as the example has instruments.
+                ETORO_STOCKS
+                    .iter()
+                    .cycle()
+                    .take(old_symbols.len().clamp(1, ETORO_STOCKS.len()))
+                    .map(|s| (*s).to_owned())
+                    .collect()
+            }
+        } else if crypto_now {
+            old_symbols.iter().map(|s| (*s).to_owned()).collect()
+        } else {
+            // eToro names crypto by coin (etoro:BTC), not by pair.
+            old_symbols
+                .iter()
+                .map(|s| s.strip_suffix("USDT").unwrap_or(s).to_owned())
+                .collect()
+        }
+    } else {
+        old_symbols
+            .iter()
+            .map(|s| s.trim_end_matches(".RTH").to_owned())
+            .collect()
+    };
+    let example = if venue == "etoro" { "SPY" } else { "BTCUSDT" };
     let symbols = p.ask_valid(
         "Instruments (comma-separated symbols)",
         &default_symbols.join(","),
@@ -255,11 +305,25 @@ fn ask_all(p: &mut Prompt, doc: &mut DocumentMut) -> anyhow::Result<()> {
                 bail!("at least one symbol");
             }
             if v.iter().any(|s| s.contains(':') || s.contains(' ')) {
-                bail!("symbols only, e.g. BTCUSDT (the venue is the one chosen)");
+                bail!("symbols only, e.g. {example} (the venue is the one chosen)");
             }
             Ok(v)
         },
     )?;
+    let symbols: Vec<String> = symbols
+        .into_iter()
+        .map(|s| {
+            // The hours answer decides the suffix, whatever was typed.
+            let bare = s.trim_end_matches(".RTH").to_owned();
+            if rth { format!("{bare}.RTH") } else { bare }
+        })
+        .collect();
+    // Stocks trade one session a day: daily bars by default when a crypto
+    // example becomes a stock config.
+    if stocks_from_elsewhere {
+        table(doc, "exchange")["interval"] = value("1d");
+    }
+
     let new_ids: Vec<String> = symbols.iter().map(|s| format!("{venue}:{s}")).collect();
     doc["whitelist"] = value(Array::from_iter(new_ids.iter().map(String::as_str)));
 
@@ -847,15 +911,38 @@ mod tests {
         assert_eq!(param(&c, "coin").as_str(), Some("binance:BTCUSDT"));
     }
 
-    /// eToro: crypto renamed by coin, the demo account, no network asked.
+    /// eToro asks which market. Crypto: coins by name (BTCUSDT → BTC).
+    /// Stocks: US tickers by default (as many as the example has coins),
+    /// daily bars, and the hours answer sets the `.RTH` suffix whatever
+    /// was typed. The demo account either way; no network asked.
     #[test]
-    fn etoro_runs_on_the_demo_account() {
-        let mut a = vec!["sma_trend", "etoro", "", "1d", ""];
+    fn etoro_asks_which_market() {
+        // venue, market, symbols, interval, history, 6 params
+        let mut a = vec!["sma_trend", "etoro", "crypto", "", "", ""];
         a.extend([""; 6]);
-        let r = drive("etoro", None, &a, false);
+        let r = drive("etoro-crypto", None, &a, false);
         let c = r.cfg();
         assert_eq!(c.whitelist[0].to_string(), "etoro:BTC");
+        assert_eq!(param(&c, "coin").as_str(), Some("etoro:BTC"));
+        assert_eq!(c.exchange.interval, Interval::H4, "the example's bar kept");
         assert_eq!(route(&c), Route::Etoro(Network::Demo));
+
+        // venue, market, hours, symbols, interval, history, 6 params
+        let mut a = vec!["sma_trend", "etoro", "", "", "", "", ""];
+        a.extend([""; 6]);
+        let r = drive("etoro-stocks", None, &a, false);
+        let c = r.cfg();
+        assert_eq!(c.whitelist[0].to_string(), "etoro:SPY.RTH");
+        assert_eq!(param(&c, "coin").as_str(), Some("etoro:SPY.RTH"));
+        assert_eq!(c.exchange.interval, Interval::D1);
+
+        let mut a = vec!["top_k_momentum", "etoro", "stocks", "extended"];
+        a.extend(["aapl.rth, msft, qqq", "", ""]);
+        a.extend([""; 20]);
+        let r = drive("etoro-ext", None, &a, false);
+        let c = r.cfg();
+        let ids: Vec<String> = c.whitelist.iter().map(ToString::to_string).collect();
+        assert_eq!(ids, ["etoro:AAPL", "etoro:MSFT", "etoro:QQQ"]);
     }
 
     /// A wrong answer is explained and asked again; nothing else moves.

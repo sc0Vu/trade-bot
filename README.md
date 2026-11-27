@@ -151,7 +151,9 @@ trade-bot config check --env-file ~/.trade-bot.env  # keys from the service's fi
 `config init` without `--strategy` (or with `-i`) asks for each setting.
 Each default comes from the strategy's example, and each param's help is the
 example's comment beside it. Changing the coins renames them in the params.
-Money answers must be exact decimals, and a bare `0.5` in a table is
+On eToro it asks the market: US stocks and ETFs (regular hours, which
+adds `.RTH`, or extended; daily bars by default) or crypto (`BTC`, not
+`BTCUSDT`). Money answers must be exact decimals, and a bare `0.5` in a table is
 refused. Nothing is written until the config loads and the strategy builds;
 otherwise the questions repeat with your answers as defaults. It writes
 paper configs only (testnet or demo, or local paper fills on MAX and
