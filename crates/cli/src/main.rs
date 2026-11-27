@@ -1,9 +1,10 @@
-//! Bot binary: `run | backtest | fetch-data | migrate`.
+//! Bot binary: `run | backtest | sweep | fetch-data | config | console | service`.
 //!
 //! Safe by default: paper against testnet. Live trading requires
 //! `mode = "live"`, `exchange.network = "live"`, and `--i-understand`.
 
 mod config;
+mod configure;
 mod console;
 mod date;
 mod gate;
@@ -65,6 +66,12 @@ enum Command {
     /// Local web console: edit script strategies, backtest them against
     /// buy-and-hold. Loopback only; places no orders.
     Console(console::ConsoleArgs),
+    /// Write and check run configs: `list` strategies, `init` one from its
+    /// example, `check` it as `run` would without connecting.
+    Config {
+        #[command(subcommand)]
+        cmd: configure::ConfigCommand,
+    },
     /// Run a config as an OS service (systemd user unit / launchd agent):
     /// started at boot or login, restarted after a failure.
     Service {
@@ -1303,6 +1310,10 @@ async fn real_main() -> anyhow::Result<()> {
         Command::Service { cmd } => {
             init_logging(&config::log_filter(rust_log, None, "warn"));
             service::run(cmd)
+        }
+        Command::Config { cmd } => {
+            init_logging(&config::log_filter(rust_log, None, "warn"));
+            configure::run(cmd)
         }
         Command::Console(a) => {
             init_logging(&config::log_filter(rust_log, None, "info,sqlx=warn"));

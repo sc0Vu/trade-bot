@@ -1251,7 +1251,12 @@ crates/
   storage/     SeaORM entities + repositories
   api/         read-only HTTP API (axum): /status /positions /open-orders /orders /trades;
                no write route ever (orders only from strategy via risk)
-  cli/         binary: run | backtest | sweep | fetch-data | migrate | console
+  cli/         binary: run | backtest | sweep | fetch-data | config | migrate | console
+               (`config list|init|check`, `configure.rs`: examples embedded
+               (`EXAMPLES`, test = dir = registry); `check` = `preflight::route`
+               (gate, overrides, funding_carry; shared with `run`) + loader +
+               key env names (never values) + API token + strategy build +
+               kill marker, every refusal reported, nothing connected, exit 1)
                (`console`: axum on loopback only, page `console.html` embedded;
                catalog / scripts get+put / example params / check / lookahead
                (`check_lookahead`) / restart (`check_restart`; both 10 cuts,

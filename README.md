@@ -126,7 +126,24 @@ cp config/config.example.toml config/config.toml
 
 [`config/examples/`](config/examples/README.md) has a complete config for
 each built-in strategy (paper on testnet, textbook params), runnable as
-`run --paper --config config/examples/<strategy>.toml`.
+`run --paper --config config/examples/<strategy>.toml`. The binary carries
+them too, so this works without the repository:
+
+```sh
+trade-bot config list                          # strategies, one line each
+trade-bot config init --strategy sma_trend     # writes config/config.toml from its example
+trade-bot config check                         # what `run` would refuse, without connecting
+trade-bot config check --config my.toml --live # as `run --live` (config's two locks)
+```
+
+`config check` loads the config as `run` does (file, then `BOT_*`), and
+reports every refusal at once: the live gate, a URL override pointing a
+fake-money run at mainnet, keys missing from the environment (names only;
+values are never printed), the API token, the strategy's params, a
+tripped kill switch. It also shows where the run keeps its books. It
+connects to nothing, so a bad key, an unlisted symbol or the balance only
+show at `run`. Exit status 1 when `run` would refuse. `--i-understand` is
+never accepted there: it is typed at each live start.
 
 `config/config.toml` and `config/*.local.toml` are gitignored. Unknown keys
 are errors, so a typo fails loudly instead of falling back to a default.
@@ -795,7 +812,7 @@ crates/
   backtest/   kline cache, BacktestProvider, report
   storage/    SeaORM repositories: trades, holdings, order journal
   api/        read-only HTTP API: status, positions, orders, trades
-  cli/        the `cli` binary (`trade-bot`): fetch-data, backtest, run, console
+  cli/        the `cli` binary (`trade-bot`): fetch-data, backtest, sweep, run, config, console, service
 migration/    SeaORM schema migrations
 strategies/   script strategies (Rhai), e.g. sma_trend.rhai
 config/       config.example.toml, examples/ (one per strategy; etoro/ for stocks),

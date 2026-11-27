@@ -37,6 +37,14 @@ Demo Trading):
 cargo run -p cli -- run --paper --config config/examples/sma_trend.toml
 ```
 
+Or let the binary copy one (it carries every file here) and check it
+before starting:
+
+```
+trade-bot config init --strategy sma_trend --out config/config.toml
+trade-bot config check --config config/config.toml
+```
+
 API keys never go in these files: set `BINANCE_API_KEY` and
 `BINANCE_API_SECRET` in the environment. Copy a file to
 `config/config.toml` (gitignored) or `config/*.local.toml` to make it yours.

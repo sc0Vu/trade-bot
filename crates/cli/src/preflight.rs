@@ -49,6 +49,31 @@ impl Route {
             Self::UsdmPaper | Self::MaxPaper => None,
         }
     }
+
+    /// True when orders reach a real-money account.
+    pub fn is_live(self) -> bool {
+        matches!(
+            self,
+            Self::Spot(Network::Live)
+                | Self::UsdmOrders(Network::Live)
+                | Self::Etoro(Network::Live)
+        )
+    }
+
+    /// What the run does, in a few words.
+    pub fn describe(self) -> String {
+        let n = config::network_name;
+        match self {
+            Self::Spot(net) => format!("orders on Binance spot {}", n(net)),
+            Self::UsdmOrders(net) => format!("orders on Binance USDⓈ-M futures {}", n(net)),
+            Self::UsdmPaper => {
+                "Binance USDⓈ-M prices, local paper fills; nothing sent to Binance".into()
+            }
+            Self::Etoro(Network::Live) => "orders on the real eToro account".into(),
+            Self::Etoro(_) => "orders on the eToro demo account".into(),
+            Self::MaxPaper => "MAX prices, local paper fills; nothing sent to MAX".into(),
+        }
+    }
 }
 
 /// Decides the run from `cfg` and the `run` flags, or refuses: a run that
